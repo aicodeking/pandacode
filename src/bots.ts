@@ -7,6 +7,7 @@ import { infoMark } from './tooltip';
 import type { Provider, ProviderId, ProviderModel, ReasoningEffort } from './types';
 import { advertisedModelsOnly, modelChoices } from './model-catalog';
 import { connectInput, guideToggled } from './bots-connect';
+import { exportBots, mountBotsImport } from './bots-import';
 import { avatarPicker, botAvatarHtml, colorPicker, handleAvatarPicker } from './bot-avatars';
 import { age, renderPanel, panelClick, panelSubmit, panelChange, invalidateActivity, invalidateCapabilities, type PanelContext, type Tab } from './bots-panels';
 
@@ -170,6 +171,7 @@ export function mountBots(host: HTMLElement, options: BotsOptions): BotsView {
   const modelCatalogRequests = new Map<ProviderId, Promise<ProviderModel[]>>();
   for (const provider of options.providers) if (provider.models.length) modelCatalogs.set(provider.id, provider.models);
   let error = '';
+  let disposeImport: (() => void) | null = null;
   const single = options.layout === 'settings';
   const installed = () => options.providers.filter(provider => provider.installed);
   invalidateCapabilities();
@@ -274,7 +276,7 @@ export function mountBots(host: HTMLElement, options: BotsOptions): BotsView {
   function renderList(): void {
     if (!list) return;
     const rows = bots.map(bot => `<button type="button" class="bots-row" data-bot="${escape(bot.id)}" aria-current="${bot.id === selected && editing !== 'new'}">${avatar(bot)}<span class="bots-row-text"><b>${escape(bot.name)}</b><small>${escape(bot.paused ? 'Paused' : working(bot) ? 'Working…' : bot.role || 'Ready')}</small></span>${bot.paused ? `<span class="bots-dot paused" title="Paused"></span>` : working(bot) ? '<span class="bots-dot working" title="Working"></span>' : ''}</button>`).join('');
-    list.innerHTML = `<div class="bots-list-head"><span>Bots</span><button type="button" class="icon-button" data-bots-action="new" aria-label="New bot" title="New bot">${icon('plus')}</button></div><div class="bots-rows">${rows || '<p class="bots-empty-note">No bots yet.</p>'}</div>`;
+    list.innerHTML = `<div class="bots-list-head"><span>Bots</span><button type="button" class="secondary-button" data-bots-action="import">Import…</button><button type="button" class="icon-button" data-bots-action="new" aria-label="New bot" title="New bot">${icon('plus')}</button></div><div class="bots-rows">${rows || '<p class="bots-empty-note">No bots yet.</p>'}</div>`;
   }
 
   function catalogFor(provider: ProviderId): ProviderModel[] { return modelCatalogs.get(provider) ?? options.providers.find(item => item.id === provider)?.models ?? []; }
@@ -476,7 +478,7 @@ export function mountBots(host: HTMLElement, options: BotsOptions): BotsView {
         <button type="button" class="secondary-button bp-open" data-bots-action="open-chat">${icon('chat')}<span>Open chat</span></button>
         <button type="button" class="icon-button" data-bots-action="pause" aria-label="${bot.paused ? 'Resume' : 'Pause'}" title="${bot.paused ? 'Resume: schedules, check-ins and channels continue' : 'Pause: stop work and hold schedules and messages'}" aria-pressed="${bot.paused}">${icon(bot.paused ? 'play' : 'pause')}</button>
         <span class="bp-more"><button type="button" class="icon-button" data-bots-action="more" aria-label="More" title="More" aria-haspopup="menu" aria-expanded="${moreOpen}">${icon('more')}</button>
-        ${moreOpen ? `<span class="bp-menu" role="menu"><button type="button" role="menuitem" data-bots-action="reset" aria-label="Reset bot">${icon('reset')}Reset…<small>Forget conversations, memories and schedules</small></button><button type="button" role="menuitem" class="danger" data-bots-action="delete" aria-label="Delete bot">${icon('trash')}Delete…<small>Remove the bot and its channels</small></button></span>` : ''}</span>
+        ${moreOpen ? `<span class="bp-menu" role="menu"><button type="button" role="menuitem" data-bots-action="import">Import bots…</button><button type="button" role="menuitem" data-bots-action="export">Export bots…</button><button type="button" role="menuitem" data-bots-action="reset" aria-label="Reset bot">${icon('reset')}Reset…<small>Forget conversations, memories and schedules</small></button><button type="button" role="menuitem" class="danger" data-bots-action="delete" aria-label="Delete bot">${icon('trash')}Delete…<small>Remove the bot and its channels</small></button></span>` : ''}</span>
       </div></header>
       ${bot.paused ? '<p class="bots-banner">Paused. Schedules and check-ins wait until you resume; new messages get a paused reply.</p>' : ''}`;
   }
@@ -495,6 +497,7 @@ export function mountBots(host: HTMLElement, options: BotsOptions): BotsView {
     const dialog = single ? null : host.closest('dialog'), title = dialog?.querySelector('.dialog-title h2');
     if (dialog && title) { title.textContent = editing === 'new' ? 'New bot' : 'Bots'; dialog.setAttribute('aria-label', title.textContent); }
     renderList();
+    if (disposeImport) return;
     const confirm = confirming ? `<div class="bots-confirm" role="alertdialog" aria-label="${escape(confirming.title)}"><b>${escape(confirming.title)}</b><p>${escape(confirming.text)}</p><div class="dialog-footer"><button type="button" class="secondary-button" data-bots-action="confirm-cancel">Cancel</button><button type="button" class="primary-button danger" data-bots-action="confirm-run">${escape(confirming.button)}</button></div></div>` : '';
     const alert = error ? `<div class="message-error error-row bots-error-row"><div class="error-row-head"><span class="error-row-icon" data-state-tone="danger" aria-hidden="true">${icon('alert')}</span><span class="error-row-summary bots-error-text" role="alert">${escape(error)}</span><button type="button" class="error-row-button error-row-dismiss" data-bots-action="dismiss-error" aria-label="Dismiss error">${icon('close')}</button></div></div>` : '';
     if (loading) { pane.innerHTML = '<p class="dialog-loading" role="status">Loading bots…</p>'; return; }
@@ -584,6 +587,7 @@ export function mountBots(host: HTMLElement, options: BotsOptions): BotsView {
     if (avatarOpen && !inside('.bp-avatar-wrap')) { avatarOpen = false; render(); }
     const target = event.target instanceof Element ? event.target.closest<HTMLElement>('button,[data-bot]') : null;
     if (!target || !host.contains(target) || (target as HTMLButtonElement).disabled) return;
+    if (disposeImport && target.dataset.bot) { disposeImport(); disposeImport = null; }
     if (target.dataset.bot) { selected = target.dataset.bot; editing = null; confirming = null; if (detail?.bot.id !== selected) { detail = null; render(); } void load(); return; }
     if (target.dataset.section) { section = target.dataset.section as Nav; confirming = null; avatarOpen = false; render(); return; }
     if (target.dataset.suggestion) {
@@ -612,7 +616,15 @@ export function mountBots(host: HTMLElement, options: BotsOptions): BotsView {
     if (bot && target.dataset.backupRemove) { patchBot({ backupModels: (bot.backupModels ?? []).filter((_, index) => index !== Number(target.dataset.backupRemove)) }); return; }
     const action = target.dataset.botsAction;
     if (moreOpen && action !== 'more') moreOpen = false;
-    if (action === 'new') { editing = 'new'; draft = newDraft(); nameError = ''; confirming = null; render(); pane.querySelector<HTMLInputElement>('input[name=name]')?.focus(); }
+    if (action === 'import') {
+      if (disposeImport) return;
+      moreOpen = false;
+      void flushSave();
+      disposeImport = mountBotsImport(pane, { call: options.call, changed: () => load(), close: () => { disposeImport?.(); disposeImport = null; render(); } });
+      return;
+    }
+    if (action === 'export') { moreOpen = false; render(); void work(() => exportBots(options.call)); return; }
+    if (action === 'new') { disposeImport?.(); disposeImport = null; editing = 'new'; draft = newDraft(); nameError = ''; confirming = null; render(); pane.querySelector<HTMLInputElement>('input[name=name]')?.focus(); }
     else if (action === 'dismiss-error') { error = ''; render(); pane.querySelector<HTMLElement>('[role=tab][aria-selected=true],.bots-form input[name=name],button')?.focus(); }
     else if (action === 'models-retry') { const select = pane.querySelector<HTMLSelectElement>('.bots-form select[name=model]'), provider = pane.querySelector<HTMLSelectElement>('.bots-form select[name=provider]'); if (select && provider) { loadFormModels(provider.value as ProviderId, select, select.value); select.focus(); } }
     else if (action === 'cancel-edit') { editing = null; nameError = ''; render(); }
@@ -763,6 +775,6 @@ export function mountBots(host: HTMLElement, options: BotsOptions): BotsView {
       if (kind === 'done') { void load(); return; }
       if (kind === 'turn_start' || kind === 'status') renderList();
     },
-    dispose: () => { disposed = true; host.removeEventListener('click', click); host.removeEventListener('submit', submit); host.removeEventListener('change', change); host.removeEventListener('input', typed); host.removeEventListener('toggle', toggled, true); host.removeEventListener('scroll', scrolled, true); void flushSave(); host.removeEventListener('keydown', keys); for (const type of ['pointerdown', 'keydown']) host.removeEventListener(type, arm, { capture: true }); },
+    dispose: () => { disposed = true; disposeImport?.(); disposeImport = null; host.removeEventListener('click', click); host.removeEventListener('submit', submit); host.removeEventListener('change', change); host.removeEventListener('input', typed); host.removeEventListener('toggle', toggled, true); host.removeEventListener('scroll', scrolled, true); void flushSave(); host.removeEventListener('keydown', keys); for (const type of ['pointerdown', 'keydown']) host.removeEventListener(type, arm, { capture: true }); },
   };
 }

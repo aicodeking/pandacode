@@ -5079,6 +5079,7 @@ pub(crate) fn main_invoke_handler(invoke: tauri::ipc::Invoke<tauri::Wry>) -> boo
         bots::bot_desktop_thread,
         bots::bot_detail,
         bots::bot_create,
+        headless_bots::bots_import_preview, headless_bots::bots_import, headless_bots::bots_export,
         bots::bot_update,
         bots::bot_set_paused,
         bots::bot_reset,

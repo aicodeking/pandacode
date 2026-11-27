@@ -9,149 +9,268 @@ use crate::storage::Store;
 use serde_json::{json, Value};
 use std::path::Path;
 
-/// A channel the import added; the serve wiring starts it live.
+/// A channel the import added; preview leaves its not-yet-created ID empty.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct AddedChannel {
     pub id: String,
+    pub bot: String,
+    pub kind: String,
+    pub label: String,
 }
 
+#[derive(Clone, Copy, PartialEq, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum Status { Created, Updated, Unchanged, Failed }
+
+#[derive(serde::Serialize)]
+pub(crate) struct Change {
+    pub kind: String,
+    pub name: String,
+    pub status: Status,
+}
+
+#[derive(serde::Serialize)]
+pub(crate) struct BotDiff {
+    pub name: String,
+    pub status: Status,
+    pub changes: Vec<Change>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct WebLink {
+    pub channel_id: String,
+    pub url: String,
+}
+
+#[derive(Default, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct Report {
     pub lines: Vec<String>,
     pub added_channels: Vec<AddedChannel>,
     pub failed: usize,
+    pub bots: Vec<BotDiff>,
+    pub links: Vec<WebLink>,
 }
 
-/// Applies the import document. Bots are matched by exact name (existing = profile update,
-/// missing = created with their own workspace folder); channels match on kind+label,
-/// schedules on title (or prompt for untitled ones), rules on pattern+decision — so
-/// re-applying the same file converges instead of duplicating. A bot that fails is
-/// reported and skipped; the rest still import.
+/// The inventory advances in memory in preview too, so repeated entries in one
+/// document match earlier planned changes without touching storage or secrets.
+#[derive(Default)]
+struct Inventory {
+    id: String,
+    profile: Value,
+    skills: Vec<String>,
+    mcp: Vec<String>,
+    channels: Vec<(String, String)>,
+    schedules: Vec<(String, String, String)>,
+    rules: Vec<(String, String)>,
+}
+
+pub(crate) fn preview(store: &Store, doc: &Value, now: i64) -> Report {
+    process(store, Path::new(""), doc, now, true)
+}
+
 pub(crate) fn apply(store: &Store, root: &Path, doc: &Value, now: i64) -> Report {
-    let mut report = Report { lines: Vec::new(), added_channels: Vec::new(), failed: 0 };
+    process(store, root, doc, now, false)
+}
+
+fn process(store: &Store, root: &Path, doc: &Value, now: i64, dry_run: bool) -> Report {
+    let mut run = Run { root, now, dry_run, inventory: std::collections::HashMap::new(), report: Report::default() };
     let Some(entries) = doc.get("bots").and_then(Value::as_array) else {
-        report.failed += 1;
-        report.lines.push("The import file needs a \"bots\" array.".into());
-        return report;
+        run.report.failed = 1;
+        run.report.lines.push("The import file needs a \"bots\" array.".into());
+        return run.report;
     };
     for entry in entries {
         let name = entry.get("name").and_then(Value::as_str).unwrap_or("").to_owned();
-        match apply_bot(store, root, entry, &mut report.added_channels, now) {
-            Ok(lines) => report.lines.extend(lines),
-            Err(error) => {
-                report.failed += 1;
-                report.lines.push(format!("bot \"{name}\": {error}"));
-            }
+        let mut diff = BotDiff { name, status: Status::Unchanged, changes: Vec::new(), error: None };
+        if let Err(error) = process_bot(store, &mut run, entry, &mut diff) {
+            run.inventory.retain(|_, saved: &mut Inventory| !saved.profile.is_null());
+            run.report.failed += 1;
+            run.report.lines.push(format!("bot \"{}\": {error}", diff.name));
+            diff.status = Status::Failed;
+            diff.error = Some(error);
         }
+        run.report.bots.push(diff);
     }
-    report
+    run.report
 }
 
-fn apply_bot(store: &Store, root: &Path, entry: &Value, added: &mut Vec<AddedChannel>, now: i64) -> crate::Result<Vec<String>> {
-    let input: bots::BotInput =
-        serde_json::from_value(entry.clone()).map_err(|error| format!("unreadable bot entry: {error}"))?;
-    if input.name.trim().is_empty() {
-        return Err("Every bot needs a name.".into());
+fn change(diff: &mut BotDiff, kind: &str, name: &str, status: Status) {
+    if diff.status == Status::Unchanged && status != Status::Unchanged { diff.status = Status::Updated; }
+    diff.changes.push(Change { kind: kind.into(), name: name.into(), status });
+}
+
+/// One import run: the shared inventory a document's entries match against, the report being
+/// built, and whether this is a preview. Bundled so the per-bot step does not take eight
+/// arguments.
+struct Run<'a> {
+    root: &'a Path,
+    now: i64,
+    dry_run: bool,
+    inventory: std::collections::HashMap<String, Inventory>,
+    report: Report,
+}
+
+fn process_bot(store: &Store, run: &mut Run, entry: &Value, diff: &mut BotDiff) -> crate::Result<()> {
+    let input: bots::BotInput = serde_json::from_value(entry.clone()).map_err(|error| format!("unreadable bot entry: {error}"))?;
+    let input = bots::validate(&input)?;
+    let canonical = input.name.clone();
+    if !run.inventory.contains_key(&canonical) {
+        if let Some(bot) = bots::list(store)?.into_iter().find(|bot| bot.name == canonical) {
+            let mut profile = serde_json::to_value(&bot).map_err(|e| e.to_string())?;
+            let fields = profile_value(&input);
+            profile.as_object_mut().unwrap().retain(|field, _| fields.get(field).is_some());
+            run.inventory.insert(canonical.clone(), Inventory {
+                id: bot.id.clone(), profile, skills: bot.skills, mcp: bot.mcp,
+                channels: channels::list(store, &bot.id)?.into_iter().map(|c| (c.kind, c.label)).collect(),
+                schedules: schedule::list(store, &bot.id)?.into_iter().map(|s| (s.title, s.prompt, s.kind)).collect(),
+                rules: guard::rules(store, &bot.id)?.into_iter().map(|r| (r.pattern, r.decision)).collect(),
+            });
+        }
     }
-    // Constructors store the canonical name (control characters stripped, capped at 60);
-    // match on that form or a non-canonical file name duplicates its bot on every apply.
-    let canonical = bots::clean(&input.name, 60);
-    let existing = bots::list(store)?.into_iter().find(|bot| bot.name == canonical);
-    let (name, mut lines) = match &existing {
-        Some(bot) => {
-            bots::update(store, &bot.id, &input)?;
-            (bot.id.clone(), vec![format!("\"{}\" updated", bot.name)])
-        }
-        None => {
-            let bot = bots::create(store, &input, root)?;
-            (bot.id.clone(), vec![format!("\"{}\" imported", bot.name)])
-        }
-    };
+    let existed = run.inventory.contains_key(&canonical);
+    let saved = run.inventory.entry(canonical.clone()).or_default();
+    let profile = profile_value(&input);
+    let status = if !existed { Status::Created } else if saved.profile == profile { Status::Unchanged } else { Status::Updated };
+    if !run.dry_run {
+        let bot = if existed { bots::update(store, &saved.id, &input)? } else { bots::create(store, &input, run.root)? };
+        saved.id = bot.id;
+    }
+    saved.profile = profile;
+    diff.name = canonical.clone();
+    diff.status = status;
+    change(diff, "profile", &canonical, status);
+    run.report.lines.push(format!("\"{canonical}\" {}", if existed { "updated" } else { "imported" }));
     if entry.get("skills").is_some() || entry.get("mcp").is_some() {
         let skills = canonical_capabilities(entry.get("skills"))?;
         let mcp = canonical_capabilities(entry.get("mcp"))?;
-        // set_capabilities bumps the brief version unconditionally; skip when the saved
-        // lists already match, so re-applying a file does not re-broadcast briefs.
-        let unchanged = existing.is_some_and(|bot| {
-            same_list(&skills, &bot.skills) && same_list(&mcp, &bot.mcp)
-        });
+        let unchanged = existed && same_list(&skills, &saved.skills) && same_list(&mcp, &saved.mcp);
         if !unchanged {
-            bots::set_capabilities(store, &name, &skills, &mcp)?;
-            lines.push(format!("  capabilities: {} skill(s), {} MCP server(s)", skills.len(), mcp.len()));
+            if !run.dry_run { bots::set_capabilities(store, &saved.id, &skills, &mcp)?; }
+            run.report.lines.push(format!("  capabilities: {} skill(s), {} MCP server(s)", skills.len(), mcp.len()));
         }
+        change(diff, "capabilities", &canonical, if unchanged { Status::Unchanged } else if existed { Status::Updated } else { Status::Created });
+        saved.skills = skills; saved.mcp = mcp;
     }
     if let Some(entries) = entry.get("channels").and_then(Value::as_array) {
-        for channel_entry in entries {
-            let mut input: channels::ChannelInput = serde_json::from_value(channel_entry.clone())
-                .map_err(|error| format!("unreadable channel entry: {error}"))?;
+        for entry in entries {
+            let mut input: channels::ChannelInput = serde_json::from_value(entry.clone()).map_err(|e| format!("unreadable channel entry: {e}"))?;
             let label = input.label.trim().chars().take(60).collect::<String>();
-            // A matched channel needs nothing from the file: skip before resolving
-            // secrets, so a removed environment variable cannot block a converged
-            // server from booting.
-            if channels::list(store, &name)?.iter().any(|channel| channel.kind == input.kind && channel.label == label) {
-                lines.push(format!("  channel {} \"{label}\" already configured", input.kind));
+            let pair = (input.kind.clone(), label.clone());
+            if saved.channels.contains(&pair) {
+                change(diff, "channel", &format!("{}:{label}", input.kind), Status::Unchanged);
+                run.report.lines.push(format!("  channel {} \"{label}\" already configured", input.kind));
                 continue;
             }
-            for (secret_name, value) in input.secrets.iter_mut() {
-                *value = resolve_secret(&input.kind, secret_name, value, &|variable| std::env::var(variable).ok())?;
+            for (name, value) in &mut input.secrets {
+                *value = resolve_secret(&input.kind, name, value, &|var| std::env::var(var).ok())?;
             }
-            // The desktop catches bad token shapes before saving (bot_channel_add →
-            // verify → check_format); import must fail the same way, or a truncated or
-            // swapped token imports as success and the channel dies unreported.
             channels::check_format(&input)?;
-            let channel = channels::add(store, &name, &input)?;
-            added.push(AddedChannel { id: channel.id.clone() });
-            lines.push(format!("  channel {} \"{label}\" added", channel.kind));
+            validate_channel(&input)?;
+            let id = if run.dry_run { String::new() } else { channels::add(store, &saved.id, &input)?.id };
+            run.report.added_channels.push(AddedChannel { id, bot: canonical.clone(), kind: input.kind.clone(), label: label.clone() });
+            change(diff, "channel", &format!("{}:{label}", input.kind), Status::Created);
+            run.report.lines.push(format!("  channel {} \"{label}\" added", input.kind));
+            saved.channels.push(pair);
         }
     }
     if let Some(entries) = entry.get("schedules").and_then(Value::as_array) {
-        for schedule_entry in entries {
-            let input: schedule::ScheduleInput = serde_json::from_value(schedule_entry.clone())
-                .map_err(|error| format!("unreadable schedule entry: {error}"))?;
+        for entry in entries {
+            let input: schedule::ScheduleInput = serde_json::from_value(entry.clone()).map_err(|e| format!("unreadable schedule entry: {e}"))?;
             let title = input.title.trim().chars().take(120).collect::<String>();
             let prompt = input.prompt.trim().chars().take(8000).collect::<String>();
-            let exists = schedule::list(store, &name)?.iter().any(|saved| {
-                if title.is_empty() {
-                    saved.prompt == prompt && saved.kind == input.kind
-                } else {
-                    saved.title == title
-                }
-            });
+            let exists = saved.schedules.iter().any(|s| if title.is_empty() { s.1 == prompt && s.2 == input.kind } else { s.0 == title });
+            let display = if title.is_empty() { &input.prompt } else { &title };
             if exists {
-                lines.push(format!("  schedule \"{}\" already configured", if title.is_empty() { &input.prompt } else { &title }));
+                change(diff, "schedule", display, Status::Unchanged);
+                run.report.lines.push(format!("  schedule \"{display}\" already configured"));
                 continue;
             }
-            let created = schedule::create(store, &name, &input, "user", now)?;
-            lines.push(format!("  schedule \"{}\" added", created.title));
+            validate_schedule(&input, saved.schedules.len(), run.now)?;
+            if !run.dry_run { schedule::create(store, &saved.id, &input, "user", run.now)?; }
+            let title = if title.is_empty() { prompt.chars().take(60).collect() } else { title };
+            change(diff, "schedule", &title, Status::Created);
+            run.report.lines.push(format!("  schedule \"{title}\" added"));
+            saved.schedules.push((title, prompt, input.kind));
         }
     }
     if let Some(entries) = entry.get("rules").and_then(Value::as_array) {
-        for rule_entry in entries {
-            let pattern = rule_entry.get("pattern").and_then(Value::as_str).ok_or("Every rule needs a pattern.")?;
-            let decision = rule_entry.get("decision").and_then(Value::as_str).ok_or("Every rule needs a decision (allow, ask or deny).")?;
-            // Validate what the rule will store before touching what is already there:
-            // a typo'd decision must not delete a working rule.
+        for entry in entries {
+            let pattern = entry.get("pattern").and_then(Value::as_str).ok_or("Every rule needs a pattern.")?;
+            let decision = entry.get("decision").and_then(Value::as_str).ok_or("Every rule needs a decision (allow, ask or deny).")?;
             let pattern = pattern.trim().chars().take(200).collect::<String>();
-            if pattern.trim_matches('*').trim().chars().count() < 2 {
-                return Err("A rule needs a pattern of at least two characters.".into());
+            if pattern.trim_matches('*').trim().chars().count() < 2 { return Err("A rule needs a pattern of at least two characters.".into()); }
+            if !matches!(decision, "allow" | "ask" | "deny") { return Err("A rule allows, asks or denies.".into()); }
+            let replaced = saved.rules.iter().any(|r| r.0 == pattern && r.1 != decision);
+            let exists = saved.rules.iter().any(|r| r.0 == pattern && r.1 == decision);
+            if !run.dry_run {
+                for rule in guard::rules(store, &saved.id)?.iter().filter(|r| r.pattern == pattern && r.decision != decision) {
+                    guard::delete_rule(store, &saved.id, &rule.id)?;
+                }
+                if !exists { guard::add_rule(store, &saved.id, &pattern, decision)?; }
             }
-            if !matches!(decision, "allow" | "ask" | "deny") {
-                return Err("A rule allows, asks or denies.".into());
-            }
-            // The file is the source of truth for a pattern: an edited decision replaces
-            // the old rule instead of stacking one that deny-wins would shadow.
-            let mut replaced = false;
-            for rule in guard::rules(store, &name)?.iter().filter(|rule| rule.pattern == pattern && rule.decision != decision).collect::<Vec<_>>() {
-                guard::delete_rule(store, &name, &rule.id)?;
-                replaced = true;
-            }
-            if guard::rules(store, &name)?.iter().any(|rule| rule.pattern == pattern && rule.decision == decision) {
-                lines.push(format!("  rule \"{pattern}\" already configured{}", if replaced { " (replaced a different decision)" } else { "" }));
-            } else {
-                guard::add_rule(store, &name, &pattern, decision)?;
-                lines.push(format!("  rule \"{pattern}\" {decision}{}", if replaced { " (replaced the old rule)" } else { "" }));
-            }
+            change(diff, "rule", &pattern, if replaced { Status::Updated } else if exists { Status::Unchanged } else { Status::Created });
+            run.report.lines.push(format!("  rule \"{pattern}\" {}", if exists && !replaced { "already configured" } else { decision }));
+            saved.rules.retain(|r| r.0 != pattern);
+            saved.rules.push((pattern, decision.into()));
         }
     }
-    Ok(lines)
+    Ok(())
+}
+
+fn profile_value(input: &bots::BotInput) -> Value {
+    json!({"name":input.name,"role":input.role,"instructions":input.instructions,"goals":input.goals,
+        "soul":input.soul,"avatar":input.avatar,"provider":input.provider,"model":input.model,"mode":input.mode,
+        "heartbeatMinutes":input.heartbeat_minutes,"color":input.color,"reasoningEffort":input.reasoning_effort,
+        "backupModels":input.backup_models,"fallbackMode":input.fallback_mode,"notify":input.notify,
+        "whileWorking":input.while_working,"showPlan":input.show_plan})
+}
+
+fn required_secrets(kind: &str) -> &'static [&'static str] {
+    match kind {
+        "telegram" | "discord" => &["token"],
+        "slack" => &["token", "app_token"],
+        "whatsapp" => &["access_token", "signing_secret"],
+        _ => &[],
+    }
+}
+
+fn validate_channel(input: &channels::ChannelInput) -> crate::Result<()> {
+    if !matches!(input.kind.as_str(), "web" | "telegram" | "slack" | "discord" | "whatsapp") {
+        return Err("Choose web, Telegram, Slack, Discord or WhatsApp.".into());
+    }
+    let config = &input.config;
+    if input.kind == "whatsapp" && config["phoneNumberId"].as_str().is_none_or(|id| id.trim().is_empty() || !id.chars().all(|c| c.is_ascii_digit())) {
+        return Err("Enter the WhatsApp phone number ID from Meta's API setup page.".into());
+    }
+    for name in required_secrets(&input.kind) {
+        if input.secrets.get(*name).is_none_or(|value| value.trim().is_empty()) {
+            return Err(format!("Enter the {} for this channel.", name.replace('_', " ")));
+        }
+    }
+    if input.secrets.keys().any(|name| !matches!(name.as_str(), "token" | "app_token" | "signing_secret" | "access_token")) { return Err("Unknown secret name.".into()); }
+    Ok(())
+}
+
+fn validate_schedule(input: &schedule::ScheduleInput, count: usize, now: i64) -> crate::Result<()> {
+    let prompt = input.prompt.trim().chars().take(8000).collect::<String>();
+    if prompt.is_empty() {
+        return Err("A schedule needs a prompt: what should the bot do?".into());
+    }
+    if count >= 50 {
+        return Err("A bot can have up to 50 schedules.".into());
+    }
+    let _next = match input.kind.as_str() {
+        "once" => input.run_at.filter(|at| *at > now - 60_000 && *at < now + 366 * 86_400_000),
+        kind @ ("interval" | "daily" | "weekdays") => schedule::next_run(kind, input.interval_minutes, input.time_of_day.as_deref(), now, schedule::local_offset_ms(now)),
+        _ => return Err("Choose once, every N minutes, daily, or weekdays.".into()),
+    }
+    .ok_or("Check the schedule's time: intervals are 5 minutes to a week, times are HH:MM, one-off runs are within a year.")?;
+    Ok(())
 }
 
 /// Capabilities as `references()` stores them: strings, trimmed, empties dropped — the
@@ -274,8 +393,14 @@ pub(crate) fn run_import(app: &tauri::AppHandle, path: &Path) {
         eprintln!("The bot import had errors; fix the file and restart — what imported stays.");
         std::process::exit(1)
     }
+    for line in start_added_channels(app, &state, &report.added_channels) {
+        println!("Web chat: {}", line.url);
+    }
+}
+
+fn start_added_channels(app: &tauri::AppHandle, state: &crate::AppState, added_channels: &[AddedChannel]) -> Vec<WebLink> {
     let mut links = Vec::new();
-    for added in &report.added_channels {
+    for added in added_channels {
         let channel = {
             let Ok(store) = state.store.lock() else {
                 eprintln!("serve: could not re-read an imported channel; it will start on the next restart.");
@@ -301,13 +426,50 @@ pub(crate) fn run_import(app: &tauri::AppHandle, path: &Path) {
                 channels::web_token(&store, &channel.id)
             };
             if let Some(token) = token {
-                links.push(format!("http://127.0.0.1:{port}/chat/{}#{token}", channel.id));
+                links.push(WebLink { channel_id: channel.id.clone(), url: format!("http://127.0.0.1:{port}/chat/{}#{token}", channel.id) });
             }
         }
     }
-    for link in links {
-        println!("Web chat: {link}");
-    }
+    links
+}
+
+fn parse_document(doc: &str) -> crate::Result<Value> {
+    let value: Value = serde_json::from_str(doc).map_err(|e| format!("The bot import document is not valid JSON: {e}"))?;
+    if !value.is_object() { return Err("The bot import document must be a JSON object.".into()); }
+    Ok(value)
+}
+
+fn guard_main(window: &tauri::WebviewWindow) -> crate::Result<()> {
+    if window.label() != "main" { return Err("Bots are managed from the main window.".into()); }
+    Ok(())
+}
+
+#[tauri::command]
+pub(crate) async fn bots_import_preview(window: tauri::WebviewWindow, state: tauri::State<'_, crate::AppState>, doc: String) -> crate::Result<Report> {
+    guard_main(&window)?;
+    let doc = parse_document(&doc)?;
+    let store = state.store.lock().map_err(|e| e.to_string())?;
+    Ok(preview(&store, &doc, crate::storage::now()))
+}
+
+#[tauri::command]
+pub(crate) async fn bots_import(app: tauri::AppHandle, window: tauri::WebviewWindow, state: tauri::State<'_, crate::AppState>, doc: String) -> crate::Result<Report> {
+    use tauri::Emitter;
+    guard_main(&window)?;
+    let doc = parse_document(&doc)?;
+    let mut report = {
+        let store = state.store.lock().map_err(|e| e.to_string())?;
+        apply(&store, &bots::workspace_root(), &doc, crate::storage::now())
+    };
+    report.links = start_added_channels(&app, &state, &report.added_channels);
+    let _ = app.emit("bots-changed", ());
+    Ok(report)
+}
+
+#[tauri::command]
+pub(crate) async fn bots_export(state: tauri::State<'_, crate::AppState>) -> crate::Result<Value> {
+    let store = state.store.lock().map_err(|e| e.to_string())?;
+    export(&store)
 }
 
 /// Writes the export document to `path` (pretty-printed, newline-terminated).
@@ -355,6 +517,77 @@ mod tests {
             }}]}}"#
         ))
         .unwrap()
+    }
+
+    #[test]
+    fn preview_writes_nothing_and_import_matches_its_plan() {
+        let store = store();
+        let root = root();
+        let doc = token_doc("123456:AAtesttokenvalueaaaaaaaaaaaaaaaaa");
+        let before = store.db.total_changes();
+        let first = preview(&store, &doc, 1_000_000);
+        let repeated = preview(&store, &doc, 1_000_000);
+        assert_eq!(first.failed, 0, "{:?}", first.lines);
+        assert!(first.bots[0].status == Status::Created);
+        assert_eq!(serde_json::to_value(&first).unwrap(), serde_json::to_value(&repeated).unwrap());
+        assert_eq!(store.db.total_changes(), before, "preview executes no database writes");
+        assert!(bots::list(&store).unwrap().is_empty());
+        assert_eq!(std::fs::read_dir(&root).unwrap().count(), 0);
+        assert_eq!(first.added_channels.len(), 2);
+        assert!(first.added_channels.iter().all(|channel| channel.id.is_empty()));
+        let applied = apply(&store, &root, &doc, 1_000_000);
+        assert_eq!(applied.failed, 0, "{:?}", applied.lines);
+        assert_eq!(serde_json::to_value(&first.bots).unwrap(), serde_json::to_value(&applied.bots).unwrap());
+        assert_eq!(applied.added_channels.len(), first.added_channels.len());
+        assert!(applied.added_channels.iter().all(|channel| !channel.id.is_empty()));
+        let bot = bots::list(&store).unwrap().remove(0);
+        assert_eq!(channels::list(&store, &bot.id).unwrap().len(), 2);
+        assert_eq!(schedule::list(&store, &bot.id).unwrap().len(), 1);
+        assert_eq!(guard::rules(&store, &bot.id).unwrap().len(), 1);
+        let second = preview(&store, &doc, 1_000_000);
+        assert_eq!(second.failed, 0, "{:?}", second.lines);
+        assert!(second.bots[0].status == Status::Unchanged);
+        assert!(second.bots[0].changes.iter().all(|change| change.status == Status::Unchanged));
+        assert!(second.added_channels.is_empty());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn preview_reports_malformed_documents_without_panicking() {
+        let store = store();
+        for doc in [json!(null), json!({"bots": "bad"}), json!({"bots": [{"name":42}]}),
+            json!({"bots":[{"name":"bad", "provider":"nope", "mode":"auto"}]})] {
+            assert_eq!(preview(&store, &doc, 1_000_000).failed, 1);
+        }
+        assert!(bots::list(&store).unwrap().is_empty());
+        assert!(parse_document("[]").unwrap_err().contains("JSON object"));
+        assert!(parse_document("{").is_err());
+    }
+
+    #[test]
+    fn preview_tracks_duplicate_entries_and_changed_rules() {
+        let store = store();
+        let root = root();
+        let entry = json!({"name":"  bot  ","provider":"claude","model":"sonnet","mode":"auto",
+            "channels":[{"kind":"web"},{"kind":"web"}],
+            "schedules":[{"title":"daily","prompt":"hi","kind":"daily","timeOfDay":"09:00"}],
+            "rules":[{"pattern":"npm test*","decision":"allow"}]});
+        let doc = json!({"bots":[entry.clone(),entry]});
+        let planned = preview(&store, &doc, 1_000_000);
+        assert_eq!(planned.failed, 0);
+        assert!(planned.bots[0].status == Status::Created);
+        assert!(planned.bots[1].status == Status::Unchanged);
+        assert_eq!(planned.added_channels.len(), 1);
+        let applied = apply(&store, &root, &doc, 1_000_000);
+        assert_eq!(applied.failed, 0);
+        let mut changed = doc.clone();
+        changed["bots"][0]["role"] = json!("changed");
+        changed["bots"][0]["rules"][0]["decision"] = json!("deny");
+        let planned = preview(&store, &changed, 1_000_000);
+        assert!(planned.bots[0].status == Status::Updated);
+        assert!(planned.bots[0].changes.iter().any(|c| c.kind == "rule" && c.status == Status::Updated));
+        assert_eq!(guard::rules(&store, &bots::list(&store).unwrap()[0].id).unwrap()[0].decision, "allow");
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

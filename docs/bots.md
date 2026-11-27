@@ -107,3 +107,5 @@ Bot tasks deliver their queued messages natively when a run ends, so the window 
 - A separate model-based reviewer for outbound actions (the Guard is rule-based).
 - Connectors beyond chat (email, calendar); bots use the harness's own MCP servers for those today.
 - Media messages (images, voice) on chat channels; text only for now.
+- Shareable bundles: importing one document that carries bots, groups, skills and schedules,
+  and letting a bot provision other bots. Design, gaps and caps: [bot bundles](bot-bundles.md).

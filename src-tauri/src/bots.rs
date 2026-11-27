@@ -421,7 +421,9 @@ pub(crate) fn clean(text: &str, limit: usize) -> String {
     text.chars().filter(|c| *c == '\n' || !c.is_control()).take(limit).collect::<String>().trim().to_owned()
 }
 
-fn validate(input: &BotInput) -> Result<BotInput> {
+/// The one profile validator and canonicaliser: the Settings constructors, the headless import
+/// and its preview all call it, so a plan cannot disagree with the write it describes.
+pub(crate) fn validate(input: &BotInput) -> Result<BotInput> {
     let name = clean(&input.name, 60);
     if name.is_empty() {
         return Err("Give the bot a name.".into());
