@@ -121,10 +121,10 @@ html[data-theme] .workspace[data-wallpaper]>.sidebar .task-item.selected{backgro
 
 /* Row actions sit over the trailing edge, centred on the row; the harness steps aside with the age. */
 .sidebar .task-actions{top:0;bottom:0;padding-right:6px;border-start-start-radius:0;border-start-end-radius:var(--ds-control-radius);border-end-end-radius:var(--ds-control-radius);border-end-start-radius:0}
-.sidebar .task-row:is(:hover,:focus-within)>.task-item>.task-top>.task-provider{visibility:hidden}
+.sidebar .task-row:hover>.task-item>.task-top>.task-provider{visibility:hidden}
 /* Only the buttons take the pointer: the gaps between them and the fade-in edge click through to the row. */
-.sidebar .task-row:is(:hover,:focus-within)>.task-actions{pointer-events:none}
-.sidebar .task-row:is(:hover,:focus-within)>.task-actions>.task-action{pointer-events:auto}
+.sidebar .task-row:hover>.task-actions{pointer-events:none}
+.sidebar .task-row:hover>.task-actions>.task-action{pointer-events:auto}
 .sidebar .task-action{width:28px;height:28px;border-radius:var(--radius-chip)}
 .sidebar .task-action .icon{--icon-size:var(--icon-md);--icon-stroke:var(--icon-stroke-md)}
 .sidebar .task-action:hover{background:var(--ds-fill-hover)}

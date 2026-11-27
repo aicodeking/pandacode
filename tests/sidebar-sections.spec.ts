@@ -125,6 +125,22 @@ test.describe('sidebar sections', () => {
     expect((await title.boundingBox())!.width).toBeCloseTo(width, 0);
   });
 
+  test('a task keeps its age when it is clicked or its action menu closes', async ({ page }) => {
+    await open(page);
+    // Clicking a row leaves focus on its button; the clock must still show once the pointer leaves.
+    await row(page, 'sections-running').click();
+    await page.mouse.move(1200, 700);
+    await expect(row(page, 'sections-running').locator('.task-runtime')).toHaveCSS('visibility', 'visible');
+    await expect(page.locator('#task-row-sections-running .task-actions')).toHaveCSS('opacity', '0');
+    // Closing the row menu returns focus to the row; its age comes back as well.
+    await row(page, 'sections-review-1').hover();
+    await page.locator('#task-row-sections-review-1 .task-more').click();
+    await expect(menu(page)).toBeVisible();
+    await page.keyboard.press('Escape');
+    await page.mouse.move(1200, 700);
+    await expect(row(page, 'sections-review-1').locator('.task-age')).toHaveCSS('visibility', 'visible');
+  });
+
   test('the row tick settles a finished thread, Undo brings it back, and the checked tick reopens it', async ({ page }) => {
     await open(page);
     await toggle(page).click();
@@ -142,6 +158,7 @@ test.describe('sidebar sections', () => {
     await row(page, 'sections-review-2').hover();
     await action(page, 'Settle: Write the release notes').click();
     await expect(section(page, 'completed').locator('.task-item').first()).toHaveAttribute('data-id', 'sections-review-2');
+    await row(page, 'sections-review-2').hover();
     await action(page, 'Reopen: Write the release notes').click();
     await expect(section(page, 'completed').locator('[data-id="sections-review-2"]')).toHaveCount(0);
     // Reopened, it is finished work again.

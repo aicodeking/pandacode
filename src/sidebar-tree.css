@@ -166,13 +166,14 @@ html[data-theme=dark] .sidebar .new-task-button>.icon{color:var(--focus)}
 .sidebar .section-fold[aria-expanded=false]>.icon{rotate:0deg}
 .sidebar .section-fold:hover{color:var(--text)}
 
-/* Row actions are the row button's siblings, over its right edge: shown on hover or focus,
-   where the row's age and status step aside for them. A completed row keeps its tick. */
+/* Row actions are the row button's siblings, over its right edge: shown while the pointer is over
+   the row (keyboard users open the same menu from the row), where the age and status step aside.
+   A completed row keeps its tick. */
 .sidebar .task-row{position:relative}
 .sidebar .task-row:is(:hover,:focus-within)>.task-item:not(.selected){background:var(--raised)}
 .sidebar .task-actions{position:absolute;z-index:1;top:4px;right:0;padding-right:5px;display:flex;align-items:center;gap:1px;opacity:0;pointer-events:none}
 .sidebar .task-row-oneline>.task-actions{top:0;bottom:0}
-.sidebar .task-row:is(:hover,:focus-within)>.task-actions{opacity:1;pointer-events:auto}
+.sidebar .task-row:hover>.task-actions{opacity:1;pointer-events:auto}
 /* Light wallpaper: secondary text (headings, "Show N more") and faint text (ages, counts) sit on
    frost over the scene, which darker scenes pull toward grey. Two tiers below the title, both
    ≥4.5:1 on every scene at the default visibility. */
@@ -185,7 +186,7 @@ html:not([data-theme="dark"]) .workspace[data-wallpaper]>.sidebar{--muted:#3d403
 html[data-theme] .workspace[data-wallpaper]>.sidebar .task-row:has(>.task-item.selected){--row-bg:color-mix(in srgb,var(--accent) 22%,var(--sidebar))}
 .sidebar .task-actions{padding-left:18px;border-start-start-radius:0;border-end-start-radius:0;border-start-end-radius:var(--ds-control-radius);border-end-end-radius:var(--ds-control-radius);-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px);-webkit-mask-image:linear-gradient(to right,transparent,#000 18px);mask-image:linear-gradient(to right,transparent,#000 18px)}
 @media(prefers-reduced-transparency:reduce){.sidebar .task-actions{-webkit-backdrop-filter:none;backdrop-filter:none;background:var(--row-bg)}}
-.sidebar .task-row:is(:hover,:focus-within)>.task-item>.task-line:first-child>:is(.task-age,.task-indicator,.task-provider,.task-status){visibility:hidden}
+.sidebar .task-row:hover>.task-item>.task-line:first-child>:is(.task-age,.task-indicator,.task-provider,.task-status){visibility:hidden}
 .sidebar .task-action{display:grid;place-items:center;width:22px;height:22px;padding:0;border-radius:var(--radius-chip);color:var(--muted);--press:.9}
 .sidebar .task-action .icon{--icon-size:var(--icon-sm);--icon-stroke:var(--icon-stroke-sm)}
 .sidebar .task-more{--press:1}
