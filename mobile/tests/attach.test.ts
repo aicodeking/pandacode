@@ -1,7 +1,7 @@
 /// <reference types="node" />
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { attachLimits, base64Size, composeText, cutUtf8, DEFAULT_LIMITS, DOCUMENT_MAX, documentBlock, documentPending, IMAGE_ONLY_TEXT, IMAGES_ONLY_TEXT, imageChunks, imageKind, imageName, imageRefusal, isReadableText, looksLikeText, textRefusal, withoutPending, withPending, IMAGE_GONE, IMAGE_LOST, parseImages, storedImages, uploadImages, type ImageChunk, type Pending } from '../src/store/attach.ts';
+import { attachLimits, base64Size, composeText, cutUtf8, DEFAULT_LIMITS, DOCUMENT_MAX, documentBlock, documentPending, IMAGE_ONLY_TEXT, IMAGES_ONLY_TEXT, imageChunks, imageKind, imageName, imageRefusal, isReadableText, looksLikeText, fitPlan, needsFit, nextQuality, PHOTO_MAX_EDGE, PHOTO_QUALITIES, textRefusal, withoutPending, withPending, IMAGE_GONE, IMAGE_LOST, parseImages, storedImages, uploadImages, type ImageChunk, type Pending } from '../src/store/attach.ts';
 import { LOST, OFFLINE } from '../src/connect/rpc.ts';
 import { attachments as chipsOf } from '../src/store/turns.ts';
 
@@ -131,4 +131,47 @@ test('the outbox keeps image uris and names, never bytes, and validates them', (
   assert.equal(parseImages('u'), null);
   assert.equal(parseImages([{ uri: '', name: 'n' }]), null);
   assert.equal(parseImages([{ uri: 'u' }]), null);
+});
+
+// ---- Fitting a photo to the host ----
+
+test('an image that already fits is never re-encoded', () => {
+  // A small screenshot keeps its exact bytes: re-encoding it would only lose quality.
+  assert.equal(needsFit(400 * 1024, 1200, 800, DEFAULT_LIMITS), false);
+  assert.deepEqual(fitPlan(1200, 800), { kind: 'unchanged' });
+});
+
+test('a big photo is planned down to the longest edge, keeping its aspect', () => {
+  // A 48 MP phone photo: 8000x6000 is far over the limit both in bytes and in pixels.
+  assert.equal(needsFit(9 * 1024 * 1024, 8000, 6000, DEFAULT_LIMITS), true);
+  const plan = fitPlan(8000, 6000);
+  assert.equal(plan.kind, 'resize');
+  if (plan.kind !== 'resize') return;
+  assert.equal(plan.width, PHOTO_MAX_EDGE, 'a landscape photo is bounded by its width');
+  assert.equal(plan.quality, PHOTO_QUALITIES[0]);
+  // A portrait photo is bounded by its height, and the plan still gives the width.
+  const portrait = fitPlan(3024, 8064);
+  assert.equal(portrait.kind, 'resize');
+  if (portrait.kind !== 'resize') return;
+  assert.equal(portrait.width, Math.round((3024 * PHOTO_MAX_EDGE) / 8064));
+});
+
+test('an image merely over the byte limit still gets a plan, even with few pixels', () => {
+  // A layered PNG can be 6 MB at 1500px: too many bytes, but no resize needed.
+  assert.equal(needsFit(6 * 1024 * 1024, 1500, 1000, DEFAULT_LIMITS), true);
+  assert.deepEqual(fitPlan(1500, 1000), { kind: 'unchanged' });
+});
+
+test('the quality ladder descends once each and then runs out', () => {
+  assert.equal(nextQuality(0.8), 0.65);
+  assert.equal(nextQuality(0.65), 0.5);
+  assert.equal(nextQuality(0.5), 0.4);
+  assert.equal(nextQuality(0.4), null, 'the ladder is exhausted, so the original stands');
+  assert.equal(nextQuality(1), 0.8, 'a higher start joins the ladder at its top');
+});
+
+test('the host\'s own limit decides, not a fixed size', () => {
+  const tight = attachLimits({ maxImageBytes: 1024 * 1024 });
+  assert.equal(needsFit(2 * 1024 * 1024, 800, 600, tight), true, '2 MB is over a 1 MB host limit');
+  assert.equal(needsFit(2 * 1024 * 1024, 800, 600, DEFAULT_LIMITS), false, 'and under the usual 5 MB');
 });

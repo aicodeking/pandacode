@@ -13,6 +13,7 @@ import { addMoodboardImage, moodboardImage, moodboardsList, type Moodboard, type
 import { outdated } from '../connect/rpc.ts';
 import { attachLimits, imageKind, imageName, imageRefusal } from '../store/attach.ts';
 import { AccessNote } from '../ui/AccessNote.tsx';
+import { fitImage } from '../ui/attach-image.ts';
 import { uploadAttached } from '../ui/ComposerAttach.tsx';
 import { Button, EmptyState, geometry, haptic, InnerCard, PressScale, showToast, type } from '../ui/ds/index.ts';
 import { showActions } from '../ui/Menu.tsx';
@@ -49,9 +50,13 @@ async function pickPhoto(camera: boolean, device: string): Promise<ImagePicker.I
     const asset = result.canceled ? undefined : result.assets[0];
     if (!asset) return null;
     const caps = capabilitiesOf(device);
-    const refusal = imageRefusal([], asset.base64 ?? '', attachLimits(caps?.kind === 'hello' ? caps.limits : undefined));
+    const limits = attachLimits(caps?.kind === 'hello' ? caps.limits : undefined);
+    // A camera photo is routinely over the host's 5 MB, so it is fitted (downscaled and re-encoded)
+    // before it is checked, exactly as the composer does (ui/attach-image.ts).
+    const fitted = await fitImage(asset.uri, asset.base64 ?? '', asset.width, asset.height, limits);
+    const refusal = imageRefusal([], fitted.base64, limits);
     if (refusal) { Alert.alert('Can’t add this image', refusal); return null; }
-    return asset;
+    return { ...asset, base64: fitted.base64, width: fitted.width, height: fitted.height };
   } catch (error) {
     Alert.alert(camera ? 'Couldn’t open the camera' : 'Couldn’t open your photos', (error as Error).message);
     return null;
