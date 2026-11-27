@@ -801,7 +801,7 @@ async fn fetch_provider(provider: &str, env: &[(String, String)], refresh: bool,
             crate::agent_usage_claude::fetch_claude(&env, refresh, owner).await
         }
         _ if !env.is_empty() => Usage::empty(provider, "unsupported", "Limits are read for each Claude Code and Codex connection. This harness's limits are shown for its global setup only."),
-        "kimi" | "glm" | "opencode" | "antigravity" | "deepseek" => {
+        "kimi" | "glm" | "opencode" | "antigravity" | "deepseek" | "commandcode" => {
             crate::agent_usage_providers::fetch(provider).await
         }
         "grok" => Usage::empty(provider, "unsupported", "Grok does not expose subscription usage through this agent. Check your account dashboard."),
@@ -809,7 +809,6 @@ async fn fetch_provider(provider: &str, env: &[(String, String)], refresh: bool,
         "alibaba" => Usage::empty(provider, "unsupported", "Alibaba Token Plan does not expose plan usage through this agent. Check your Model Studio subscription page."),
         "omp" => Usage::empty(provider, "unsupported", "omp uses the model provider you configured for it. Check that provider's dashboard for limits."),
         "pi" => Usage::empty(provider, "unsupported", "Pi uses the model provider you configured for it. Check that provider's dashboard for limits."),
-        "commandcode" => Usage::empty(provider, "unsupported", "Command Code does not expose credits or limits through this agent. Check Command Code Studio."),
         "cline" => Usage::empty(provider, "unsupported", "Cline does not expose credits or limits through this agent. Check your Cline account."),
         "kilo" => Usage::empty(provider, "unsupported", "Kilo Code does not expose credits or limits through this agent. Check your Kilo account or the model provider's dashboard."),
         "github-copilot" => Usage::empty(provider, "unsupported", "GitHub Copilot CLI does not expose usage limits through this agent. Check your GitHub Copilot settings."),

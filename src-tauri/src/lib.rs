@@ -88,6 +88,7 @@ mod storage;
 #[cfg(test)]
 mod storage_bench;
 mod subagent_state;
+mod debug_bundle;
 mod support;
 mod task_controls;
 mod task_deletion;
@@ -110,6 +111,7 @@ mod headless_bots;
 pub use usage_keychain::handle_usage_keychain_helper;
 pub use cloud_agents::handle_cloud_bridge;
 pub use headless::handle as handle_serve;
+pub use headless::handle_version;
 pub use crash_guard::handle as handle_crash_guard;
 pub use voice::local::handle_speech_worker;
 
@@ -944,7 +946,7 @@ async fn set_resume_at_reset(state: State<'_, AppState>, session_id: String, ena
 #[tauri::command]
 async fn clear_usage_limit(app: tauri::AppHandle, state: State<'_, AppState>, session_id: String) -> Result<()> {
     state.store.lock().map_err(|e| e.to_string())?.clear_limited(&session_id)?;
-    headless::release_limited_hold_to_reset(&session_id, |id, reason| headless::hold_queue(&app, id, reason));
+    headless::release_limited_hold_to_reset(&session_id, |id, reason| headless::emit_queue_hold(&app, id, reason));
     // A team held on this limit goes now, not at the next watchdog tick.
     architect::wake(app);
     Ok(())
@@ -2702,7 +2704,7 @@ async fn launch_operation_admitted(
         let newly_limited = Arc::new(AtomicBool::new(false));
         let sink = RunSink {
             app: app.clone(), cloud, last_event, tracker: tracker.clone(), run_id, assistant: assistant.clone(), subagents: subagents.clone(), store: store.clone(),
-            newly_limited: newly_limited.clone(),
+            newly_limited: newly_limited.clone(), turn_message_id,
             own_run, team_worker, errors: persistence_error.clone(), agents: agents.clone(), goal_reply: goal_reply.clone(), team: team.clone(), coalescer: coalescer.clone(),
         }
         .sink();
@@ -2755,7 +2757,14 @@ async fn launch_operation_admitted(
                 };
                 match remembered.await {
                     Ok(()) if stopped.load(Ordering::SeqCst) => Ok(()),
-                    Ok(()) => providers::run_with_tools_reporting(config, sink, rx, providers::RunTools { host, refused }, reached_harness.clone(), loop_took_stop.clone()).await,
+                    Ok(()) => {
+                        if !cloud_attach && store.lock().is_ok_and(|db| {
+                            db.record_requested_model(turn_message_id, &config.provider, &config.model, config.reasoning_effort.as_deref()).is_err()
+                        }) {
+                            eprintln!("Could not save the requested model for this turn.");
+                        }
+                        providers::run_with_tools_reporting(config, sink, rx, providers::RunTools { host, refused }, reached_harness.clone(), loop_took_stop.clone()).await
+                    }
                     Err(error) => {
                         eprintln!("PandaCode: could not record the tool listing of {session_id}: {error}");
                         Err("Could not save the conversation's tool listing before starting the run. Try again.".into())
@@ -5096,6 +5105,8 @@ pub(crate) fn main_invoke_handler(invoke: tauri::ipc::Invoke<tauri::Wry>) -> boo
         task_controls::archive_codex_task,
         task_controls::export_task,
         task_controls::save_task_export,
+        task_controls::export_debug_bundle,
+        task_controls::save_debug_bundle,
         task_controls::start_harness_terminal,
         list_projects,
         add_project,
@@ -5386,11 +5397,11 @@ pub fn run() {
         // First, as its docs require: a second launch focuses this window instead of opening another.
         .plugin(tauri_plugin_single_instance::init(|app, args, _| {
             // `pandacode --port N` while PandaCode runs: serve the running session there.
-            match web_server::parse_cli(&args, None, None) {
+            match web_server::parse_cli(&args, None, None, None) {
                 Ok(Some(web)) => {
                     let app = app.clone();
                     tauri::async_runtime::spawn(async move {
-                        let result = web_server::start_cli(&app, web.port, web.host).await;
+                        let result = web_server::start_cli(&app, web.port, web.host, &web.allowed_hosts).await;
                         let failure = result.as_ref().err().cloned();
                         if let Some(status) = report_web_start(result, web.host) {
                             // Never the token: app events reach every subscribed WebSocket.
@@ -5440,7 +5451,7 @@ pub fn run() {
             // The local web UI binds a port only when asked: a flag, the environment, or a saved "on".
             match web_server::cli_from_env() {
                 Ok(Some(web)) => {
-                    report_web_start(web_server::start_from_cli(app.handle(), web.port, web.host), web.host);
+                    report_web_start(web_server::start_from_cli(app.handle(), web.port, web.host, &web.allowed_hosts), web.host);
                 }
                 Ok(None) => web_server::start_if_saved(app.handle()),
                 Err(error) => {

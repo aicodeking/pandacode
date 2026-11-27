@@ -170,8 +170,14 @@ clears the variable afterwards, so that terminal keeps the main account).
 A connection joins the pool only once it has a saved login: its own
 `CLAUDE_CODE_OAUTH_TOKEN` or `CODEX_API_KEY`, or the login file its harness
 writes on sign-in in its config folder (Claude: `.claude.json` with the
-signed-in account, or `.credentials.json`; Codex: `auth.json`). The harness's
-own setup always counts. Until then Settings shows the member as **Not signed
+signed-in account, or `.credentials.json`; Codex: `auth.json`). A Codex
+`auth.json` counts only while the login is still usable: its ChatGPT access
+token must not have expired, so a stale or revoked login shows **Not signed
+in** and is skipped instead of being run and failing. An API-key login has no
+expiry and always counts. The harness's own setup is checked the same way for
+Codex; Claude Code's own setup always counts, because on macOS its credentials
+may be held in the Keychain rather than a login file, and a missing file proves
+nothing. Until then Settings shows the member as **Not signed
 in** with a **Sign in** button. Pools are for subscription logins:
 a connection that only sets `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` is not a
 member.
@@ -203,7 +209,11 @@ move them. Choosing a harness or model never changes the Account pool switch;
 pooling is opt-in in Settings and supports only Claude Code and Codex.
 
 Only a turn that fails at its limit moves; a limit inside a turn that still
-finished (a fallback model, overage) does not. Then PandaCode holds the account
+finished (a fallback model, overage) does not. A login that can no longer be
+refreshed (Codex `unauthorized` / `authenticationRequired`) moves the same way,
+because another account can still run the task; that account is held like a
+spent one so it is not picked again, and the note says its login could not be
+refreshed rather than claiming a usage limit. Then PandaCode holds the account
 until its reset (an hour when the reset time is unknown, at most 8 days),
 copies the harness session file into the next account's config folder (Claude:
 `projects/<slug>/<id>.jsonl`; Codex: `sessions/YYYY/MM/DD/rollout-*-<id>.jsonl`;
@@ -322,6 +332,15 @@ console to confirm the account and login method. A detected saved login does not
 verify its plan, quota, expiry, or access to a particular model. See Claude's
 [authentication precedence](https://code.claude.com/docs/en/authentication#authentication-precedence)
 and [environment variable reference](https://code.claude.com/docs/en/env-vars).
+
+## Model selections in task exports
+
+The desktop task export includes the harness, requested model ID and requested effort for
+turns run after this update. An export for a team lead also includes turns run
+by its managed workers. The export adds the last model ID reported in the
+Claude response for each turn, when one is available. A turn without a reported
+ID is marked as unreported. Older turns have no model selection history.
+The model section excludes connection credentials and account details.
 
 ## Conversation continuity
 
@@ -830,6 +849,14 @@ setup never needs the CLI login. The same key also authenticates Command Code's
 Provider API. With neither, `session/new` fails with ACP `-32000` and the turn stops
 with “Command Code is not signed in. Run `command-code login` in a terminal, or save
 an API key in Settings → Agents, then send again.”
+
+**Usage.** With a key saved in Settings → Agents or `COMMAND_CODE_API_KEY`, the Usage
+dialog reads Command Code's own billing endpoints (`/alpha/billing/credits` and
+`/alpha/usage/summary` on `api.commandcode.ai`) and shows the plan's monthly credits,
+then the rolling 5-hour and weekly limits with their reset times. The key is the only
+thing sent, both requests are read-only, and no response text is echoed. A CLI-only
+login (`~/.commandcode/auth.json`) is not read, so that setup asks for a key; the API's
+alpha endpoints may change without notice.
 
 **Models and effort.** `session/new` returns `configOptions` (`model`, and `effort`
 in the `thought_level` category) with display names and descriptions, so discovery

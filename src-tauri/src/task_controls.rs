@@ -621,14 +621,19 @@ pub(super) async fn archive_codex_task(
 #[tauri::command]
 pub(super) async fn export_task(state: State<'_, AppState>, session_id: String) -> Result<String> {
     let store = state.store.lock().map_err(|e| e.to_string())?;
-    let task = store.session(&session_id)?;
+    export_task_text(&store, &session_id)
+}
+
+fn export_task_text(store: &Store, session_id: &str) -> Result<String> {
+    const MAX_EXPORT: usize = 8 * 1024 * 1024;
+    let task = store.session(session_id)?;
     let mut output = format!("# {}\n\n", task.title);
     let mut query = store
         .db
         .prepare_cached("SELECT id,role,content FROM messages WHERE session_id=?1 ORDER BY id")
         .map_err(|e| e.to_string())?;
     let rows = query
-        .query_map([&session_id], |r| {
+        .query_map([session_id], |r| {
             Ok((
                 r.get::<_, i64>(0)?,
                 r.get::<_, String>(1)?,
@@ -639,18 +644,54 @@ pub(super) async fn export_task(state: State<'_, AppState>, session_id: String) 
     for row in rows {
         let (id, role, content) = row.map_err(|e| e.to_string())?;
         let (role, content, _) = crate::architect::internal_turns::project_text(
-            &store,
-            &session_id,
+            store,
+            session_id,
             id,
             &role,
             &content,
         )?;
-        if output.len() + content.len() > 8 * 1024 * 1024 {
+        let section = format!("## {role}\n\n{content}\n\n");
+        if output.len() + section.len() > MAX_EXPORT {
             return Err("This transcript exceeds the 8 MiB export limit.".into());
         }
-        output.push_str(&format!("## {role}\n\n{content}\n\n"));
+        output.push_str(&section);
     }
+    store.append_model_export(session_id, &mut output, MAX_EXPORT)?;
     Ok(output)
+}
+
+#[cfg(test)]
+mod model_export_tests {
+    use super::*;
+
+    #[test]
+    fn export_separates_requested_and_reported_models_for_this_task_and_its_workers() {
+        let store = Store::open(std::path::Path::new(":memory:")).unwrap();
+        let project = store.add_project(&std::env::temp_dir()).unwrap();
+        let lead = store.create_session(&project.id, "claude", "sonnet", "auto").unwrap();
+        let worker = store.create_session(&project.id, "codex", "default", "auto").unwrap();
+        let unrelated = store.create_session(&project.id, "claude", "another-model", "auto").unwrap();
+        store.db.execute(
+            "INSERT INTO architect_workers(parent_session_id,worker_id,session_id) VALUES (?1,'reviewer',?2)",
+            [&lead.id, &worker.id],
+        ).unwrap();
+        let turn = store.insert_message(&lead.id, "user", "Lead prompt").unwrap();
+        let review = store.insert_message(&worker.id, "coordination", "Review request").unwrap();
+        let other = store.insert_message(&unrelated.id, "user", "Unrelated prompt").unwrap();
+        store.record_requested_model(turn, "claude", "sonnet", Some("high")).unwrap();
+        store.record_reported_model(turn, "claude-sonnet-5-5").unwrap();
+        store.record_requested_model(review, "codex", "default", None).unwrap();
+        store.record_requested_model(other, "claude", "another-model", None).unwrap();
+        let export = export_task_text(&store, &lead.id).unwrap();
+        assert!(export.contains("## Model selections"));
+        assert!(export.contains("Lead · `claude` · requested `sonnet` · reported `claude-sonnet-5-5` · effort `high`"));
+        assert!(export.contains("Worker `reviewer` · `codex` · requested `default` · model unreported"));
+        assert!(!export.contains("another-model"));
+        assert!(!export.contains("Review request"));
+        assert!(export_task_text(&store, &worker.id).unwrap().contains("Worker `reviewer`"));
+        store.db.execute("DELETE FROM messages WHERE id=?1", [review]).unwrap();
+        assert!(!export_task_text(&store, &lead.id).unwrap().contains("reviewer"));
+    }
 }
 
 #[tauri::command]
@@ -672,6 +713,48 @@ pub(super) async fn save_task_export(
         return Err("Choose a regular file for the export.".into());
     }
     let text = export_task(state, session_id).await?;
+    blocking(move || std::fs::write(path, text).map_err(|e| e.to_string())).await
+}
+
+#[tauri::command]
+pub(super) async fn export_debug_bundle(
+    state: State<'_, AppState>,
+    session_id: String,
+    note: Option<String>,
+    include_output: Option<bool>,
+    include_changes: Option<bool>,
+) -> Result<String> {
+    let store = state.store.lock().map_err(|e| e.to_string())?;
+    let options = crate::debug_bundle::Options {
+        note,
+        include_output: include_output.unwrap_or(true),
+        include_changes: include_changes.unwrap_or(true),
+    };
+    crate::debug_bundle::build(&store, &session_id, &options)
+}
+
+#[tauri::command]
+pub(super) async fn save_debug_bundle(
+    state: State<'_, AppState>,
+    session_id: String,
+    note: Option<String>,
+    include_output: Option<bool>,
+    include_changes: Option<bool>,
+    path: String,
+) -> Result<()> {
+    let path = PathBuf::from(path);
+    if !path.is_absolute()
+        || !matches!(
+            path.extension().and_then(|s| s.to_str()),
+            Some("md" | "txt")
+        )
+    {
+        return Err("Choose a Markdown or text file for the export.".into());
+    }
+    if std::fs::symlink_metadata(&path).is_ok_and(|m| !m.is_file() || m.file_type().is_symlink()) {
+        return Err("Choose a regular file for the export.".into());
+    }
+    let text = export_debug_bundle(state, session_id, note, include_output, include_changes).await?;
     blocking(move || std::fs::write(path, text).map_err(|e| e.to_string())).await
 }
 

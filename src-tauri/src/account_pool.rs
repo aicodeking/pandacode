@@ -263,9 +263,13 @@ fn identity(provider: &str, connection: Option<&Connection>) -> String {
     }
 }
 
+/// The variables that authenticate a harness without a login file.
+fn credential_names(provider: &str) -> &'static [&'static str] {
+    if provider == "claude" { &["CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"] } else { &["CODEX_API_KEY", "OPENAI_API_KEY"] }
+}
+
 fn owns_credentials(provider: &str, connection: &Connection) -> bool {
-    let names: &[&str] = if provider == "claude" { &["CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"] } else { &["CODEX_API_KEY", "OPENAI_API_KEY"] };
-    names.iter().any(|name| connection.env.get(*name).is_some_and(|value| !value.trim().is_empty()) || connection.secret_env.iter().any(|key| key == *name))
+    credential_names(provider).iter().any(|name| connection.env.get(*name).is_some_and(|value| !value.trim().is_empty()) || connection.secret_env.iter().any(|key| key == name))
 }
 
 fn environment(provider: &str, connection: Option<&Connection>) -> Option<Vec<(String, String)>> {
@@ -291,24 +295,91 @@ fn candidates(provider: &str) -> Vec<(String, bool, Option<String>)> {
         .collect()
 }
 
-/// Whether a member has a saved login. The harness's own setup always counts (it is the user's
-/// main setup); a connection needs its own token or the login file its harness writes on sign-in,
-/// so a folder added with **Add account…** joins the pool only once it is signed in.
-fn signed_in(provider: &str, id: &str) -> bool {
-    let Some(connection) = connections::get(id) else { return id == DEFAULT };
-    signed_in_connection(provider, &connection)
+/// Whether a member has a saved login. A connection needs its own token or the login file its
+/// harness writes on sign-in, so an expired or revoked Codex login is skipped instead of run and
+/// failing. The harness's own setup (id == DEFAULT) is the user's main setup and stays a candidate:
+/// Codex always writes `auth.json`, so its own home is checked like any other member, while Claude
+/// Code may keep its credentials in protected storage (the macOS Keychain) that this code does not
+/// read, so its own setup always counts. A harness whose login cannot be read is kept too.
+pub(crate) fn signed_in(provider: &str, id: &str) -> bool {
+    let connection = connections::get(id);
+    signed_in_member(provider, id, connection.as_ref(), None)
+}
+
+/// `signed_in` with the environment already resolved; `None` reads the harness's own environment.
+fn signed_in_member(provider: &str, id: &str, connection: Option<&Connection>, env: Option<&[(String, String)]>) -> bool {
+    if let Some(connection) = connection {
+        return signed_in_connection(provider, connection);
+    }
+    if id != DEFAULT {
+        return false;
+    }
+    // Only Claude Code and Codex keep a login this code knows how to read. Claude's may be held
+    // by the CLI's protected storage rather than its config folder, and another harness's own
+    // setup is unknown: keep those, because a probe that cannot tell must never drop one.
+    if provider == "claude" || !POOLED.contains(&provider) {
+        return true;
+    }
+    let own;
+    let env = match env {
+        Some(env) => env,
+        None => {
+            own = crate::account_config::environment(provider, &[]);
+            &own
+        }
+    };
+    default_login(provider, env).unwrap_or(true)
+}
+
+fn default_login(provider: &str, env: &[(String, String)]) -> Option<bool> {
+    // A token in the saved or process environment authenticates the CLI without a login file.
+    if credential_names(provider).iter().any(|name| crate::account_config::var(env, name).is_some_and(|value| !value.trim().is_empty())) {
+        return Some(true);
+    }
+    signed_in_files(provider, env)
+}
+
+/// The login files a harness writes on sign-in, under the config folder `env` selects.
+fn signed_in_files(provider: &str, env: &[(String, String)]) -> Option<bool> {
+    let dir = crate::account_config::config_dir(provider, env)?;
+    if provider == "codex" {
+        // A file that exists is not enough: an expired ChatGPT token cannot authenticate.
+        return Some(crate::account_identity::codex_signed_in(&dir.join("auth.json")));
+    }
+    // Metadata also covers logins whose credentials are held by the CLI's protected storage.
+    Some(dir.join(".credentials.json").is_file() || crate::account_identity::claude_json(env).is_some_and(|file| crate::account_identity::claude_signed_in(&file)))
+}
+
+/// Whether the harness's own setup (the one routing launches when a task has no connection) has a
+/// saved login. `None` when that cannot be told: only Claude Code and Codex keep a login this code
+/// can read, Claude Code may keep credentials in protected storage (e.g. the macOS Keychain) that
+/// this code does not read, and an unreadable home folder is no answer. Callers keep the harness
+/// then, so a probe that cannot tell never drops a working one.
+pub(crate) fn default_signed_in(provider: &str) -> Option<bool> {
+    if !POOLED.contains(&provider) {
+        return None;
+    }
+    let env = crate::account_config::environment(provider, &[]);
+    default_signed_in_env(provider, &env)
+}
+
+fn default_signed_in_env(provider: &str, env: &[(String, String)]) -> Option<bool> {
+    if !POOLED.contains(&provider) {
+        return None;
+    }
+    match default_login(provider, env) {
+        // Claude Code on macOS may keep its OAuth login in the Keychain without local files, so
+        // missing files cannot prove the user is signed out.
+        Some(false) if provider == "claude" => None,
+        other => other,
+    }
 }
 
 fn signed_in_connection(provider: &str, connection: &Connection) -> bool {
     if owns_credentials(provider, connection) {
         return true;
     }
-    let Some(dir) = config_dir(provider, Some(connection)) else { return false };
-    if provider == "codex" {
-        return dir.join("auth.json").is_file();
-    }
-    // Metadata also covers logins whose credentials are held by the CLI's protected storage.
-    dir.join(".credentials.json").is_file() || claude_json(Some(connection)).is_some_and(|file| crate::account_identity::claude_signed_in(&file))
+    environment(provider, Some(connection)).and_then(|env| signed_in_files(provider, &env)).unwrap_or(false)
 }
 
 fn members(provider: &str) -> Vec<String> {
@@ -346,6 +417,7 @@ fn who(provider: &str, id: &str) -> crate::account_identity::Identity {
 }
 
 /// Modern config first; legacy is inside an explicit config dir, else directly in HOME.
+#[cfg(test)]
 fn claude_json(connection: Option<&Connection>) -> Option<PathBuf> {
     crate::account_identity::claude_json(&environment("claude", connection)?)
 }
@@ -534,6 +606,107 @@ pub(crate) fn prepare(session_id: &str, provider: &str, resume_id: Option<&str>)
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::Engine as _;
+
+    /// A synthetic compact JWT; only the payload is ever decoded.
+    fn jwt(claims: &str) -> String {
+        format!("h.{}.s", base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(claims))
+    }
+
+    /// A synthetic Codex `auth.json` with a ChatGPT access token that expires at `exp`.
+    fn codex_auth(exp: i64) -> String {
+        let token = jwt(&format!(r#"{{"exp":{exp}}}"#));
+        format!(r#"{{"tokens":{{"access_token":"{token}"}}}}"#)
+    }
+
+    fn unix_now() -> i64 {
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|elapsed| i64::try_from(elapsed.as_secs()).unwrap_or(i64::MAX)).unwrap_or_default()
+    }
+
+    #[test]
+    fn login_files_are_read_from_the_config_folder_the_environment_selects() {
+        let root = std::env::temp_dir().join(format!("pool-login-files-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(root.join(".claude")).unwrap();
+        let claude = [("HOME".to_string(), root.to_string_lossy().into_owned()), ("USERPROFILE".into(), root.to_string_lossy().into_owned()), ("CLAUDE_CONFIG_DIR".into(), String::new())];
+        assert_eq!(signed_in_files("claude", &claude), Some(false));
+        std::fs::write(root.join(".claude/.credentials.json"), "{}").unwrap();
+        assert_eq!(signed_in_files("claude", &claude), Some(true));
+        // Metadata alone covers a login whose credentials its CLI keeps in protected storage.
+        std::fs::remove_file(root.join(".claude/.credentials.json")).unwrap();
+        std::fs::write(root.join(".claude.json"), r#"{"oauthAccount":{"emailAddress":"me@example.test"}}"#).unwrap();
+        assert_eq!(signed_in_files("claude", &claude), Some(true));
+        let codex = [("HOME".to_string(), root.to_string_lossy().into_owned()), ("USERPROFILE".into(), root.to_string_lossy().into_owned()), ("CODEX_HOME".into(), String::new())];
+        assert_eq!(signed_in_files("codex", &codex), Some(false));
+        std::fs::create_dir_all(root.join(".codex")).unwrap();
+        std::fs::write(root.join(".codex/auth.json"), codex_auth(unix_now() + 3600)).unwrap();
+        assert_eq!(signed_in_files("codex", &codex), Some(true));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn codex_login_files_need_a_live_token_not_just_a_file() {
+        let root = std::env::temp_dir().join(format!("pool-codex-login-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(root.join(".codex")).unwrap();
+        let env = [("HOME".to_string(), root.to_string_lossy().into_owned()), ("USERPROFILE".into(), root.to_string_lossy().into_owned()), ("CODEX_HOME".into(), String::new())];
+        let auth = root.join(".codex/auth.json");
+        assert_eq!(signed_in_files("codex", &env), Some(false), "a missing auth.json is not a login");
+        std::fs::write(&auth, "{}").unwrap();
+        assert_eq!(signed_in_files("codex", &env), Some(false), "a file without a token is not a login");
+        std::fs::write(&auth, codex_auth(unix_now() + 3600)).unwrap();
+        assert_eq!(signed_in_files("codex", &env), Some(true));
+        std::fs::write(&auth, codex_auth(unix_now() - 3600)).unwrap();
+        assert_eq!(signed_in_files("codex", &env), Some(false), "an expired access token is not a login");
+        std::fs::write(&auth, r#"{"auth_mode":"apikey"}"#).unwrap();
+        assert_eq!(signed_in_files("codex", &env), Some(true), "an API-key login has no expiry");
+        std::fs::write(&auth, "not json").unwrap();
+        assert_eq!(signed_in_files("codex", &env), Some(false));
+        let connection = Connection { provider: "codex".into(), config_dir: Some(root.join(".codex").to_string_lossy().into_owned()), ..Connection::default() };
+        assert!(!signed_in_connection("codex", &connection), "a named account with a malformed login is skipped");
+        std::fs::write(&auth, codex_auth(unix_now() + 3600)).unwrap();
+        assert!(signed_in_connection("codex", &connection));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_default_setup_with_an_expired_codex_login_is_not_eligible() {
+        let root = std::env::temp_dir().join(format!("pool-codex-default-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(root.join(".codex")).unwrap();
+        // Empty credential names mask any real key in the test process.
+        let env = [
+            ("HOME".to_string(), root.to_string_lossy().into_owned()),
+            ("USERPROFILE".into(), root.to_string_lossy().into_owned()),
+            ("CODEX_HOME".into(), String::new()),
+            ("CODEX_API_KEY".into(), String::new()),
+            ("OPENAI_API_KEY".into(), String::new()),
+        ];
+        let auth = root.join(".codex/auth.json");
+        std::fs::write(&auth, codex_auth(unix_now() - 3600)).unwrap();
+        assert!(!signed_in_member("codex", DEFAULT, None, Some(&env)), "the harness's own expired login is skipped like any other");
+        assert_eq!(default_login("codex", &env), Some(false));
+        assert_eq!(default_signed_in_env("codex", &env), Some(false));
+        std::fs::write(&auth, codex_auth(unix_now() + 3600)).unwrap();
+        assert!(signed_in_member("codex", DEFAULT, None, Some(&env)));
+        assert_eq!(default_login("codex", &env), Some(true));
+        assert_eq!(default_signed_in_env("codex", &env), Some(true));
+        // A key in the harness's environment still authenticates it without a live token.
+        std::fs::write(&auth, "{}").unwrap();
+        let mut keyed = env.to_vec();
+        keyed.push(("CODEX_API_KEY".into(), "synthetic-key".into()));
+        assert!(signed_in_member("codex", DEFAULT, None, Some(&keyed)));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_default_claude_setup_keeps_counting_without_readable_login_files() {
+        // Claude Code on macOS may hold its login in the Keychain, so a folder with no login file
+        // cannot prove the user is signed out; the harness's own setup always counts.
+        let root = std::env::temp_dir().join(format!("pool-claude-default-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(root.join(".claude")).unwrap();
+        let env = [("HOME".to_string(), root.to_string_lossy().into_owned()), ("USERPROFILE".into(), root.to_string_lossy().into_owned()), ("CLAUDE_CONFIG_DIR".into(), String::new())];
+        assert!(signed_in_member("claude", DEFAULT, None, Some(&env)));
+        assert_eq!(default_signed_in_env("claude", &env), None);
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn claude_modern_config_precedes_legacy_for_named_accounts() {

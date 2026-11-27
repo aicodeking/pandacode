@@ -28,5 +28,9 @@ fn main() {
     if pandacode_lib::handle_serve() {
         return;
     }
+    // `pandacode --version`: answers over SSH without starting the GUI or needing a display.
+    if pandacode_lib::handle_version() {
+        return;
+    }
     pandacode_lib::run()
 }

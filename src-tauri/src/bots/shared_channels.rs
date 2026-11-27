@@ -108,6 +108,11 @@ fn member_ids(store: &Store, channel_id: &str) -> Result<Vec<String>> {
     rows.collect::<rusqlite::Result<_>>().map_err(|e| e.to_string())
 }
 
+/// The room row with its ordered members; shared with the Connect bridge (`remote/methods/rooms.rs`).
+pub(crate) fn get(store: &Store, id: &str) -> Result<SharedChannel> {
+    shared_channel(store, id)
+}
+
 fn shared_channel(store: &Store, id: &str) -> Result<SharedChannel> {
     let row: (String, String, Option<String>, bool, i64) = store.db
         .prepare_cached("SELECT id,name,lead_bot_id,archived,updated_at FROM bot_shared_channels WHERE id=?1")
@@ -596,9 +601,18 @@ pub async fn bot_shared_channel_archive(app:tauri::AppHandle,state:State<'_,AppS
 }
 
 #[tauri::command]
-pub async fn bot_shared_channel_post(app:tauri::AppHandle,state:State<'_,AppState>,channel_id:String,text:String,recipients:Option<Vec<String>>) -> Result<()> {
+pub async fn bot_shared_channel_post(app:tauri::AppHandle,_state:State<'_,AppState>,channel_id:String,text:String,recipients:Option<Vec<String>>) -> Result<()> {
+    post(&app,&channel_id,&text,recipients).await
+}
+
+/// Posts to a room: stores the post, then assigns it to the routed members. The desktop
+/// command and the Connect bridge (`remote/methods/rooms.rs`) both come through here, so a
+/// phone post and a composer post behave identically.
+pub(crate) async fn post(app:&tauri::AppHandle,channel_id:&str,text:&str,recipients:Option<Vec<String>>) -> Result<()> {
+    let state=app.state::<AppState>();
     let text=text.trim().to_owned();
     if text.is_empty() || text.chars().count()>MAX_TEXT { return Err("Write a channel message under 16,384 characters.".into()); }
+    let channel_id=channel_id.to_owned();
     let (channel,message_id,recipients)={
         let store=state.store.lock().map_err(|e|e.to_string())?;
         let channel=shared_channel(&store,&channel_id)?;
@@ -610,13 +624,13 @@ pub async fn bot_shared_channel_post(app:tauri::AppHandle,state:State<'_,AppStat
     };
     let posted_at=crate::storage::now();
     for bot_id in recipients {
-        if let Err(error)=send_channel_assignment(&app,&channel_id,&message_id,&bot_id,&text,posted_at).await {
+        if let Err(error)=send_channel_assignment(app,&channel_id,&message_id,&bot_id,&text,posted_at).await {
             if let Ok(store)=state.store.lock() {
                 // send_channel_assignment already recorded the failure once it had a delivery row.
                 let _=store.db.execute("INSERT INTO bot_shared_channel_deliveries(id,channel_id,message_id,bot_id,session_id,status,created_at,updated_at) SELECT ?1,?2,?3,?4,session_id,'failed',?5,?5 FROM bot_threads WHERE bot_id=?4 AND channel_id=?6 AND NOT EXISTS (SELECT 1 FROM bot_shared_channel_deliveries WHERE message_id=?3 AND bot_id=?4) LIMIT 1",params![crate::storage::id(),channel_id,message_id,bot_id,posted_at,DESKTOP]);
                 let _=update_message_status(&store,&message_id);
             }
-            super::note(&app,&bot_id,"error",&format!("Channel assignment failed: {}",error.chars().take(160).collect::<String>()),serde_json::json!({"channelId":channel.id,"messageId":message_id}));
+            super::note(app,&bot_id,"error",&format!("Channel assignment failed: {}",error.chars().take(160).collect::<String>()),serde_json::json!({"channelId":channel.id,"messageId":message_id}));
         }
     }
     {

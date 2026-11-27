@@ -37,6 +37,7 @@ impl TestDatabase {
         for table in V38_TRACKER_TABLES {
             db.execute_batch(&format!("DROP TABLE {table}")).unwrap();
         }
+        db.execute_batch("DROP TABLE task_model_runs").unwrap();
         for index in V38_SCHEMA_INDEXES.into_iter().chain(V38_BOT_INDEXES) {
             db.execute_batch(&format!("DROP INDEX {index}")).unwrap();
         }
@@ -395,6 +396,19 @@ fn v37_0_3_151_upgrade_preserves_every_table_and_passes_integrity_checks() {
     expect(&mut before, "architect_teams", "session_id", "active", &[
         ("content", r#"{"status":"interrupted","generation":6,"revision":8,"pendingTurn":null,"workers":[{"id":"helper","status":"stopped"},{"id":"reviewer","status":"completed"}],"legacyPromptThroughId":3,"error":"PandaCode restarted. Resume explicitly to continue."}"#.to_owned().into()),
     ]);
+    expect_text(
+        &mut before,
+        "architect_teams",
+        "session_id",
+        "limited",
+        "content",
+        r#"{"status":"interrupted","workers":[],"legacyPromptThroughId":0,"pendingTurn":null,"error":"PandaCode restarted. Resume explicitly to continue.","generation":1,"revision":1}"#,
+    );
+    before.insert("task_model_runs".into(), TableSnapshot {
+        columns: ["turn_message_id", "harness", "requested_model", "requested_effort", "reported_model"]
+            .into_iter().map(str::to_owned).collect(),
+        rows: Vec::new(),
+    });
     assert_eq!(snapshot(&store.db, false), before);
     let upgraded = snapshot(&store.db, true);
     drop(store);
@@ -485,7 +499,19 @@ fn legacy_installs_with_partial_bot_schema_and_corrupt_rows_upgrade_cleanly() {
         let started = now();
         let upgraded = Store::open(&fixture.path()).unwrap_or_else(|error| panic!("v{old_version}: {error}"));
         assert!(assert_current(&upgraded.db).is_empty(), "v{old_version}");
-        assert_eq!(assert_backup_rows_preserved(&db, &upgraded.db, Some(started)), 0);
+        assert_eq!(assert_backup_rows_preserved(&db, &upgraded.db, Some(started)), 1);
+        assert_eq!(
+            scalar::<String>(&upgraded.db, "SELECT content FROM architect_teams WHERE session_id='malformed'"),
+            "{broken",
+            "v{old_version}"
+        );
+        let json5_team: (String, i64) = upgraded.db.query_row(
+            "SELECT json_extract(content,'$.status'),json_extract(content,'$.legacyPromptThroughId') FROM architect_teams WHERE session_id='json5'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        ).unwrap();
+        let expected_cutoff: i64 = scalar(&upgraded.db, "SELECT MAX(id) FROM messages WHERE session_id='json5'");
+        assert_eq!(json5_team, ("interrupted".into(), expected_cutoff), "v{old_version}");
         assert_eq!(scalar::<i64>(&upgraded.db, "SELECT count(*) FROM running_tools"), 0);
         let bots = crate::bots::list(&upgraded).unwrap_or_else(|error| panic!("v{old_version} listing bots: {error}"));
         assert_eq!(bots.len(), usize::from(has_bots), "v{old_version}");
@@ -557,14 +583,19 @@ fn expected_recovery(db: &Connection, table: &str, column: &str, rowid: i64, old
             let value = if column == "updated_at" {
                 "?2"
             } else {
-                "json_set(content,'$.status','stopped','$.updatedAt',?2,'$.tools',
-                    json((SELECT json_group_array(json(CASE WHEN json_extract(value,'$.status') IN ('running','waiting')
-                        THEN json_set(value,'$.status','failed') ELSE value END)) FROM json_each(content,'$.tools'))))"
+                "CASE WHEN json_type(content,'$.tools')='array' THEN json_set(content,'$.status','stopped','$.updatedAt',?2,'$.tools',
+                    json((SELECT json_group_array(CASE
+                        WHEN type='object' AND json_extract(value,'$.status') IN ('running','waiting') THEN json(json_set(value,'$.status','failed'))
+                        WHEN type IN ('object','array') THEN json(value)
+                        WHEN type IN ('true','false') THEN json(type)
+                        ELSE value END) FROM json_each(content,'$.tools'))))
+                ELSE json_set(content,'$.status','stopped','$.updatedAt',?2) END"
             };
             conditional("CASE WHEN json_valid(content,6) THEN json_extract(content,'$.status') IN ('running','waiting') END", value)
         }
-        ("architect_teams", "content") => "(SELECT CASE WHEN json_valid(stamped) THEN
-            CASE WHEN json_extract(stamped,'$.status') IN ('running','waiting') THEN
+        ("architect_teams", "content") => "(SELECT CASE WHEN json_valid(stamped,6)
+            AND json_extract(stamped,'$.status') IN ('running','waiting') THEN
+            CASE WHEN json_type(stamped,'$.workers')='array' THEN
                 json_set(stamped,'$.status','interrupted','$.pendingTurn',NULL,
                     '$.error','PandaCode restarted. Resume explicitly to continue.',
                     '$.generation',coalesce(json_extract(stamped,'$.generation'),0)+1,
@@ -572,8 +603,12 @@ fn expected_recovery(db: &Connection, table: &str, column: &str, rowid: i64, old
                     '$.workers',json((SELECT json_group_array(json(CASE WHEN json_extract(value,'$.status') IN ('running','waiting')
                         THEN json_set(value,'$.status','stopped') ELSE value END))
                         FROM json_each(stamped,'$.workers') WHERE type='object')))
-            ELSE stamped END ELSE stamped END FROM (
-                SELECT CASE WHEN json_valid(content) AND coalesce(json_type(content,'$.legacyPromptThroughId'),'null')='null'
+            ELSE json_set(stamped,'$.status','interrupted','$.pendingTurn',NULL,
+                    '$.error','PandaCode restarted. Resume explicitly to continue.',
+                    '$.generation',coalesce(json_extract(stamped,'$.generation'),0)+1,
+                    '$.revision',coalesce(json_extract(stamped,'$.revision'),0)+1) END
+            ELSE stamped END FROM (
+                SELECT CASE WHEN json_valid(content,6) AND coalesce(json_type(content,'$.legacyPromptThroughId'),'null')='null'
                     THEN json_set(content,'$.legacyPromptThroughId',coalesce((SELECT max(id) FROM messages WHERE session_id=old.session_id),0))
                     ELSE content END AS stamped))"
             .into(),

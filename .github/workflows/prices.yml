@@ -1,0 +1,130 @@
+name: Prices
+# The bundled snapshot is the offline fallback for estimated API cost: online,
+# PandaCode fetches LiteLLM's list itself at most daily and saves a copy, so this
+# file matters only when neither is available. LiteLLM's list changes slowly, so
+# a weekly check is enough. The job opens a PR instead of pushing to main so a
+# person sees which models and rates moved before the snapshot ships. The
+# GITHUB_TOKEN default is enough to open it, but a PR it opens does not trigger
+# CI; a maintainer re-runs CI on the branch (or pushes an empty commit) to get
+# the checks. See docs/agent-usage.md for the fallback order.
+on:
+  schedule:
+    # Mondays 04:17 UTC, ahead of the working week.
+    - cron: '17 4 * * 1'
+  workflow_dispatch:
+permissions: {}
+concurrency:
+  # One refresh at a time across every trigger, and never cancel a running one:
+  # it may be mid-push. A fixed group, because `github.ref` differs between the
+  # schedule (refs/heads/main) and a dispatch from another branch, which would
+  # let a manual run overlap a scheduled one.
+  group: prices
+  cancel-in-progress: false
+jobs:
+  check:
+    name: Check for an open refresh PR
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # Read-only: it only lists PRs. `refresh` holds the write scopes.
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      branch: ${{ steps.branch.outputs.branch }}
+      skip: ${{ steps.branch.outputs.skip }}
+    steps:
+      - name: Check open refresh PRs
+        id: branch
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          branch="chore/prices-$(date -u +%F)"
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+          # Any open refresh PR counts, not only today's branch: a dated branch
+          # would otherwise add a duplicate PR every week until one is merged.
+          # gh pages at 30 by default, and this repo has more open PRs than that,
+          # so a last week's refresh PR would fall off the first page and be missed.
+          existing=$(gh pr list --repo "$GITHUB_REPOSITORY" --state open --limit 500 --json number,headRefName --jq '[.[] | select(.headRefName | startswith("chore/prices-"))][0].number // empty')
+          if [ -n "$existing" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "An open PR (#$existing) already refreshes the snapshot; skipping this run." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  refresh:
+    name: Refresh the bundled price snapshot
+    needs: check
+    if: needs.check.outputs.skip != 'true'
+    runs-on: ubuntu-latest
+    # The only job that pushes a branch and opens the PR.
+    permissions:
+      contents: write
+      pull-requests: write
+    # A cold Tauri test build takes most of this; rust-cache makes later runs short.
+    timeout-minutes: 90
+    env:
+      BRANCH: ${{ needs.check.outputs.branch }}
+      PRICE_LIST: /tmp/model_prices_and_context_window.json
+      PRICE_URL: https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json
+      SNAPSHOT: src-tauri/src/usage_ledger/prices.json
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      # Node only runs the small JSON checks below, so no npm cache is needed.
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22'
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: src-tauri
+      - name: Install Linux native dependencies
+        # As in ci.yml: the Rust tests compile the Tauri crate, which needs the GTK/WebKit headers.
+        timeout-minutes: 10
+        run: |
+          sudo apt-get -o Acquire::Retries=3 update
+          sudo apt-get -o Acquire::Retries=3 install -y libwebkit2gtk-4.1-dev libasound2-dev build-essential curl wget file libxdo-dev libssl-dev libdbus-1-dev libayatana-appindicator3-dev librsvg2-dev libfuse2 patchelf xvfb dbus-x11 xdg-utils libasound2-plugins
+      # No npm install or frontend build: the library test compiles in dev mode, where
+      # tauri-codegen does not embed `frontendDist`. Keeping them would only add a
+      # registry outage as a way for a price refresh to fail.
+      - name: Fetch LiteLLM's price list
+        run: |
+          curl -fsSL --retry 3 --max-time 120 -o "$PRICE_LIST" "$PRICE_URL"
+          # A truncated or error response would otherwise regenerate an empty snapshot.
+          node -e 'const fs = require("fs"); const prices = JSON.parse(fs.readFileSync(process.argv[1], "utf8")); if (Object.keys(prices).length < 100) throw new Error("the price list looks truncated");' "$PRICE_LIST"
+      - name: Regenerate the snapshot
+        # The ignored test in pricing.rs/tests.rs owns the regeneration; this only feeds it
+        # the downloaded document. Require it to run: a renamed filter would otherwise match
+        # nothing and pass with an untouched snapshot.
+        run: |
+          UPDATE_PRICE_SNAPSHOT=1 PRICE_LIST_FILE="$PRICE_LIST" cargo test --locked --manifest-path src-tauri/Cargo.toml --lib regenerate_price_snapshot -- --ignored --nocapture 2>&1 | tee "$RUNNER_TEMP/regenerate.log"
+          grep -q 'test result: ok. 1 passed' "$RUNNER_TEMP/regenerate.log"
+      - run: cargo test --locked --manifest-path src-tauri/Cargo.toml --lib usage_ledger
+      - name: Open a PR when the snapshot changed
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if git diff --quiet -- "$SNAPSHOT"; then
+            echo "The bundled price snapshot is unchanged; no PR was opened." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          before=$(git show "HEAD:$SNAPSHOT" | node -e 'let s = ""; process.stdin.on("data", (d) => s += d).on("end", () => console.log(Object.keys(JSON.parse(s)).length))')
+          after=$(node -e 'console.log(Object.keys(JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"))).length)' "$SNAPSHOT")
+          body=$(printf 'The weekly Prices workflow regenerated the bundled LiteLLM price snapshot.\n\n- Entries: %s -> %s\n- Source: %s\n\nThis snapshot is the offline fallback only: online, PandaCode fetches the list itself and saves a copy, and the snapshot is used only when neither is available. No application code changes.\n' "$before" "$after" "$PRICE_URL")
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -- "$SNAPSHOT"
+          changed=$(git diff --cached --name-only)
+          if [ "$changed" != "$SNAPSHOT" ]; then
+            echo "::error::The refresh staged unexpected files: $changed"
+            exit 1
+          fi
+          git commit -m 'chore(prices): refresh the bundled LiteLLM price snapshot'
+          # The dated branch belongs to this workflow, so a retry after a closed PR may replace it.
+          git push --force origin "HEAD:refs/heads/$BRANCH"
+          url=$(gh pr create \
+            --base main \
+            --head "$BRANCH" \
+            --title 'chore(prices): refresh the bundled LiteLLM price snapshot' \
+            --body "$body")
+          echo "Opened $url" >> "$GITHUB_STEP_SUMMARY"

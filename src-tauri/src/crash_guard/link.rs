@@ -405,10 +405,14 @@ pub fn guard_pid() -> Option<u32> {
 mod tests {
     use super::*;
     use std::io::Read;
-    use std::process::{Command, Stdio};
+    use std::os::fd::{FromRawFd, OwnedFd};
+    use std::process::{ChildStdin, Command, Stdio};
 
     /// Tests that change RESPAWNS, NEEDS_RESPAWN or EXITING: one of them drops LINK between steps.
     static RESPAWN_STATE: Mutex<()> = Mutex::new(());
+
+    const EXIT_ALONE: &str = "crash_guard::link::tests::a_line_after_exit_finds_the_guard_gone_quietly";
+    const EXIT_ALONE_ENV: &str = "PANDACODE_CRASH_GUARD_TEST_LINK_EXIT_ALONE";
 
     /// A reader that ignores the pipe (it fills) until `go` exists, then reads it all.
     fn slow_reader(go: &std::path::Path) -> (std::process::Child, Writer) {
@@ -498,14 +502,35 @@ mod tests {
         std::fs::remove_file(go).unwrap();
     }
 
+    /// The writer is a pipe end this test closes itself, in a re-run of this binary that runs
+    /// nothing else, so no other process can hold the read end: a child spawned by another test
+    /// thread inherits every fd of this process until its exec finishes, and a write to that held
+    /// pipe would be delivered instead of reporting the guard gone.
     #[test]
     fn a_line_after_exit_finds_the_guard_gone_quietly() {
+        if std::env::var_os(EXIT_ALONE_ENV).is_none() {
+            let run = Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", EXIT_ALONE, "--test-threads=1", "-q"])
+                .env(EXIT_ALONE_ENV, "1")
+                .stdin(Stdio::null())
+                .output()
+                .unwrap();
+            assert!(run.status.success(), "the lone run failed:\n{}", String::from_utf8_lossy(&run.stdout));
+            return;
+        }
         let _serial = RESPAWN_STATE.lock().unwrap_or_else(|p| p.into_inner());
         // Holding LINK keeps every other send out while EXITING is set.
         let mut slot = lock();
-        let mut child = Command::new("/bin/sh").args(["-c", "exit 0"]).stdin(Stdio::piped()).spawn().unwrap();
-        let writer = Writer::new(child.stdin.take().unwrap());
+        let mut child = Command::new("/bin/sh").args(["-c", "exit 0"]).stdin(Stdio::null()).spawn().unwrap();
         child.wait().unwrap();
+        let mut fds = [0; 2];
+        // SAFETY: pipe(2) into a two-int array; both fds are owned right below.
+        assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0, "pipe: {}", std::io::Error::last_os_error());
+        // SAFETY: fresh fds that nothing else owns.
+        let (reader, write_end) = unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) };
+        let writer = Writer::new(ChildStdin::from(write_end));
+        // Nobody reads: every send reports the guard gone.
+        drop(reader);
         *slot = Some(Link { writer, child });
         let respawns = RESPAWNS.load(Ordering::SeqCst);
         EXITING.store(true, Ordering::SeqCst);

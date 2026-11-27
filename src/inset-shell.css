@@ -1,18 +1,19 @@
 /* Inset shell. One frame tone (--frame) fills the window; the sidebar and the Settings nav have no
  * fill of their own and sit on it. The conversation (.main-pane), the inspector and the Settings
- * content are inset panels (--panel-surface, card radius, 8px from the window edges) with a hairline
+ * content are inset panels (--panel-surface, card radius, 8pt from the window edges) with a hairline
  * edge (--ds-border, drawn as an inset outline above the content) and the soft card shadow; Increase
  * Contrast makes the edge solid. The frame gaps are a window drag region
  * (`data-tauri-drag-region` on .workspace). Base rules (styles.css, settings.css, inspector-bar.css)
  * paint with these tokens; this file holds the tokens and the inset geometry.
  *
  * Top row: the main pane's header and the inspector strip are the title bar's height less the
- * panel's top and bottom inset (--header-height), so their items centre on the traffic lights and
+ * panel's top and bottom inset (--header-height, both in points), so their items centre on the traffic lights and
  * the sidebar's brand row. With the sidebar hidden (collapsed, board, GitHub) the main pane is fully
  * full-bleed (no margin, no radius), so the traffic lights sit on its header; an open inspector is
  * then a flat full-height pane past an 8px frame gutter. */
 .workspace{
-  --inset:8px;--inset-radius:var(--ds-card-radius);--pane-top:var(--inset);
+  /* Native points, like the title bar row: the frame gap divides by the page zoom so Settings → Interface size never fattens it. The panel radius stays the card role, so it scales with the cards the panels hold. */
+  --inset:calc(8px / var(--page-zoom,1));--inset-radius:var(--ds-card-radius);--pane-top:var(--inset);
   --header-height:calc(var(--titlebar-height) - 2 * var(--pane-top));
   /* A step from the sidebar tone toward the text, so the frame reads apart from the panels in both themes. */
   --frame:color-mix(in srgb,var(--sidebar),var(--text) 4%);

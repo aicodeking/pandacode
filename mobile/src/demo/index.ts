@@ -14,6 +14,7 @@ import { handlers as git } from './git.ts';
 import { handlers as github } from './github.ts';
 import { handlers as projects } from './projects.ts';
 import { handlers as rewind } from './rewind.ts';
+import { handlers as rooms } from './rooms.ts';
 import { handlers as schedules } from './schedules.ts';
 import { handlers as search } from './search.ts';
 import { handlers as settings } from './settings.ts';
@@ -34,7 +35,7 @@ export interface DemoContext {
 export type DemoHandler = (ctx: DemoContext, params: any) => unknown;
 export type DemoHandlers = Readonly<Record<string, DemoHandler>>;
 
-export const DEMO_GROUPS: Readonly<Record<string, DemoHandlers>> = { threads, composer, git, github, schedules, files, tools, terminal, admin, design, projects, team, settings, rewind, search };
+export const DEMO_GROUPS: Readonly<Record<string, DemoHandlers>> = { threads, composer, git, github, schedules, files, tools, terminal, admin, design, projects, team, settings, rewind, search, rooms };
 
 /** Every feature handler by method name; a name in two groups is a bug (tests/demo-host.test.ts). */
 export const DEMO_HANDLERS: ReadonlyMap<string, DemoHandler> = new Map(Object.values(DEMO_GROUPS).flatMap(group => Object.entries(group)));

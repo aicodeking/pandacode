@@ -170,6 +170,7 @@ pub(crate) struct RunSink {
     pub(crate) newly_limited: Arc<AtomicBool>,
     pub(crate) tracker: Option<Arc<Mutex<turn_changes::Tracker>>>,
     pub(crate) run_id: String,
+    pub(crate) turn_message_id: i64,
     pub(crate) assistant: Arc<Mutex<String>>,
     pub(crate) subagents: Arc<Mutex<subagent_state::SubagentState>>,
     pub(crate) store: Arc<Mutex<Store>>,
@@ -203,6 +204,12 @@ impl RunSink {
         }
         self.last_event.store(storage::now(), Ordering::SeqCst);
         if e.kind == "done" || e.kind == providers::HEARTBEAT {
+            return;
+        }
+        if e.kind == storage::model_audit::REPORTED_MODEL_EVENT {
+            if self.store.lock().is_ok_and(|db| db.record_reported_model(self.turn_message_id, &e.text).is_err()) {
+                eprintln!("Could not save the reported model for this turn.");
+            }
             return;
         }
         if e.kind == "limited" {

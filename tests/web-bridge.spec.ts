@@ -478,6 +478,71 @@ test.describe('web mode', () => {
     await expect(page.locator('#navigation .task-item .task-indicator.running')).toHaveCount(0);
   });
 
+  test('reconnecting after an idle open session was deleted on the host tears down the open view cleanly', async ({ page }) => {
+    const { host, sessionId, web } = await openQueueClients(page);
+    await expect(selected(page)).toHaveAttribute('data-id', sessionId);
+    await expect(page.locator('#transcript .agent-message')).not.toHaveCount(0);
+
+    const oldSocket = web.socket();
+    await disconnect(web);
+    await host.evaluate(async id => {
+      const { invoke } = await import('/src/preview.ts');
+      await invoke('delete_session', { sessionId: id });
+    }, sessionId);
+
+    web.controls.refuseSockets = false;
+    await expect.poll(() => web.socket() !== oldSocket && web.subscriptions.has('agent-event'), { timeout: 10_000 }).toBe(true);
+    await expect(page.locator(`#navigation .task-item[data-id="${sessionId}"]`)).toHaveCount(0);
+    await expect(selected(page)).toHaveCount(0);
+    await expect(page.locator('#transcript .user-message, #transcript .agent-message')).toHaveCount(0);
+    await expect(page.locator('#transcript .history-notice')).toHaveCount(0);
+    await expect(page.locator('#toast[data-danger]')).toHaveCount(0);
+  });
+
+  test('reconnecting after a missed done clears stale Send now so a later queue-changed does not send from the browser', async ({ page }) => {
+    const urgent = 'Send now before disconnect', later = 'Queued after reconnect';
+    const { host, sessionId, web, finishedRuns, sentCount } = await openQueueClients(page, async (host, sessionId, agentStatus) => {
+      await agentStatus(true);
+      await host.evaluate(async ({ sessionId, urgent }) => {
+        const { invoke } = await import('/src/preview.ts');
+        await invoke('queue_add', { sessionId, text: urgent, attachments: [{ kind: 'path', path: 'README.md' }] });
+        (window as any).__stopHold = true;
+      }, { sessionId, urgent });
+    });
+    const stop = page.getByRole('button', { name: 'Stop task', exact: true });
+    await expect(stop).toBeVisible();
+    await page.getByRole('button', { name: `Send now: ${urgent}`, exact: true }).click();
+    await host.waitForFunction(() => typeof (window as any).__stopRelease === 'function');
+
+    const oldSocket = web.socket();
+    await disconnect(web);
+    await host.evaluate(async sessionId => {
+      const { invoke } = await import('/src/preview.ts');
+      await invoke('set_queue_hold', { sessionId, held: true, reason: 'stopped' });
+    }, sessionId);
+    await expect(host.locator('.queue-hold')).toHaveText('Paused after you stopped the run');
+    await host.evaluate(() => (window as any).__stopRelease());
+    await expect.poll(() => finishedRuns).toEqual([sessionId]);
+
+    web.controls.refuseSockets = false;
+    await expect.poll(() => web.socket() !== oldSocket && web.subscriptions.has('queue-changed'), { timeout: 10_000 }).toBe(true);
+    await expect(stop).toHaveCount(0);
+    await expect(page.locator('.queue-hold')).toHaveText('Paused after you stopped the run');
+    await expect(queueRows(page)).toHaveText([urgent]);
+
+    const queueReply = nextQueueEventReply(page, sessionId);
+    await host.evaluate(async ({ sessionId, later }) => {
+      const { invoke } = await import('/src/preview.ts');
+      await invoke('queue_add', { sessionId, text: later, attachments: [] });
+    }, { sessionId, later });
+    await (await queueReply).finished();
+    await page.waitForTimeout(200);
+
+    await expect(queueRows(page)).toHaveText([urgent, later]);
+    expect(web.commands.filter(command => ['queue_take', 'send_message'].includes(command))).toEqual([]);
+    expect(await sentCount(urgent)).toBe(0);
+  });
+
   test('a concurrent reload superseding an in-flight reconnect list_sessions still reconciles stale streams', async ({ page }) => {
     const { host, sessionId, web, finishedRuns } = await openQueueClients(page);
     const otherId = (await page.locator(`#navigation .task-item:not([data-id="${sessionId}"])`).first().getAttribute('data-id'))!;

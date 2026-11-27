@@ -587,8 +587,8 @@ test('Settings takes the kept-drafts age from the drafts constant, with no secon
   const { DRAFT_MAX_AGE } = await import('../src/launch-restore.ts');
   assert.equal(DRAFT_MAX_AGE, 30 * 24 * 60 * 60 * 1000, 'the spec expects 30 days');
   assert.match(source, /import \{ DRAFT_MAX_AGE \} from '\.\/launch-restore'/);
-  // It ends with when the text goes: sent, cleared (the field or Clear saved drafts), or expired.
-  assert.match(source, /The text of unsent messages \(not attachments or very long drafts\) is saved locally as plain text, so a crash rarely loses it\. A pasted secret is kept too, until the message is sent, cleared, or \$\{Math\.round\(DRAFT_MAX_AGE \/ 86_400_000\)\} days old\./);
+  // It ends with when they go: sent, cleared (the field or Clear saved drafts), or expired.
+  assert.match(source, /The text of unsent messages and the files attached to them \(but not very long drafts\) are saved locally, so a crash rarely loses them\. A pasted secret is kept too, until the message is sent, cleared, or \$\{Math\.round\(DRAFT_MAX_AGE \/ 86_400_000\)\} days old\./);
   assert.doesNotMatch(source, /\b30 days\b|50,000|MAX_DRAFT_CHARS|characters each/);
   // A note under the group, not a row, with Clear saved drafts beside it, described by the note.
   assert.match(source, /<small class="settings-group-note" id="crash-drafts-note">\$\{DRAFTS_KEPT_DETAIL\}<\/small><button type="button" class="ds-btn" id="crash-drafts-clear" aria-describedby="crash-drafts-note">\$\{CLEAR_DRAFTS\}<\/button>/);

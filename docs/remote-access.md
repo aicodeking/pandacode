@@ -1217,6 +1217,9 @@ paged replies take `offset` and answer `next`.
 | `schedules.runNow` | control | B | `scheduleId, sendId?` (sends under the thread's send lock) |
 | `schedules.setEnabled` / `schedules.snooze` | control | O | `scheduleId, enabled` / `scheduleId, minutes` (1 min–7 days) |
 | `schedules.create` / `schedules.update` / `schedules.delete` | full | O | `input` (the desktop's `ScheduleInput`) / `scheduleId, input` / `scheduleId` |
+| `rooms.list` | view | RO | — (the shared bot channels of docs/bots.md, archived ones included) |
+| `rooms.messages` | view | RO | `channelId, limit?` (default 100, up to 10,000). The room with its timeline (`kind`: `user`, `reply` or `assigned`), `activeBotIds` and `hasMore` when older rows exist. |
+| `rooms.post` | full | B | `channelId, text, recipients?, sendId?`. Posts exactly as the desktop composer does, so the room routes it to its lead or to the named members and each starts a turn in its own bot's task. Every bot the post would wake must be Full access with Full access for remote tasks on (`drivable_session_from`, as `task.send`): a room whose members are not all allowed is refused before anything is queued, rather than silently dropping members. |
 | `projects.list` | view | RO | — |
 | `files.list` / `files.read` / `files.image` | view | RO | `target, path?` / `target, path, offset?` / same, images only. Below a full grant, `read`/`image` refuse common secret files (`SECRET_FILES` in `methods/files.rs`: `.env`, `.env.*`, `*.pem`, `*.key`, `id_rsa*`, `id_ed25519*`, `.npmrc`, `.netrc`, `.pypirc`, `credentials*.json`, `*.p12`, `*.keystore`, also through a symlink); `list` still shows their names. |
 | `files.search` / `files.grep` | view | RO | `target, query` / `+ matchCase?, wholeWord?, regex?`. Below a full grant, secret files are left out of the results. |
