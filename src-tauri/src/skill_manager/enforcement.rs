@@ -110,7 +110,26 @@ pub(crate) fn opencode_configuration_at(
     disabled: &BTreeSet<String>,
     cwd: &Path,
 ) -> String {
-    opencode_enforcement_with(text, disabled, &opencode_agents_at(disabled, cwd), None)
+    let agents = opencode_agents_at(disabled, cwd);
+    // The console already has a generated legacy mode. Its project scan can discover V2
+    // even when the inline text supplied by the mode wrapper contains only V1 fields.
+    if let Some((mut config, tokens)) = agents
+        .has_v2_permissions
+        .then(|| parse_inline(text, true))
+        .flatten()
+    {
+        let schema = OpenCodeSchema::detect(&config);
+        if !schema.use_v2_permissions && !schema.use_v2_agents {
+            apply_native_mode(&mut config);
+            let names = deny_names(disabled);
+            if !names.is_empty() {
+                config = deny_everywhere(config, &names, &agents);
+            }
+            let serialized = serde_json::to_string(&config).expect("OpenCode configuration");
+            return restore_opencode_tokens(serialized, &tokens);
+        }
+    }
+    opencode_enforcement_with(text, disabled, &agents, None)
 }
 
 /// The agents an OpenCode launch's denies must reach, rescanned when connection paths change.
@@ -118,7 +137,8 @@ pub(crate) fn opencode_configuration_at(
 pub(crate) struct OpenCodeAgents {
     names: BTreeSet<String>,
     pub(crate) complete: bool,
-    denied_tools: OpenCodeToolDenies,
+    has_v2_permissions: bool,
+    tool_rules: OpenCodeToolRules,
 }
 
 fn deniable(disabled: &BTreeSet<String>) -> bool {
@@ -138,11 +158,12 @@ pub(crate) fn opencode_all_agents_with_env(cwd: Option<&Path>, env: &OpenCodeEnv
     OpenCodeAgents {
         names: agents.names,
         complete: agents.complete,
-        denied_tools: agents.denied_tools,
+        has_v2_permissions: agents.has_v2_permissions,
+        tool_rules: agents.tool_rules,
     }
 }
 
-/// Lists the agents for `cwd`, only when some switched-off name can be denied.
+/// Lists the agents and the permission schema for `cwd`.
 pub(crate) fn opencode_agents_at(disabled: &BTreeSet<String>, cwd: &Path) -> OpenCodeAgents {
     opencode_agents_at_with_env(
         disabled,
@@ -151,20 +172,14 @@ pub(crate) fn opencode_agents_at(disabled: &BTreeSet<String>, cwd: &Path) -> Ope
     )
 }
 
-/// Lists deniable skills' agents using the same effective launch paths as tool grants.
+/// Lists agents using the same effective launch paths as tool grants.
 pub(crate) fn opencode_agents_at_with_env(
     disabled: &BTreeSet<String>,
     cwd: &Path,
     env: &OpenCodeEnv,
 ) -> OpenCodeAgents {
-    if !deniable(disabled) {
-        return OpenCodeAgents {
-            complete: true,
-            ..Default::default()
-        };
-    }
     let agents = opencode_all_agents_with_env(Some(cwd), env);
-    if !agents.complete {
+    if !agents.complete && deniable(disabled) {
         eprintln!(
             "Warning: OpenCode skill denies may not reach every agent for {} (too many agents or an unusable agent name); switched-off skills are asked, not blocked, for this launch.",
             cwd.display()
@@ -181,7 +196,7 @@ pub(crate) fn opencode_enforcement_with(
     agents: &OpenCodeAgents,
     mode_permission: Option<&serde_json::Value>,
 ) -> String {
-    opencode_configuration_with(text, disabled, &agents.names, mode_permission)
+    opencode_configuration_with(text, disabled, agents, mode_permission)
 }
 
 #[cfg(test)]
@@ -189,10 +204,10 @@ fn opencode_configuration(text: &str, disabled: &BTreeSet<String>) -> String {
     opencode_configuration_with(
         text,
         disabled,
-        &["build", "plan", "general", "explore"]
-            .into_iter()
-            .map(String::from)
-            .collect(),
+        &OpenCodeAgents {
+            names: super::opencode_agents::BUILTIN.into_iter().map(String::from).collect(),
+            ..Default::default()
+        },
         None,
     )
 }
@@ -215,101 +230,58 @@ fn exact_tool_name(action: &str) -> Option<&str> {
     .then_some(name)
 }
 
-// Both action spellings refer to the same tool. Track ordered decisions per resource so a
-// later exact allow can cancel a deny, and a resource-specific deny can still suppress grants.
-type ExactToolRules<'a> = BTreeMap<&'a str, BTreeMap<&'a str, bool>>;
-type ExactToolDenies = BTreeMap<String, bool>;
-
-fn record_tool_rule<'a>(
-    rules: &mut ExactToolRules<'a>,
-    name: &'a str,
-    resource: &'a str,
-    effect: &str,
-) {
-    if !PERMISSION_ACTIONS.contains(&effect) {
-        return;
-    }
-    let resources = rules.entry(name).or_default();
-    if resource == "*" {
-        resources.clear();
-    }
-    resources.insert(resource, effect == "deny");
-}
-
-fn v1_tool_rules(permission: &Object) -> ExactToolRules<'_> {
-    let mut rules = BTreeMap::new();
-    for (action, value) in &permission.0 {
-        let Some(name) = exact_tool_name(action) else {
-            continue;
-        };
-        match value {
-            Json::Other(value) => {
-                if let Some(effect) = value.as_str() {
-                    record_tool_rule(&mut rules, name, "*", effect);
-                }
-            }
-            Json::Object(resources) => {
-                for (resource, value) in &resources.0 {
-                    if let Json::Other(value) = value {
-                        if let Some(effect) = value.as_str() {
-                            record_tool_rule(&mut rules, name, resource, effect);
-                        }
-                    }
-                }
-            }
-        }
-    }
-    rules
-}
-
-fn collect_exact_denies(rules: ExactToolRules<'_>, denied: &mut ExactToolDenies) {
-    for (name, resources) in rules {
-        if resources.values().any(|deny| *deny) {
-            // True denotes a deny for the entire tool. A scoped deny only suppresses grants.
-            let whole_tool = resources.get("*") == Some(&true) && resources.values().all(|deny| *deny);
-            *denied.entry(name.to_owned()).or_default() |= whole_tool;
-        }
-    }
-}
-
-fn collect_permission_denies(config: &Object, denied: &mut ExactToolDenies) {
-    if let Some(Json::Object(permission)) = config.get("permission") {
-        collect_exact_denies(v1_tool_rules(permission), denied);
-    }
-    if let Some(Json::Other(serde_json::Value::Array(permissions))) = config.get("permissions") {
-        let mut rules = BTreeMap::new();
-        for rule in permissions {
-            if let (Some(name), Some(resource), Some(effect)) = (
-                rule["action"].as_str().and_then(exact_tool_name),
-                rule["resource"].as_str(),
-                rule["effect"].as_str(),
-            ) {
-                record_tool_rule(&mut rules, name, resource, effect);
-            }
-        }
-        collect_exact_denies(rules, denied);
-    }
+#[derive(Clone, Copy)]
+enum ToolGrant {
+    Allow,
+    Deny,
+    Withhold,
 }
 
 #[derive(Clone, Debug, Default)]
-pub(super) struct OpenCodeToolDenies {
-    global: ExactToolDenies,
-    agents: BTreeMap<String, ExactToolDenies>,
+struct ExactToolRules {
+    // The trailing action alias shares the same entry.
+    tools: BTreeMap<String, ExactTool>,
+    withheld_at: Option<usize>,
 }
 
-impl OpenCodeToolDenies {
-    fn collect_config(&mut self, config: &Object) {
-        collect_permission_denies(config, &mut self.global);
-        for key in ["agent", "agents", "mode"] {
-            if let Some(Json::Object(agents)) = config.get(key) {
-                for (name, agent) in &agents.0 {
-                    if let Json::Object(agent) = agent {
-                        let mut denied = BTreeMap::new();
-                        collect_permission_denies(agent, &mut denied);
-                        if !denied.is_empty() {
-                            let agent = self.agents.entry(name.clone()).or_default();
-                            for (tool, whole_tool) in denied {
-                                *agent.entry(tool).or_default() |= whole_tool;
+#[derive(Clone, Debug, Default)]
+struct ExactTool {
+    layer: usize,
+    // False is an allow, true a deny.
+    resources: BTreeMap<String, bool>,
+}
+
+impl ExactToolRules {
+    fn record(&mut self, action: &str, resource: &str, effect: &str, layer: usize) {
+        let Some(name) = exact_tool_name(action) else {
+            return;
+        };
+        let deny = match effect {
+            "allow" => false,
+            "deny" => true,
+            _ => return,
+        };
+        let tool = self.tools.entry(name.to_owned()).or_default();
+        tool.layer = layer;
+        if resource == "*" {
+            tool.resources.clear();
+        }
+        tool.resources.insert(resource.to_owned(), deny);
+    }
+
+    fn collect_v1(&mut self, permission: &Object, layer: usize) {
+        for (action, value) in &permission.0 {
+            match value {
+                Json::Other(value) => {
+                    if let Some(effect) = value.as_str() {
+                        self.record(action, "*", effect, layer);
+                    }
+                }
+                Json::Object(resources) => {
+                    for (resource, value) in &resources.0 {
+                        if let Json::Other(value) = value {
+                            if let Some(effect) = value.as_str() {
+                                self.record(action, resource, effect, layer);
                             }
                         }
                     }
@@ -318,13 +290,105 @@ impl OpenCodeToolDenies {
         }
     }
 
+    fn collect_permissions(&mut self, config: &Object, layer: usize) {
+        if let Some(Json::Object(permission)) = config.get("permission") {
+            self.collect_v1(permission, layer);
+        }
+        if let Some(Json::Other(serde_json::Value::Array(permissions))) = config.get("permissions")
+        {
+            for rule in permissions {
+                if let (Some(action), Some(resource), Some(effect)) = (
+                    rule["action"].as_str(),
+                    rule["resource"].as_str(),
+                    rule["effect"].as_str(),
+                ) {
+                    self.record(action, resource, effect, layer);
+                }
+            }
+        }
+    }
+
+    fn withhold(&mut self, layer: usize) {
+        self.tools.clear();
+        self.withheld_at = Some(layer);
+    }
+
+    fn decision(&self, tool: &str) -> Option<(usize, ToolGrant)> {
+        if let Some(ExactTool { layer, resources }) = self.tools.get(tool) {
+            let denied = resources.values().any(|deny| *deny);
+            let whole = resources.get("*").copied();
+            let decision = match whole {
+                Some(false) if !denied => Some(ToolGrant::Allow),
+                Some(true) if resources.values().all(|deny| *deny) => Some(ToolGrant::Deny),
+                _ if denied => Some(ToolGrant::Withhold),
+                _ => None,
+            };
+            if let Some(decision) = decision {
+                return Some((*layer, decision));
+            }
+        }
+        self.withheld_at.map(|layer| (layer, ToolGrant::Withhold))
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub(super) struct OpenCodeToolRules {
+    layer: usize,
+    global: ExactToolRules,
+    agents: BTreeMap<String, ExactToolRules>,
+}
+
+impl OpenCodeToolRules {
+    fn collect_config(&mut self, config: &Object) {
+        self.layer += 1;
+        self.global.collect_permissions(config, self.layer);
+        for key in ["mode", "agent", "agents"] {
+            if let Some(Json::Object(agents)) = config.get(key) {
+                for (name, agent) in &agents.0 {
+                    if let Json::Object(agent) = agent {
+                        self.agents
+                            .entry(name.clone())
+                            .or_default()
+                            .collect_permissions(agent, self.layer);
+                    }
+                }
+            }
+        }
+    }
+
+    pub(super) fn collect_markdown(
+        &mut self,
+        name: &str,
+        rules: Option<Vec<(String, String, String)>>,
+    ) {
+        self.layer += 1;
+        let scope = self.agents.entry(name.to_owned()).or_default();
+        if let Some(rules) = rules {
+            for (action, resource, effect) in rules {
+                scope.record(&action, &resource, &effect, self.layer);
+            }
+        } else {
+            scope.withhold(self.layer);
+        }
+    }
+
+    pub(super) fn withhold_config(&mut self) {
+        self.layer += 1;
+        self.global.withhold(self.layer);
+        self.agents.clear();
+    }
+
     fn effect(&self, tool: &str, agent: Option<&str>) -> Option<&'static str> {
-        let global = self.global.get(tool);
-        let agent = agent.and_then(|name| self.agents.get(name)?.get(tool));
-        match (global, agent) {
-            (Some(true), _) | (_, Some(true)) => Some("deny"),
-            (None, None) => Some("allow"),
-            _ => None,
+        let global = self.global.decision(tool);
+        let agent = agent.and_then(|name| self.agents.get(name)?.decision(tool));
+        let effective = global
+            .into_iter()
+            .chain(agent)
+            .max_by_key(|(layer, _)| *layer);
+        match effective {
+            None | Some((_, ToolGrant::Allow)) => Some("allow"),
+            Some((_, ToolGrant::Deny)) => Some("deny"),
+            Some((_, ToolGrant::Withhold)) => None,
         }
     }
 }
@@ -333,15 +397,19 @@ impl OpenCodeToolDenies {
 pub(super) fn discover_opencode_config(
     text: &str,
     add: &mut impl FnMut(Option<&str>),
-    denied: &mut OpenCodeToolDenies,
+    tool_rules: &mut OpenCodeToolRules,
+    has_v2_permissions: &mut bool,
 ) {
     let (scrubbed, tokens) = scrub_opencode_tokens(text);
     let Ok(config) = serde_json::from_str::<Object>(&crate::vsix_themes::strip_jsonc(&scrubbed))
     else {
         add(None);
+        tool_rules.withhold_config();
         return;
     };
-    denied.collect_config(&config);
+    let schema = OpenCodeSchema::detect(&config);
+    *has_v2_permissions |= schema.use_v2_permissions || schema.use_v2_agents;
+    tool_rules.collect_config(&config);
     for key in ["agent", "agents", "mode"] {
         match config.get(key) {
             Some(Json::Object(agents)) => {
@@ -355,59 +423,122 @@ pub(super) fn discover_opencode_config(
     }
 }
 
-fn apply_mode_permission(config: &mut Object, policy: &serde_json::Value) {
-    let apply = |target: &mut Object| {
+fn mode_permission_exception(action: &str) -> bool {
+    exact_tool_name(action).is_some() || matches!(action, "skill" | "skill *")
+}
+
+fn apply_mode_permission(config: &mut Object, policy: &serde_json::Value, native: bool) {
+    let apply_v1 = |target: &mut Object| {
         let mut permission: Object =
             serde_json::from_value(policy.clone()).expect("OpenCode mode permission");
         if let Some(Json::Object(old)) = target.take("permission") {
-            let mut denied = BTreeMap::new();
-            collect_exact_denies(v1_tool_rules(&old), &mut denied);
             for (key, value) in old.0 {
-                if exact_tool_name(&key).is_some_and(|name| denied.contains_key(name)) {
+                if mode_permission_exception(&key) {
                     permission.put(key, value);
                 }
             }
         }
         target.put("permission".into(), Json::Object(permission));
     };
-    apply(config);
+    apply_v1(config);
     let agents = config.child("agent").object(false);
     for name in ["build", "plan"] {
-        apply(agents.child(name).object(false));
+        apply_v1(agents.child(name).object(false));
     }
+    if native {
+        apply_native_mode(config);
+    }
+}
+
+fn apply_native_mode(config: &mut Object) {
+    let translate = |target: &Object| {
+        let mut permissions = Vec::new();
+        if let Some(Json::Object(old)) = target.get("permission") {
+            for (action, value) in &old.0 {
+                let action = match action.as_str() {
+                    "bash" => "shell",
+                    "task" => "subagent",
+                    "skill *" => "skill",
+                    action => action,
+                };
+                match value {
+                    Json::Other(value) if value.is_string() => {
+                        permissions.push(permission_rule(action, value));
+                    }
+                    Json::Object(resources) => {
+                        for (resource, effect) in &resources.0 {
+                            if let Json::Other(effect) = effect {
+                                permissions.push(serde_json::json!({
+                                    "action": action, "resource": resource, "effect": effect
+                                }));
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        permissions
+    };
+    let apply = |target: &mut Object, mut permissions: Vec<serde_json::Value>| {
+        if let Some(Json::Other(serde_json::Value::Array(old))) = target.take("permissions") {
+            permissions.extend(old.into_iter().filter(|rule| {
+                rule["action"]
+                    .as_str()
+                    .is_some_and(mode_permission_exception)
+            }));
+        }
+        target.put(
+            "permissions".into(),
+            Json::Other(serde_json::Value::Array(permissions)),
+        );
+    };
+    let permissions = translate(config);
+    apply(config, permissions);
+    let legacy = config.child("agent").object(false);
+    let primary = ["build", "plan"].map(|name| (name, translate(legacy.child(name).object(false))));
+    let agents = config.child("agents").object(false);
+    for (name, permissions) in primary {
+        apply(agents.child(name).object(false), permissions);
+    }
+}
+
+fn permission_rule(action: &str, effect: impl Serialize) -> serde_json::Value {
+    serde_json::json!({"action": action, "resource": "*", "effect": effect})
 }
 
 /// Two exact action spellings for each served tool. A whole-tool deny also follows the
 /// mode's wildcard in each relevant layer, which would otherwise allow it in Full access.
 fn served_tool_rules<'a>(
     served: &'a [&str],
-    denied: &'a OpenCodeToolDenies,
+    tool_rules: &'a OpenCodeToolRules,
     agent: Option<&'a str>,
 ) -> impl Iterator<Item = (String, &'static str)> + 'a {
-    served.iter().filter_map(move |name| {
-        let effect = denied.effect(name, agent)?;
-        let name = format!("{TOOL_PERMISSION_PREFIX}{name}");
-        let trailing = trailing_key(&name);
-        Some([(name, effect), (trailing, effect)])
-    }).flatten()
+    served
+        .iter()
+        .filter_map(move |name| {
+            let effect = tool_rules.effect(name, agent)?;
+            let name = format!("{TOOL_PERMISSION_PREFIX}{name}");
+            let trailing = trailing_key(&name);
+            Some([(name, effect), (trailing, effect)])
+        })
+        .flatten()
 }
 
 /// Appends exact bound-server grants to an OpenCode 2.x `permissions` array field, creating it
 /// when absent so OpenCode 2.x (which ignores legacy `agent.<name>` when `agents.<name>` exists)
 /// still carries the grants after any project-level agent wildcards.
-fn grant_v2_permissions(
-    target: &mut Object,
-    rules: impl Iterator<Item = (String, &'static str)>,
-) {
+fn grant_v2_permissions(target: &mut Object, rules: impl Iterator<Item = (String, &'static str)>) {
+    let mut rules = rules.peekable();
+    if rules.peek().is_none() {
+        return;
+    }
     if target.get("permissions").is_none() {
         target.put("permissions".into(), Json::Other(serde_json::json!([])));
     }
-    if let Some(Json::Other(serde_json::Value::Array(permissions))) = target.get_mut("permissions") {
-        permissions.extend(rules.map(|(action, effect)| serde_json::json!({
-            "action": action,
-            "resource": "*",
-            "effect": effect,
-        })));
+    if let Some(Json::Other(serde_json::Value::Array(permissions))) = target.get_mut("permissions")
+    {
+        permissions.extend(rules.map(|(action, effect)| permission_rule(&action, effect)));
     }
 }
 
@@ -445,12 +576,13 @@ fn parse_permission_env(permission: Option<&str>, create_if_missing: bool) -> Op
 fn grant_permission_env(
     permission: Option<&str>,
     served: &[&str],
-    denied: &mut OpenCodeToolDenies,
+    tool_rules: &mut OpenCodeToolRules,
     create_if_missing: bool,
 ) -> Option<String> {
     let mut rules = parse_permission_env(permission, create_if_missing)?;
-    collect_exact_denies(v1_tool_rules(&rules), &mut denied.global);
-    grant_v1_permissions(&mut rules, served_tool_rules(served, denied, None));
+    tool_rules.layer += 1;
+    tool_rules.global.collect_v1(&rules, tool_rules.layer);
+    grant_v1_permissions(&mut rules, served_tool_rules(served, tool_rules, None));
     Some(serde_json::to_string(&rules).expect("OpenCode permission"))
 }
 
@@ -481,23 +613,25 @@ pub(crate) fn opencode_tool_grants_with(
         return None;
     }
     let inline = parse_inline(text, false);
-    let mut denied = agents.denied_tools.clone();
+    let mut tool_rules = agents.tool_rules.clone();
     if let Some((inline, _)) = &inline {
-        denied.collect_config(inline);
+        tool_rules.collect_config(inline);
     }
-    let permission = grant_permission_env(permission, served, &mut denied, inline.is_none());
+    let permission = grant_permission_env(permission, served, &mut tool_rules, inline.is_none());
     let Some((mut inline, tokens)) = inline else {
         return Some((text.to_owned(), permission));
     };
     let schema = OpenCodeSchema::detect(&inline);
 
-    if schema.use_v2_permissions {
-        grant_v2_permissions(&mut inline, served_tool_rules(served, &denied, None));
+    let use_v2_permissions = schema.use_v2_permissions || agents.has_v2_permissions;
+    let use_v2_agents = schema.use_v2_agents || agents.has_v2_permissions;
+    if use_v2_permissions {
+        grant_v2_permissions(&mut inline, served_tool_rules(served, &tool_rules, None));
     }
-    if !schema.use_v2_permissions || schema.has_v1_permission {
+    if !use_v2_permissions || schema.has_v1_permission {
         grant_v1_permissions(
             inline.child("permission").object(true),
-            served_tool_rules(served, &denied, None),
+            served_tool_rules(served, &tool_rules, None),
         );
     }
 
@@ -509,7 +643,7 @@ pub(crate) fn opencode_tool_grants_with(
         Some(Json::Object(agents)) => agents.0.iter().map(|(k, _)| k.clone()).collect(),
         _ => BTreeSet::new(),
     };
-    if schema.use_v2_agents {
+    if use_v2_agents {
         let agents = inline.child("agents").object(false);
         for name in &target_agents {
             if !v1_agent_names.contains(*name) {
@@ -518,22 +652,22 @@ pub(crate) fn opencode_tool_grants_with(
         }
         for (name, agent) in &mut agents.0 {
             if let Json::Object(agent) = agent {
-                grant_v2_permissions(agent, served_tool_rules(served, &denied, Some(name)));
+                grant_v2_permissions(agent, served_tool_rules(served, &tool_rules, Some(name)));
             }
         }
     }
-    if !schema.use_v2_agents || schema.has_v1_agent {
+    if !use_v2_agents || schema.has_v1_agent {
         let agents = inline.child("agent").object(false);
-        if !schema.use_v2_agents {
+        if !use_v2_agents {
             for name in &target_agents {
                 agents.child(name);
             }
         }
         for (name, agent) in &mut agents.0 {
-            grant_v1_permissions(
-                agent.object(false).child("permission").object(true),
-                served_tool_rules(served, &denied, Some(name)),
-            );
+            let mut rules = served_tool_rules(served, &tool_rules, Some(name)).peekable();
+            if rules.peek().is_some() {
+                grant_v1_permissions(agent.object(false).child("permission").object(true), rules);
+            }
         }
     }
     let serialized = serde_json::to_string(&inline).expect("OpenCode configuration");
@@ -656,14 +790,16 @@ pub(crate) fn opencode_permission(
 fn deny_everywhere(
     mut config: Object,
     names: &[&String],
-    known_agents: &BTreeSet<String>,
+    discovered: &OpenCodeAgents,
 ) -> Object {
     let schema = OpenCodeSchema::detect(&config);
+    let use_v2_permissions = schema.use_v2_permissions || discovered.has_v2_permissions;
+    let use_v2_agents = schema.use_v2_agents || discovered.has_v2_permissions;
 
-    if schema.use_v2_permissions {
+    if use_v2_permissions {
         deny_v2_permissions(&mut config, names);
     }
-    if !schema.use_v2_permissions || schema.has_v1_permission {
+    if !use_v2_permissions || schema.has_v1_permission {
         deny_rules(config.child("permission").object(true), names);
     }
 
@@ -671,9 +807,9 @@ fn deny_everywhere(
         Some(Json::Object(agents)) => agents.0.iter().map(|(k, _)| k.clone()).collect(),
         _ => BTreeSet::new(),
     };
-    if schema.use_v2_agents {
+    if use_v2_agents {
         let agents = config.child("agents").object(false);
-        for name in known_agents {
+        for name in &discovered.names {
             if !v1_agent_names.contains(name) {
                 agents.child(name);
             }
@@ -684,10 +820,10 @@ fn deny_everywhere(
             }
         }
     }
-    if !schema.use_v2_agents || schema.has_v1_agent {
+    if !use_v2_agents || schema.has_v1_agent {
         let agents = config.child("agent").object(false);
-        if !schema.use_v2_agents {
-            for name in known_agents {
+        if !use_v2_agents {
+            for name in &discovered.names {
                 agents.child(name).object(false);
             }
         }
@@ -703,7 +839,7 @@ fn deny_everywhere(
 fn opencode_configuration_with(
     text: &str,
     disabled: &BTreeSet<String>,
-    known_agents: &BTreeSet<String>,
+    agents: &OpenCodeAgents,
     mode_permission: Option<&serde_json::Value>,
 ) -> String {
     let names = deny_names(disabled);
@@ -717,10 +853,12 @@ fn opencode_configuration_with(
         (Object::default(), OpenCodeTokens::default())
     });
     if let Some(policy) = mode_permission {
-        apply_mode_permission(&mut config, policy);
+        let schema = OpenCodeSchema::detect(&config);
+        let native = agents.has_v2_permissions || schema.use_v2_permissions || schema.use_v2_agents;
+        apply_mode_permission(&mut config, policy, native);
     }
     if !names.is_empty() {
-        config = deny_everywhere(config, &names, known_agents);
+        config = deny_everywhere(config, &names, agents);
     }
     let serialized = serde_json::to_string(&config).expect("OpenCode configuration");
     restore_opencode_tokens(serialized, &tokens)
@@ -762,7 +900,7 @@ pub(crate) fn opencode_launch_with(
     }
     let permission = opencode_permission(permission, disabled);
     if let Some((config, tokens)) = parse_inline(text, true) {
-        let serialized = serde_json::to_string(&deny_everywhere(config, &names, &agents.names))
+        let serialized = serde_json::to_string(&deny_everywhere(config, &names, agents))
             .expect("OpenCode configuration");
         return OpenCodeLaunch {
             content: restore_opencode_tokens(serialized, &tokens),

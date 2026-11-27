@@ -65,6 +65,45 @@ fn a_glob_list_keeps_classes_escapes_and_real_paths_whole() {
 }
 
 #[test]
+fn globs_keep_existing_absolute_comma_paths_whole() {
+    let repo = Repo::new();
+    for path in ["a,b.txt", "b.txt", "src/a.rs", "tests/b.rs", "other.rs"] {
+        repo.write(path, "needle\n");
+    }
+    let limit = limit::Limit::new(Arc::default());
+    let ctx = Ctx { root: &repo.0, given: &repo.0, strict: false, limit: &limit, policy: index::Policy::NeverIndex };
+    let check_comma_path = |path: String| {
+        let globs = glob::Globs::new(&ctx, &[path]);
+        assert!(globs.errors.is_empty(), "{:?}", globs.errors);
+        assert!(globs.allows("a,b.txt"));
+        assert!(!globs.allows("b.txt"), "the file name was split at the comma");
+    };
+    check_comma_path("a,b.txt".into());
+    let absolute = repo.0.join("a,b.txt");
+    check_comma_path(absolute.to_str().unwrap().to_owned());
+    #[cfg(windows)]
+    check_comma_path(crate::path_match::ordinary_windows_path(absolute.to_str().unwrap()).unwrap());
+
+    let globs = glob::Globs::new(&ctx, &["src/*.rs,tests/*.rs".into()]);
+    assert!(globs.errors.is_empty(), "{:?}", globs.errors);
+    assert!(globs.allows("src/a.rs"));
+    assert!(globs.allows("tests/b.rs"));
+    assert!(!globs.allows("other.rs"));
+}
+
+#[test]
+fn windows_absolute_comma_paths_strip_the_volume_but_drive_relative_paths_split() {
+    let root = Path::new(r"\\?\C:\repo");
+    let given = Path::new(r"C:\repo");
+    let split = |raw| glob::split_list(raw, |item| {
+        let relative = relative_under(root, given, item, true);
+        glob::literal_glob_path(item, relative) == Some("a,b.txt")
+    });
+    assert_eq!(split(r"C:\repo\a,b.txt"), [r"C:\repo\a,b.txt"]);
+    assert_eq!(split(r"C:a,b.txt"), ["C:a", "b.txt"]);
+}
+
+#[test]
 fn a_dot_glob_means_its_folder() {
     let repo = Repo::new();
     repo.write("src/a.rs", "needle\n");

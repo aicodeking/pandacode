@@ -973,7 +973,12 @@ pub(crate) fn sweep_cline_mcp_settings(data: &Path) {
 }
 
 pub(crate) fn opencode_configuration(mode: &str) -> String {
-    acp::configuration(mode, std::env::var("OPENCODE_CONFIG_CONTENT").ok().as_deref())
+    acp::configuration(
+        mode,
+        std::env::var("OPENCODE_CONFIG_CONTENT").ok().as_deref(),
+        &Default::default(),
+        &Default::default(),
+    )
 }
 
 /// The saved Command Code key for discovery paths that build their own process.
@@ -4556,22 +4561,23 @@ fn configure_command(command: &mut Command, config: &RunConfig) {
     configure_command_with_skills(command, config, &Default::default());
 }
 
-/// Lists OpenCode's agents for this launch itself; `run_inner` passes its initial scan instead.
 fn configure_command_with_skills(
     command: &mut Command,
     config: &RunConfig,
     disabled: &std::collections::BTreeSet<String>,
 ) {
-    let agents = (config.provider == "opencode")
-        .then(|| crate::skill_manager::opencode_agents_at(disabled, &config.cwd));
-    configure_command_with_agents(command, config, disabled, &agents.unwrap_or_default());
+    let agents = (config.provider == "opencode").then(|| {
+        let env = opencode_environment(command);
+        crate::skill_manager::opencode_agents_at_with_env(disabled, &config.cwd, &env)
+    });
+    configure_command_with_agents(command, config, disabled, agents.as_ref());
 }
 
 fn configure_command_with_agents(
     command: &mut Command,
     config: &RunConfig,
     disabled: &std::collections::BTreeSet<String>,
-    opencode_agents: &crate::skill_manager::OpenCodeAgents,
+    opencode_agents: Option<&crate::skill_manager::OpenCodeAgents>,
 ) {
     claude_auth::configure(command, &config.provider);
     let use_model = !config.model.is_empty() && config.model != "default";
@@ -4662,16 +4668,11 @@ fn configure_command_with_agents(
             command.env_remove("CLAUDECODE");
         }
     }
-    if config.provider == "opencode" {
+    if let Some(agents) = opencode_agents.filter(|_| config.provider == "opencode") {
         let inline = command_environment(command, "OPENCODE_CONFIG_CONTENT");
         command.env(
             "OPENCODE_CONFIG_CONTENT",
-            crate::skill_manager::opencode_enforcement_with(
-                inline.as_deref().unwrap_or("{}"),
-                disabled,
-                opencode_agents,
-                None,
-            ),
+            acp::configuration(&config.mode, inline.as_deref(), disabled, agents),
         );
     }
 }
@@ -4725,7 +4726,7 @@ async fn run_inner(
         // Refuses a typed switched-off skill before anything is sent, then adds reminders.
         crate::skill_manager::prepare_turn(&mut config, &disabled)?;
         // Initial roster for configuration; local launches rescan after connection overrides.
-        let agents = if config.provider == "opencode" {
+        let agents = if config.provider == "opencode" && !disabled.is_empty() {
             crate::skill_manager::opencode_agents_at(&disabled, &config.cwd)
         } else {
             Default::default()
@@ -4742,7 +4743,11 @@ async fn run_inner(
     // tools stay on this computer (docs/cloud-agents.md, step 5).
     if let Some(command) = crate::cloud_agents::transport::command(&config, |command| {
         crate::blocking_snapshot(|| {
-            configure_command_with_agents(command, &config, &disabled, &opencode_agents)
+            if config.provider == "opencode" && disabled.is_empty() {
+                configure_command_with_skills(command, &config, &disabled);
+            } else {
+                configure_command_with_agents(command, &config, &disabled, Some(&opencode_agents));
+            }
         })
     })
     .await?
@@ -4768,13 +4773,12 @@ async fn run_inner(
     let mut command = provider_command(&config.provider, &path)?;
     let defer_antigravity_gemini_dir = config.provider == "antigravity" && connection.is_some();
     let mut command = {
-        let (config, disabled, agents) =
-            (config.clone(), disabled.clone(), opencode_agents.clone());
+        let (config, disabled) = (config.clone(), disabled.clone());
         crate::blocking(move || {
             if defer_antigravity_gemini_dir {
                 acp::configure_antigravity_base(&mut command, &config);
             } else {
-                configure_command_with_agents(&mut command, &config, &disabled, &agents);
+                configure_command_with_agents(&mut command, &config, &disabled, None);
             }
             Ok(command)
         })
@@ -4797,7 +4801,7 @@ async fn run_inner(
             .map_or((&[], &[]), |connection| (&connection.env, &connection.args));
         acp::antigravity_gemini_dir_isolated(&mut command, env, args)?;
     }
-    if config.provider == "opencode" && !disabled.is_empty() {
+    if config.provider == "opencode" {
         let disabled = disabled.clone();
         (command, config) = crate::blocking(move || {
             enforce_opencode_after_connection_with_env(&mut command, &mut config, &disabled);
@@ -4825,14 +4829,6 @@ async fn run_inner(
         None
     };
     let reap_in_background = reaps_in_background(config.worker) && exit::background_reap_enabled_off_runtime().await;
-    // Every secret of this launch, for the log line of a background exit (`exit::exit_note`).
-    let secrets: Vec<String> = key
-        .iter()
-        .chain(relay_key.iter())
-        .chain(connection.iter().flat_map(|connection| connection.secrets.iter()))
-        .filter(|secret| !secret.is_empty())
-        .cloned()
-        .collect();
     run_process_launch(
         config,
         sink,
@@ -4840,7 +4836,7 @@ async fn run_inner(
         command,
         image_blocks,
         host,
-        Launch { secrets, reap_in_background },
+        Launch { reap_in_background },
     )
     .await
     .map_err(|error| redact_launch_error(&error, &[key.as_deref(), relay_key.as_deref()], connection.as_ref()))
@@ -4970,16 +4966,15 @@ fn reaps_in_background(worker: Option<WorkerTrim>) -> bool {
     worker.is_none()
 }
 
-/// What a launch knows beyond its command: the secrets to keep out of logs (relay key, named
-/// connection) and whether a clean run's process may exit in the background (`exit::reap`).
+/// What a launch knows beyond its command: whether a clean run's process may exit in the
+/// background (`exit::reap`).
 struct Launch {
-    secrets: Vec<String>,
     reap_in_background: bool,
 }
 
-/// A cloud run's launch: no secrets of its own, and its process is finished before the run returns.
+/// A cloud run's launch: its process is finished before the run returns.
 fn cloud_launch() -> Launch {
-    Launch { secrets: Vec::new(), reap_in_background: false }
+    Launch { reap_in_background: false }
 }
 
 /// Errors carry no relay key redaction here: `run_inner` redacts every error of the run once.
@@ -4990,7 +4985,7 @@ async fn run_process_launch(
     mut command: Command,
     image_blocks: Vec<Value>,
     host: Option<ToolHost>,
-    Launch { secrets, reap_in_background }: Launch,
+    Launch { reap_in_background }: Launch,
 ) -> Result<(), String> {
     let mcp_tool_names: HashSet<String> = {
         host.as_ref()
@@ -5413,8 +5408,6 @@ async fn run_process_launch(
         sink(event);
     }
     if reap_in_background && result.is_ok() && !stopped && claude_family(&protocol.config.provider) {
-        let mut secrets = secrets;
-        secrets.extend(mcp.as_ref().map(|server| server.token().to_owned()));
         reap(Reaped {
             session_id: protocol.config.session_id.clone(),
             cwd: Some(external_path(&protocol.config.cwd)),
@@ -5423,7 +5416,6 @@ async fn run_process_launch(
             stdout,
             group,
             stderr: stderr_task,
-            secrets,
         });
         return Ok(());
     }

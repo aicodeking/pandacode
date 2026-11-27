@@ -255,7 +255,7 @@ mod tests {
             let (_sender, input) = tokio::sync::mpsc::unbounded_channel();
             let session = format!("relay-error-{provider}");
             let config = crate::providers::RunConfig { session_id: session, ..config(provider) };
-            let launch = Launch { secrets: relay.key().map(str::to_owned).into_iter().collect(), reap_in_background: true };
+            let launch = Launch { reap_in_background: true };
             let raw = tokio::time::timeout(
                 Duration::from_secs(5),
                 run_process_launch(config, Arc::new(|_| {}), input, command, Vec::new(), Some(host), launch),

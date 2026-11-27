@@ -175,9 +175,13 @@ fn skill_manager_opencode_launch_reuses_one_agent_scan_for_every_configuration()
         config["agent"]["listed-once"]["permission"]["skill"]["review"],
         "deny"
     );
-    // Nothing deniable: no scan, and the denies are complete.
-    let none = opencode_agents_at(&BTreeSet::from(["Friendly 技能".into()]), Path::new("/"));
-    assert!(none.complete && none.names.is_empty());
+    // Schema discovery still runs when no skill is deniable.
+    let fixture = crate::skill_manager::tests::Fixture::new();
+    fs::create_dir(fixture.0.join(".git")).unwrap();
+    fs::write(fixture.0.join("opencode.json"), r#"{"agents":{"already-configured":{}}}"#).unwrap();
+    let scanned = opencode_agents_at(&BTreeSet::new(), &fixture.0);
+    assert!(scanned.has_v2_permissions);
+    assert!(scanned.names.contains("already-configured"));
 }
 
 #[cfg(test)]
@@ -351,17 +355,13 @@ mod agent_tests {
     #[test]
     fn skill_manager_opencode_deny_overrides_an_agent_level_allow_in_every_known_agent() {
         let text = r#"{"agent":{"custom":{"permission":{"skill":{"review":"allow","*":"allow"}}},"build":{"permission":{"skill":"allow"}}}}"#;
-        let agents = [
-            "build",
-            "plan",
-            "general",
-            "explore",
-            "from-file",
-            "team/auditor",
-        ]
-        .into_iter()
-        .map(String::from)
-        .collect();
+        let agents = OpenCodeAgents {
+            names: ["build", "plan", "general", "explore", "from-file", "team/auditor"]
+                .into_iter()
+                .map(String::from)
+                .collect(),
+            ..Default::default()
+        };
         let output = opencode_configuration_with(text, &BTreeSet::from(["review".into()]), &agents, None);
         let config: serde_json::Value = serde_json::from_str(&output).unwrap();
         for agent in [

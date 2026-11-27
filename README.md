@@ -101,7 +101,9 @@ embedded editor engine.
 - **Token saver.** Per-task response-style packs that cut output tokens.
 - **Agent-made tools (opt-in).** Agents save repeated work as named scripts that every agent in the
   project reuses; drag a useful one to Global in Settings. Off by default (no measured benefit
-  yet): turn on Settings → Tools & add-ons → Agent-made tools. See [agent-made tools](docs/custom-tools.md).
+  yet): turn on Settings → Tools & add-ons → Agent-made tools. Changes apply on the next run.
+  When off, PandaCode refuses calls to agent-made tools that a resumed conversation still holds.
+  See [agent-made tools](docs/custom-tools.md).
 - **Agent usage.** Account limits and cost estimates for each installed harness
   ([agent usage](docs/agent-usage.md)), and one-click CLI updates
   ([agent updates](docs/agent-updates.md)).
@@ -350,9 +352,11 @@ Voice dictation inserts a draft without sending it. Transcribe on your computer 
   **Local code explorer (pandacode_explore)** to enable it for Claude Code
   (the `explore-on` marker in PandaCode's app data). Other harnesses, including
   GLM, MiMo and Alibaba Token Plan, opt in with their own switches under it
-  (`explore-on-<provider>`). Turning off the main switch disables it for every
-  harness. It is a read-only search, outline and read tool that agents call
-  without an approval prompt. It refuses secret files. For Claude Code, PandaCode
+  (`explore-on-<provider>`). Changes apply on the next run. Turning off the main
+  switch disables it for every harness. When off, PandaCode refuses calls to the
+  explorer that a resumed conversation still holds. It is a read-only search,
+  outline and read tool that agents call without an approval prompt. It refuses
+  secret files. For Claude Code, PandaCode
   honors user, project, worktree-inherited main-checkout local, and enterprise managed `Read`, `Grep`,
   `Glob` and explore `deny` and `ask` rules (including tool-name wildcards) by
   withholding the explorer when present. Other harnesses rely on PandaCode's
@@ -382,9 +386,10 @@ Code gets 2 s to exit cleanly and run your `SessionEnd` hooks, then it is force-
 missed it, a same-task replacement, a session or folder cleanup, quitting PandaCode) or one that outlives the 2 s does **not** run
 `SessionEnd`; if you rely on paired `SessionStart`/`SessionEnd` hooks, turn Warm Claude spares off. No prompt is sent (verified with a local loopback stub:
 no Messages API call is made until you send a message; live Claude sign-in
-startup traffic was not measured). Nothing starts while Settings → Agents →
-**Warm Claude spares** is off. Turning it off stops new starts at once and gives
-idle spares up to 2 s to exit.
+startup traffic was not measured). While **Warm Claude spares** is off, no new
+spares start or make startup connections. Turning it off on desktop starts
+retiring parked spares immediately, giving them up to 2 s to exit and run
+`SessionEnd` hooks. Once retired, no spare processes or hooks run.
 
 The app makes the following automatic and optional requests.
 
@@ -395,7 +400,7 @@ The app makes the following automatic and optional requests.
 | Asking your Claude Code for usage when PandaCode can't read it (on by default; Settings → Providers → Claude Code → Let PandaCode ask Claude Code for usage when it can’t read it): PandaCode runs your installed Claude Code once, `claude -p /usage` (a local command: no model call, nothing billed), with only its config folder, network and process settings (its telemetry, error reports, nonessential traffic and self-update turned off for this run), which lets Claude Code refresh and save its own login if it needs to, as when you open it (it may answer from its own snapshot instead). PandaCode never writes Claude Code's credentials | Whatever Claude Code itself contacts to refresh its login and read usage (Anthropic) | Only during a Claude usage check that can't read usage (an expired, rejected or missing login, a Keychain or network problem, a rate limit with no saved reading; never for an API-key or other non-subscription setup, a locked Keychain or a Keychain read you denied unless you press Refresh), at most once per Claude setup every 15 minutes (a Refresh you press may run it once more), less often while runs keep failing (up to every 2 hours), never two at once, and never inside a rate limit's server-set wait (after it, a new rate limit with no or an old saved reading may run it); never while the setting is off |
 | Public model price list (for cost estimates) | `raw.githubusercontent.com` | Daily |
 | PandaCode's own updates (`latest.json` on this repository's latest release) | `github.com` | At launch and about every 6 hours unless Settings → About → Updates is Off |
-| Warm Claude spares (optional, off by default): starts an idle Claude Code process after a successful Claude Code turn so the next turn skips CLI startup (up to 4 pooled: 2 ordinary + 2 team lead, with brief overlap up to 2 s while a displaced spare retires; no prompt or Messages API call is sent) | Anthropic (or your configured Claude endpoint, such as `ANTHROPIC_BASE_URL`), plus any remote MCP servers, `SessionStart` hooks, or `SessionEnd` hooks (during graceful retirement) configured in Claude Code | Only after you turn on Settings → Agents → **Warm Claude spares** (or create `warm-spares-on` for `pandacode serve`), after a successful Claude Code turn (and at most 2 renewals for a waiting team lead); skips low-memory hosts and backs off when unused; nothing while off |
+| Warm Claude spares (optional, off by default): starts an idle Claude Code process after a successful Claude Code turn so the next turn skips CLI startup (up to 4 pooled: 2 ordinary + 2 team lead, with brief overlap up to 2 s while a displaced spare retires; no prompt or Messages API call is sent) | Anthropic (or your configured Claude endpoint, such as `ANTHROPIC_BASE_URL`), plus any remote MCP servers, `SessionStart` hooks, or `SessionEnd` hooks (during graceful retirement) configured in Claude Code | Only after you turn on Settings → Agents → **Warm Claude spares** (or create `warm-spares-on` for `pandacode serve`), after a successful Claude Code turn (and at most 2 renewals for a waiting team lead). Skips low-memory hosts and backs off when unused. No new spare starts or makes startup connections while off. Desktop switch-off gives parked spares up to 2 s to exit and run `SessionEnd` hooks. Once retired, no spare processes or hooks run. See [headless opt-out](docs/headless.md#what-the-server-runs) for server timing. |
 | Jev decision model list (optional) | `openrouter.ai` | Only when you choose OpenRouter for Jev decisions and open the model menu or press Refresh; no key is sent |
 | Jev decisions on OpenRouter (optional) | `openrouter.ai` | Only when you choose OpenRouter in Settings → Tools → Add-ons → Jev and run a decision check; sends the selected evidence with your key |
 | Jev decisions on TypeSafe (optional, the default service): sends the selected evidence with your key | TypeSafe | Only when you save a TypeSafe key in Jev's setup and run a decision check |

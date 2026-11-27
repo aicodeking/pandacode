@@ -51,8 +51,6 @@ pub(super) fn configure(command: &mut Command, config: &RunConfig) {
         }
         "opencode" => {
             command.arg("acp");
-            let inline = super::command_environment(command, "OPENCODE_CONFIG_CONTENT");
-            command.env("OPENCODE_CONFIG_CONTENT", configuration(&config.mode, inline.as_deref()));
         }
         "grok" => {
             // Global flags precede `agent`; agent flags precede the `stdio` transport.
@@ -448,8 +446,13 @@ fn grok_read_only(tool: &Value) -> bool {
         || matches!(field(tool, "kind"), "read" | "search" | "fetch" | "think")
 }
 
-/// Apply process-local mode defaults while retaining exact tool denies from the effective config.
-pub(super) fn configuration(mode: &str, inline: Option<&str>) -> String {
+/// Apply process-local mode defaults using the schema discovered for this launch.
+pub(super) fn configuration(
+    mode: &str,
+    inline: Option<&str>,
+    disabled: &std::collections::BTreeSet<String>,
+    agents: &crate::skill_manager::OpenCodeAgents,
+) -> String {
     let permission = match mode {
         "full" => json!({"*":"allow"}),
         "auto" => json!({"*":"ask","read":"allow","glob":"allow","grep":"allow","edit":"allow"}),
@@ -459,8 +462,8 @@ pub(super) fn configuration(mode: &str, inline: Option<&str>) -> String {
     };
     crate::skill_manager::opencode_enforcement_with(
         inline.unwrap_or("{}"),
-        &Default::default(),
-        &Default::default(),
+        disabled,
+        agents,
         Some(&permission),
     )
 }
@@ -3581,7 +3584,7 @@ mod tests {
             }
         }
         for mode in ["ask", "auto", "plan"] {
-            let inline = configuration(mode, None);
+            let inline = configuration(mode, None, &Default::default(), &Default::default());
             let unserved: Value = serde_json::from_str(&inline).unwrap();
             assert!(!unserved.to_string().contains("pandacode_explore"), "{mode}: no rule for a tool this run does not list");
             let (inline, _) = crate::skill_manager::opencode_tool_grants_with(
@@ -3592,7 +3595,7 @@ mod tests {
             assert_eq!(config["agent"]["plan"]["permission"]["pandacode_architect_pandacode_explore"], "allow", "{mode}");
             assert_eq!(config["permission"].as_object().unwrap().keys().next().unwrap(), "*", "{mode}");
         }
-        let full: Value = serde_json::from_str(&configuration("full", None)).unwrap();
+        let full: Value = serde_json::from_str(&configuration("full", None, &Default::default(), &Default::default())).unwrap();
         assert_eq!(full["permission"]["*"], "allow");
         assert_eq!(full["agent"]["build"]["permission"]["*"], "allow");
         assert_eq!(full["agent"]["plan"]["permission"]["*"], "allow");
@@ -3611,12 +3614,65 @@ mod tests {
             }},
         }}"#);
         for (mode, effect) in [("auto", "ask"), ("full", "allow"), ("plan", "deny")] {
-            let value: Value = serde_json::from_str(&configuration(mode, Some(&saved))).unwrap();
+            let value: Value = serde_json::from_str(&configuration(mode, Some(&saved), &Default::default(), &Default::default())).unwrap();
+            assert!(value.get("permissions").is_none() && value.get("agents").is_none());
             assert_eq!(value["permission"]["*"], effect);
             assert_eq!(value["permission"][tool], "deny");
             assert_ne!(value["permission"]["read"], "deny");
             assert_eq!(value["agent"]["build"]["permission"][&alias], "deny");
             assert_eq!(value["agent"]["plan"]["permission"][tool], "deny");
+        }
+    }
+
+    #[test]
+    fn opencode_native_mode_policy_overrides_saved_rules_in_both_schemas() {
+        let tool = "pandacode_architect_pandacode_explore";
+        let prior = json!({"permissions":[
+            {"action":"edit","resource":"*","effect":"allow"},
+            {"action":"shell","resource":"*","effect":"allow"},
+            {"action":tool,"resource":"*","effect":"deny"}
+        ]});
+        let mut inline = prior.clone();
+        inline["agents"] = json!({"plan": prior, "build": prior});
+        let inline = inline.to_string();
+        let disabled = std::collections::BTreeSet::from(["review".into()]);
+        for (mode, default, edit) in [
+            ("plan", "deny", "deny"),
+            ("auto", "ask", "allow"),
+            ("ask", "ask", "ask"),
+            ("full", "allow", "allow"),
+        ] {
+            let output = configuration(mode, Some(&inline), &disabled, &Default::default());
+            let config: Value = serde_json::from_str(&output).unwrap();
+            for (legacy, native) in [
+                (&config, &config),
+                (&config["agent"]["plan"], &config["agents"]["plan"]),
+                (&config["agent"]["build"], &config["agents"]["build"]),
+            ] {
+                let rules = native["permissions"].as_array().unwrap();
+                assert_eq!(
+                    rules[0],
+                    json!({"action":"*","resource":"*","effect":default})
+                );
+                for (action, expected) in [
+                    ("edit", edit),
+                    ("shell", default),
+                    ("bash", default),
+                    (tool, "deny"),
+                ] {
+                    let rule = rules
+                        .iter()
+                        .rfind(|rule| rule["action"] == action || rule["action"] == "*")
+                        .unwrap();
+                    assert_eq!(rule["effect"], expected, "{mode}/{action}: {native}");
+                }
+                assert_eq!(legacy["permission"]["*"], default);
+                assert_eq!(legacy["permission"]["skill"]["review"], "deny");
+                assert!(rules
+                    .iter()
+                    .any(|rule| rule
+                        == &json!({"action":"skill","resource":"review","effect":"deny"})));
+            }
         }
     }
 
@@ -4020,11 +4076,13 @@ mod tests {
         let tool = "pandacode_architect_pandacode_explore";
         let trailing = "pandacode_architect_pandacode_explore *";
         for agent in ["build", "plan", "general", "explore", "custom-v1", "custom-v2"] {
-            assert_eq!(value["agent"][agent]["permission"][tool], "allow", "{agent}");
-            assert_eq!(
-                value["agent"][agent]["permission"][trailing], "allow",
-                "{agent}"
-            );
+            let rules = value["agents"][agent]["permissions"].as_array().unwrap();
+            for action in [tool, trailing] {
+                assert!(
+                    rules.iter().any(|rule| rule["action"] == action && rule["effect"] == "allow"),
+                    "{agent}/{action}: {value}"
+                );
+            }
         }
         let _ = std::fs::remove_dir_all(&root);
     }

@@ -1,4 +1,4 @@
-//! Test-only entry points into the launch: background reaping on, no secrets.
+//! Test-only entry points into the launch: background reaping on.
 
 use super::*;
 
@@ -10,7 +10,7 @@ pub(super) async fn run_process_with_tools(
     image_blocks: Vec<Value>,
     host: Option<ToolHost>,
 ) -> Result<(), String> {
-    run_process_launch(config, sink, input, command, image_blocks, host, Launch { secrets: Vec::new(), reap_in_background: true }).await
+    run_process_launch(config, sink, input, command, image_blocks, host, Launch { reap_in_background: true }).await
 }
 
 #[cfg(unix)]

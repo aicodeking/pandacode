@@ -3,7 +3,7 @@
 
 use super::concurrent_process_tests::process_test_lock;
 use super::*;
-use super::exit::{exit_note, spawn_exit, NOTE_TAIL};
+use super::exit::{exit_note, reap_with_log, spawn_exit};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
 
 /// Answers, then stays alive after stdin closes until the test writes to the FIFO `$1`.
@@ -317,7 +317,7 @@ async fn a_delayed_reaper_never_allows_a_live_process_to_be_resumed() {
     let stdin = child.stdin.take().unwrap();
     let mut group = ProcessGroup::register(Some(pid));
     let (done, exiting) = tokio::sync::watch::channel(());
-    exit_registry().lock().unwrap().insert(session.into(), vec![exit::ExitEntry { exiting, cwd: None }]);
+    exit_registry().lock().unwrap().insert(session.into(), vec![exit::ExitEntry { exiting, cwd: None, call_stopped: None }]);
     let (release, gate) = tokio::sync::oneshot::channel();
     let reaper = tokio::spawn(async move {
         gate.await.unwrap();
@@ -343,7 +343,7 @@ async fn a_delayed_reaper_never_allows_a_live_process_to_be_resumed() {
 async fn a_hard_cap_fails_without_clearing_the_exit_registration() {
     let session = "exit-hard-cap";
     let (done, exiting) = tokio::sync::watch::channel(());
-    exit_registry().lock().unwrap().insert(session.into(), vec![exit::ExitEntry { exiting, cwd: None }]);
+    exit_registry().lock().unwrap().insert(session.into(), vec![exit::ExitEntry { exiting, cwd: None, call_stopped: None }]);
     let error = await_exit_with_cap(session, Duration::ZERO).await.unwrap_err();
     assert!(error.contains("still shutting down"), "{error}");
     assert!(exit_registry().lock().unwrap().contains_key(session));
@@ -417,7 +417,7 @@ fn local_registry(entries: &[(&str, tokio::sync::watch::Receiver<()>)]) -> exit:
     std::sync::Mutex::new(
         entries
             .iter()
-            .map(|(session, exiting)| (session.to_string(), vec![exit::ExitEntry { exiting: exiting.clone(), cwd: None }]))
+            .map(|(session, exiting)| (session.to_string(), vec![exit::ExitEntry { exiting: exiting.clone(), cwd: None, call_stopped: None }]))
             .collect(),
     )
 }
@@ -464,7 +464,7 @@ async fn await_all_exits_waits_for_an_exit_registered_meanwhile() {
         async move { exit::wait_all(&registry, Duration::from_secs(30)).await }
     });
     let (second, b) = tokio::sync::watch::channel(());
-    registry.lock().unwrap().insert("b".into(), vec![exit::ExitEntry { exiting: b, cwd: None }]);
+    registry.lock().unwrap().insert("b".into(), vec![exit::ExitEntry { exiting: b, cwd: None, call_stopped: None }]);
     drop(first);
     tokio::time::sleep(Duration::from_millis(100)).await;
     assert!(!waiting.is_finished(), "returned before the later exit finished");
@@ -473,26 +473,45 @@ async fn await_all_exits_waits_for_an_exit_registered_meanwhile() {
 }
 
 #[test]
-fn a_nonzero_exit_logs_once_with_a_bounded_redacted_tail() {
+fn an_exit_note_contains_only_the_session_and_failure_status() {
     use std::os::unix::process::ExitStatusExt;
     let failed = std::process::ExitStatus::from_raw(1 << 8);
     let clean = std::process::ExitStatus::from_raw(0);
-    let key = ["sk-secret-key".to_string()];
-    assert!(exit_note("s1", clean, "ignored", &key).is_none());
-    let note = exit_note("s1", failed, "boom sk-secret-key\n", &key).unwrap();
-    assert!(note.contains("s1") && note.contains("boom [redacted]"), "{note}");
-    assert!(!note.contains("sk-secret-key"), "{note}");
-    // No secret known: the short tail is still logged.
-    let note = exit_note("s2", failed, "boom", &[]).unwrap();
-    assert!(note.contains("s2") && note.ends_with(": boom"), "{note}");
-    // Several secrets are all hidden.
-    let two = ["a-secret".to_string(), "b-secret".to_string()];
-    let note = exit_note("s4", failed, "a-secret b-secret", &two).unwrap();
-    assert!(!note.contains("-secret"), "{note}");
-    // The tail is bounded.
-    let long = "x".repeat(NOTE_TAIL * 3);
-    let note = exit_note("s3", failed, &long, &[]).unwrap();
-    assert_eq!(note.rsplit(": ").next().unwrap().len(), NOTE_TAIL, "{note}");
+    assert!(exit_note("s1", clean).is_none());
+    assert_eq!(exit_note("s1", failed).unwrap(), format!("The CLI of session s1 exited with {failed} after finishing its turn"));
+}
+
+#[tokio::test]
+async fn background_reap_drains_stderr_without_logging_any_of_it() {
+    use std::os::unix::process::ExitStatusExt;
+
+    let _serial = process_test_lock().lock().await;
+    assert!(exit::background_reap_enabled_off_runtime().await);
+    let session = "exit-no-stderr";
+    let mut command = Command::new("/bin/sh");
+    command
+        .args(["-c", "cat >/dev/null; head -c 300000 /dev/zero >&2; printf '%s\\n' 'sk-test-inherited-credential' >&2; exit 23"])
+        .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped())
+        .kill_on_drop(true).process_group(0);
+    let mut child = command.spawn().unwrap();
+    let group = ProcessGroup::register(child.id());
+    let (stdin, stdout, stderr) = (child.stdin.take().unwrap(), child.stdout.take().unwrap(), child.stderr.take().unwrap());
+    let (log, mut notes) = unbounded_channel();
+    reap_with_log(Reaped {
+        session_id: session.into(),
+        cwd: None,
+        child,
+        stdin,
+        stdout,
+        group,
+        stderr: StderrReader(tokio::spawn(read_stderr(stderr))),
+    }, move |note| {
+        let _ = log.send(note);
+    });
+    await_exit_patiently(session).await.unwrap();
+    let status = std::process::ExitStatus::from_raw(23 << 8);
+    assert_eq!(notes.try_recv().unwrap(), format!("The CLI of session {session} exited with {status} after finishing its turn"));
+    assert!(notes.try_recv().is_err());
 }
 
 /// stdin closes at once, not after the earlier exit the reaper chains behind.
@@ -522,7 +541,6 @@ async fn a_reaped_cli_sees_stdin_close_before_the_earlier_exit_finishes() {
         stdout,
         group,
         stderr: StderrReader(tokio::spawn(read_stderr(stderr))),
-        secrets: Vec::new(),
     });
     let mut seen = false;
     for _ in 0..50 {

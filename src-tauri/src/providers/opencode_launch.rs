@@ -15,14 +15,14 @@ pub(super) fn enforce_opencode_after_connection_with_env(
 ) {
     let env = opencode_environment(command);
     let agents = crate::skill_manager::opencode_agents_at_with_env(disabled, &config.cwd, &env);
-    if !agents.complete {
+    if !agents.complete && !disabled.is_empty() {
         // The initial scan may already have added this reminder; it is deduplicated.
         crate::skill_manager::remind_unenforced(config, disabled);
     }
     enforce_opencode_after_connection(command, config, disabled, &agents);
 }
 
-/// The connection may have replaced the inline configuration: deny again for the supplied agents.
+/// Apply the selected mode and skill denies after the connection's inline configuration.
 /// The denies also always go through `OPENCODE_PERMISSION` (kept rules, merged last by OpenCode).
 /// Text that can't be read stays untouched and the launch also asks, as for names OpenCode can't deny.
 pub(super) fn enforce_opencode_after_connection(
@@ -39,7 +39,12 @@ pub(super) fn enforce_opencode_after_connection(
         disabled,
         agents,
     );
-    command.env("OPENCODE_CONFIG_CONTENT", launch.content);
+    let content = if launch.enforced {
+        acp::configuration(&config.mode, Some(&inline), disabled, agents)
+    } else {
+        launch.content
+    };
+    command.env("OPENCODE_CONFIG_CONTENT", content);
     if let Some(permission) = launch.permission {
         command.env("OPENCODE_PERMISSION", permission);
     }
@@ -214,8 +219,8 @@ mod tests {
         assert_eq!(value["agent"]["reviewer"]["prompt"], "Keep this agent");
         assert_eq!(value["permission"]["skill"]["review"], "deny");
         assert_eq!(value["agent"]["plan"]["permission"]["skill"]["review"], "deny");
-        assert_eq!(value["agent"]["plan"]["permission"]["bash"], "deny");
-        assert!(after.contains(r#""bash":{"deploy *":"deny","*":"ask"}"#), "permission order: {after}");
+        assert_eq!(value["agent"]["plan"]["permission"]["*"], "deny");
+        assert!(value["permission"].get("bash").is_none(), "{after}");
         assert_eq!(value["permission"]["pandacode_architect_pandacode_explore"], "allow");
         assert_eq!(value["agent"]["plan"]["permission"]["pandacode_architect_pandacode_explore"], "allow");
         assert!(value["permission"].get("pandacode_architect_pandacode_tool_run").is_none());
@@ -306,8 +311,10 @@ mod tests {
         let value: Value =
             serde_json::from_str(&env_of(&command, "OPENCODE_CONFIG_CONTENT")).unwrap();
         for agent in ["build", "plan", "general", "explore", "custom-reviewer", "custom-v2"] {
-            assert_eq!(value["agent"][agent]["permission"][tool], "allow", "{agent}");
-            assert_eq!(value["agent"][agent]["permission"][trailing], "allow", "{agent}");
+            let rules = value["agents"][agent]["permissions"].as_array().unwrap();
+            for action in [tool, trailing] {
+                assert!(rules.iter().any(|rule| rule["action"] == action && rule["effect"] == "allow"), "{agent}");
+            }
         }
 
         // Direct path with `agents: None` also discovers project agents from `config.cwd`.
@@ -318,8 +325,10 @@ mod tests {
         let value: Value =
             serde_json::from_str(&env_of(&command, "OPENCODE_CONFIG_CONTENT")).unwrap();
         for agent in ["build", "plan", "general", "explore", "custom-reviewer", "custom-v2"] {
-            assert_eq!(value["agent"][agent]["permission"][tool], "allow", "{agent}");
-            assert_eq!(value["agent"][agent]["permission"][trailing], "allow", "{agent}");
+            let rules = value["agents"][agent]["permissions"].as_array().unwrap();
+            for action in [tool, trailing] {
+                assert!(rules.iter().any(|rule| rule["action"] == action && rule["effect"] == "allow"), "{agent}");
+            }
         }
 
         let _ = std::fs::remove_dir_all(&root);
@@ -536,6 +545,121 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn opencode_markdown_permissions_withhold_unsafe_grants() {
+        let root = std::env::temp_dir().join(format!(
+            "pandacode-opencode-markdown-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let agents = root.join(".opencode/agents");
+        std::fs::create_dir_all(root.join(".git")).unwrap();
+        std::fs::create_dir_all(&agents).unwrap();
+        let tool = "pandacode_architect_pandacode_explore";
+        let cases = [
+            ("legacy", format!("---\npermission:\n  {tool}: deny\n---\nReview")),
+            ("legacy-flow", format!("---\npermission: {{ '{tool} *': deny }}\n---\nReview")),
+            ("native", format!("---\npermissions:\n  - action: \"{tool} *\"\n    resource: '*'\n    effect: deny\n---\nReview")),
+            ("ambiguous", format!("---\npermission: &deny\n  {tool}: deny\n---\nReview")),
+            ("malformed", format!("---\npermission: {{ {tool}: deny\n---\nReview")),
+            ("oversized", "x".repeat(256 * 1024 + 1)),
+            ("prose", "Review changes.".into()),
+            ("metadata", "---\ndescription: |\n  permission: deny\n---\nReview".into()),
+            ("scalar", "---\npermission: deny\n---\nReview".into()),
+        ];
+        for (name, contents) in &cases {
+            std::fs::write(agents.join(format!("{name}.md")), contents).unwrap();
+        }
+        let mut cfg = config("opencode");
+        cfg.cwd = root.clone();
+        let mut command = Command::new("unused");
+        command.env("OPENCODE_CONFIG_CONTENT", "{}");
+        command.env_remove("OPENCODE_PERMISSION");
+        command.env_remove("OPENCODE_CONFIG");
+        command.env_remove("OPENCODE_CONFIG_DIR");
+        command.env("XDG_CONFIG_HOME", root.join("xdg"));
+        configure_command(&mut command, &cfg);
+        allow_opencode_tools(
+            &mut command,
+            &cfg,
+            true,
+            &HashSet::from([EXPLORE_TOOL.into()]),
+            None,
+        );
+        let value: Value =
+            serde_json::from_str(&env_of(&command, "OPENCODE_CONFIG_CONTENT")).unwrap();
+        for (name, _) in cases {
+            let last = value["agents"][name]["permissions"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .rfind(|rule| rule["action"] == tool);
+            match name {
+                "legacy" | "legacy-flow" | "native" => {
+                    assert_eq!(last.unwrap()["effect"], "deny", "{name}")
+                }
+                "ambiguous" | "malformed" | "oversized" => {
+                    assert!(last.is_none(), "{name}: {value}")
+                }
+                _ => assert_eq!(last.unwrap()["effect"], "allow", "{name}"),
+            }
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn opencode_connection_disk_only_v2_mode_is_applied_without_skill_switches() {
+        let root = std::env::temp_dir().join(format!(
+            "pandacode-opencode-v2-mode-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let project = root.join("project");
+        let connection = root.join("connection");
+        std::fs::create_dir_all(project.join(".git")).unwrap();
+        std::fs::create_dir_all(&connection).unwrap();
+        let saved = r#"{"agents":{"plan":{"permissions":[
+            {"action":"edit","resource":"*","effect":"allow"},
+            {"action":"shell","resource":"*","effect":"allow"}
+        ]}}}"#;
+        std::fs::write(connection.join("opencode.json"), saved).unwrap();
+        let disk: Value = serde_json::from_str(saved).unwrap();
+        for (mode, shell, edit) in [
+            ("plan", "deny", "deny"),
+            ("auto", "ask", "allow"),
+            ("ask", "ask", "ask"),
+            ("full", "allow", "allow"),
+        ] {
+            let mut cfg = config("opencode");
+            cfg.cwd = project.clone();
+            cfg.mode = mode.into();
+            let mut command = Command::new("unused");
+            command.env("OPENCODE_CONFIG_CONTENT", "{}");
+            command.env("XDG_CONFIG_HOME", root.join("xdg"));
+            command.env("OPENCODE_CONFIG_DIR", &connection);
+            command.env_remove("OPENCODE_CONFIG");
+            command.env_remove("OPENCODE_PERMISSION");
+            enforce_opencode_after_connection_with_env(&mut command, &mut cfg, &Default::default());
+            let value: Value =
+                serde_json::from_str(&env_of(&command, "OPENCODE_CONFIG_CONTENT")).unwrap();
+            let rules = [
+                &disk["agents"]["plan"]["permissions"],
+                &value["permissions"],
+                &value["agents"]["plan"]["permissions"],
+            ];
+            for (action, expected) in [("shell", shell), ("edit", edit)] {
+                let rule = rules
+                    .iter()
+                    .flat_map(|rules| rules.as_array().unwrap())
+                    .rfind(|rule| rule["action"] == action || rule["action"] == "*")
+                    .unwrap();
+                assert_eq!(rule["effect"], expected, "{mode}/{action}: {value}");
+            }
+            assert_eq!(value["agent"]["plan"]["permission"]["*"], shell);
+            assert_eq!(value["agent"]["build"]["permission"]["*"], shell);
+            assert_eq!(value["agents"]["build"]["permissions"][0]["effect"], shell);
+        }
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

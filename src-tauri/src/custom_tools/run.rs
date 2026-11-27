@@ -3,10 +3,11 @@
 //! Object, so Stop and the timeout end everything it started), and the reply keeps the tail
 //! of each stream.
 use super::{Param, Tool};
+use crate::providers::exit::{await_checkout_before_tool, track_checkout_work};
 use serde_json::{json, Map, Value};
 use std::{
     io::Read,
-    path::Path,
+    path::{Path, PathBuf},
     process::{Child, Command, ExitStatus, Stdio},
     thread,
     sync::{
@@ -82,6 +83,12 @@ pub(super) struct Outcome {
     pub reply: Result<Value, String>,
     pub exit: Option<i32>,
     pub timed_out: bool,
+}
+
+impl Outcome {
+    fn failed(error: impl Into<String>) -> Self {
+        Self { reply: Err(error.into()), exit: None, timed_out: false }
+    }
 }
 
 /// What a reader has kept so far: the last bytes of a pipe, and whether more came before.
@@ -179,15 +186,15 @@ fn stop(run: &mut Run) -> Option<ExitStatus> {
 
 /// How a run ended before the script exited on its own.
 enum Cut {
-    Stopped,
+    Stopped(&'static str),
     TimedOut,
 }
 
-/// Waits for the shell to exit, cutting it on `stopped` or at `deadline`.
-fn wait(child: &mut Child, deadline: Instant, stopped: &AtomicBool) -> Result<(), Cut> {
+/// Waits for the shell to exit, cutting it on a stop request or at `deadline`.
+fn wait(child: &mut Child, deadline: Instant, stop_reason: impl Fn() -> Option<&'static str>) -> Result<(), Cut> {
     while !exited(child) {
-        if stopped.load(Ordering::SeqCst) {
-            return Err(Cut::Stopped);
+        if let Some(reason) = stop_reason() {
+            return Err(Cut::Stopped(reason));
         }
         if Instant::now() >= deadline {
             return Err(Cut::TimedOut);
@@ -235,37 +242,50 @@ pub(super) fn timeout_message(name: &str, seconds: u64) -> String {
     }
 }
 
-/// Runs `tool` in `root`, blocking until it exits, times out or `stopped` is set.
+#[cfg(test)]
 pub(super) fn execute(root: &Path, tool: &Tool, args: &Value, stopped: &AtomicBool) -> Outcome {
-    let failed = |reply: String| Outcome { reply: Err(reply), exit: None, timed_out: false };
+    execute_with_cancel(root, tool, args, stopped, &AtomicBool::new(false))
+}
+
+/// Runs `tool` in `root`, blocking until it exits, times out or is stopped.
+fn execute_with_cancel(root: &Path, tool: &Tool, args: &Value, stopped: &AtomicBool, call_stopped: &AtomicBool) -> Outcome {
+    let stop_reason = || {
+        if call_stopped.load(Ordering::SeqCst) {
+            Some("Tool call was canceled.")
+        } else if stopped.load(Ordering::SeqCst) {
+            Some("Task has stopped.")
+        } else {
+            None
+        }
+    };
     let env = match environment(&tool.params, args) {
         Ok(env) => env,
-        Err(error) => return failed(error),
+        Err(error) => return Outcome::failed(error),
     };
     let seconds = tool.timeout_secs.min(HOST_LIMIT_SECS);
     let started = Instant::now();
-    if stopped.load(Ordering::SeqCst) {
-        return failed("Task has stopped.".into());
+    if let Some(reason) = stop_reason() {
+        return Outcome::failed(reason);
     }
     let mut run = match spawn(root, tool, env) {
         Ok(run) => run,
-        Err(error) => return failed(format!("Could not start {}: {error}", tool.name)),
+        Err(error) => return Outcome::failed(format!("Could not start {}: {error}", tool.name)),
     };
     let (Some(out), Some(err)) = (run.child.stdout.take(), run.child.stderr.take()) else {
         let _ = stop(&mut run);
-        return failed("Could not read the script's output.".into());
+        return Outcome::failed("Could not read the script's output.");
     };
     let readers = [read_tail(out), read_tail(err)];
-    let ended = wait(&mut run.child, started + Duration::from_secs(seconds), stopped);
+    let ended = wait(&mut run.child, started + Duration::from_secs(seconds), stop_reason);
     // A tool is one-shot: background jobs it left behind are ended with it, so they cannot
     // hold its output pipes open (or outlive the task) after the shell exits.
     let status = stop(&mut run);
     let [(stdout, dropped_out), (stderr, dropped_err)] = collect(readers);
     let status = match (ended, status) {
         (Ok(()), Some(status)) => status,
-        (Ok(()), None) => return failed(format!("Could not read how {} ended.", tool.name)),
-        (Err(Cut::Stopped), _) => return failed("Task has stopped.".into()),
-        (Err(Cut::TimedOut), _) => return Outcome { timed_out: true, ..failed(timeout_message(&tool.name, seconds)) },
+        (Ok(()), None) => return Outcome::failed(format!("Could not read how {} ended.", tool.name)),
+        (Err(Cut::Stopped(reason)), _) => return Outcome::failed(reason),
+        (Err(Cut::TimedOut), _) => return Outcome { timed_out: true, ..Outcome::failed(timeout_message(&tool.name, seconds)) },
     };
     // A script ended by a signal has no code: -1, so the agent and the trace see a failure.
     let exit = status.code().unwrap_or(-1);
@@ -283,11 +303,33 @@ pub(super) fn execute(root: &Path, tool: &Tool, args: &Value, stopped: &AtomicBo
     Outcome { reply: Ok(reply), exit: Some(exit), timed_out: false }
 }
 
-/// `execute` on a blocking thread; `stopped` ends the script within about `GRACE`.
-pub(super) async fn execute_async(root: std::path::PathBuf, tool: Tool, args: Value, stopped: Arc<AtomicBool>) -> Outcome {
-    tauri::async_runtime::spawn_blocking(move || execute(&root, &tool, &args, &stopped))
-        .await
-        .unwrap_or_else(|error| Outcome { reply: Err(error.to_string()), exit: None, timed_out: false })
+/// A dropped handler can no longer await the blocking task, but it can still stop the script.
+struct CancelOnDrop(Arc<AtomicBool>);
+
+impl Drop for CancelOnDrop {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::SeqCst);
+    }
+}
+
+/// Run the script off the runtime and keep its checkout busy through process cleanup.
+pub(super) async fn execute_async(root: PathBuf, tool: Tool, args: Value, stopped: Arc<AtomicBool>) -> Outcome {
+    if stopped.load(Ordering::SeqCst) {
+        return Outcome::failed("Task has stopped.");
+    }
+    let call_stopped = Arc::new(AtomicBool::new(false));
+    let _cancel = CancelOnDrop(call_stopped.clone());
+    if let Err(error) = await_checkout_before_tool(&root).await {
+        return Outcome::failed(error);
+    }
+    let work = track_checkout_work(root.clone(), call_stopped.clone());
+    tokio::task::spawn_blocking(move || {
+        let outcome = execute_with_cancel(&root, &tool, &args, &stopped, &call_stopped);
+        drop(work);
+        outcome
+    })
+    .await
+    .unwrap_or_else(|error| Outcome::failed(error.to_string()))
 }
 
 /// How long `sh -n` gets in all, streams included. It runs nothing, so it starts no process
@@ -312,7 +354,7 @@ pub(super) fn syntax_check(script: &str) -> Result<(), String> {
     };
     let (kept, closed) = read_tail(err);
     let deadline = Instant::now() + SYNTAX_LIMIT;
-    let ended = wait(&mut run.child, deadline, &AtomicBool::new(false));
+    let ended = wait(&mut run.child, deadline, || None);
     let status = stop(&mut run);
     if ended.is_err() {
         return Err("The syntax check timed out.".into());

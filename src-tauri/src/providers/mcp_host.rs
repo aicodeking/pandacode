@@ -145,10 +145,6 @@ impl Server {
     pub(super) fn codex_config(&self) -> Value {
         json!({SERVER_NAME:{"url":format!("http://{}/mcp",self.authority),"http_headers":{"Authorization":format!("Bearer {}",self.token)},"enabled":true,"required":self.required(),"startup_timeout_sec":if self.required() {15} else {3},"tool_timeout_sec":360}})
     }
-    /// The bearer token, for callers that redact text themselves (`exit::reap`).
-    pub(super) fn token(&self) -> &str {
-        &self.token
-    }
     /// ZCode's `session/create` `mcpServers` entry. Session isolation keeps the
     /// per-run bridge out of the user's server registry, and `alwaysLoad` is
     /// what lifts the tools into the model's list — ZCode defers every
@@ -600,6 +596,8 @@ impl Context {
                 let call_id = format!("mcp-host:{}", uuid::Uuid::new_v4());
                 let input = preview_json(&args, TOOL_INPUT_LIMIT);
                 self.activity(&call_id, name, "running", &input, "");
+                // Keep the handler inside the timeout and select so either can drop it.
+                // A saved tool's drop guard signals its shell runner, which owns the reap.
                 let result = tokio::select! {
                     result = async {
                         let args = self.authorize(name, args).await?;

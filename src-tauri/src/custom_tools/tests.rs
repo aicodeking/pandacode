@@ -153,6 +153,93 @@ fn a_slow_script_is_stopped_at_its_timeout() {
     assert!(outcome.exit.is_none() && outcome.timed_out && started.elapsed().as_secs() < 10);
 }
 
+#[cfg(unix)]
+async fn start_cancellable_script(root: &Path, stopped: Arc<AtomicBool>) -> (tokio::task::JoinHandle<run::Outcome>, i32) {
+    use std::time::Duration;
+
+    let script = tool(
+        "cancellable-script",
+        r#"
+trap '' TERM
+printf '%s\n' "$$" > starting
+mv starting first.pid
+sleep 30 &
+wait
+"#,
+    );
+    let call = tokio::spawn(run::execute_async(root.to_path_buf(), script, Value::Null, stopped));
+    let marker = root.join("first.pid");
+    let pid = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if let Ok(pid) = std::fs::read_to_string(&marker) {
+                break pid.trim().parse().unwrap();
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }).await;
+    match pid {
+        Ok(pid) => (call, pid),
+        Err(error) => {
+            call.abort();
+            let _ = call.await;
+            panic!("the first saved tool never started: {error}");
+        }
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn dropping_a_saved_tool_call_stops_and_reaps_its_process_group() {
+    use crate::providers::exit::{await_exits_in_checkout, pending_exits};
+    use std::{sync::atomic::Ordering, time::Duration};
+
+    let root = temp();
+    let stopped = Arc::default();
+    let (call, pid) = start_cancellable_script(&root.0, Arc::clone(&stopped)).await;
+    let pending = || pending_exits().iter().any(|(_, cwd)| cwd.as_ref() == Some(&root.0));
+    assert!(pending(), "an active script must keep its checkout busy");
+    call.abort();
+    assert!(call.await.is_err_and(|error| error.is_cancelled()));
+    // If cleanup already finished (the test can be descheduled), the shell must be gone.
+    if !pending() {
+        assert_eq!(unsafe { libc::kill(pid, 0) }, -1, "checkout cleared before the shell was reaped");
+    }
+    tokio::time::timeout(Duration::from_secs(5), await_exits_in_checkout(&root.0))
+        .await.expect("the canceled tool outlived its reap deadline").unwrap();
+    assert_eq!(unsafe { libc::kill(pid, 0) }, -1, "the shell was not reaped");
+    assert!(!group_alive(pid), "the canceled script left a live process in its group");
+    assert!(!pending(), "checkout activity remained after reaping");
+    assert!(!stopped.load(Ordering::SeqCst), "canceling one call stopped the task");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_saved_tool_retry_waits_for_the_cancelled_shell_to_be_reaped() {
+    use std::time::Duration;
+
+    let root = temp();
+    let stopped = Arc::default();
+    let retry = tool(
+        "retry-script",
+        r#"
+read first_pid < first.pid || exit 2
+if kill -0 "$first_pid" 2>/dev/null; then
+    printf overlap
+    exit 1
+fi
+printf reaped
+"#,
+    );
+    let (call, _) = start_cancellable_script(&root.0, Arc::clone(&stopped)).await;
+    call.abort();
+    assert!(call.await.is_err_and(|error| error.is_cancelled()));
+    let result = tokio::time::timeout(Duration::from_secs(5), run::execute_async(root.0.clone(), retry, Value::Null, stopped))
+        .await.expect("the retry did not start after reaping");
+    let reply = result.reply.unwrap();
+    assert_eq!(reply["stdout"], "reaped", "{reply}");
+    assert_eq!(result.exit, Some(0));
+}
+
 /// Whether a live process is left in the group `id`. Signal 0 also counts zombies:
 /// Linux may keep an orphan's entry until init reaps it, after SIGKILL and pipe EOF.
 #[cfg(unix)]

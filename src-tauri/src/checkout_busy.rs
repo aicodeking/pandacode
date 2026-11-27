@@ -304,8 +304,8 @@ pub(crate) async fn any_subtree_busy_or_reserved_excluding(
     checkout_busy_in_state(state, roots, exclude_session, true, true, ReservationScope::Subtree).await
 }
 
-/// Whether a run, harness console or reservation holds `root` before checks wait for exits.
-async fn active_agent_or_reserved_in_state(state: &AppState, root: &Path) -> Result<bool> {
+/// Whether a run, harness console or reservation holds `root`, excluding pending exits.
+pub(crate) async fn active_agent_or_reserved_in_state(state: &AppState, root: &Path) -> Result<bool> {
     checkout_busy_in_state(state, &[root.to_path_buf()], None, false, true, ReservationScope::Checkout).await
 }
 
@@ -621,6 +621,17 @@ mod tests {
         }
     }
 
+    async fn finish_exit_while_waiting<F: std::future::Future>(
+        operation: F,
+        pending_exit: Box<dyn std::any::Any + Send>,
+    ) -> F::Output {
+        tokio::pin!(operation);
+        assert!(tokio::time::timeout(Duration::from_millis(200), &mut operation).await.is_err(),
+            "the operation must wait for the pending exit");
+        drop(pending_exit);
+        tokio::time::timeout(Duration::from_secs(5), operation).await.expect("the operation must finish after the exit")
+    }
+
     #[tokio::test]
     async fn desktop_switch_branch_refuses_and_holds_checkout_reservations() {
         let checkout = Checkout::new();
@@ -632,10 +643,11 @@ mod tests {
             (project, task)
         };
         let busy = reserve_idle_checkouts(&state, vec![checkout.pkg_b.clone()], "busy").await.unwrap();
+        let pending = providers::hold_exit_in_cwd_for_test(&task.id, checkout.pkg_b.clone());
         for session_id in [None, Some(task.id.as_str())] {
-            let refused = crate::switch_branch(
+            let refused = tokio::time::timeout(Duration::from_secs(2), crate::switch_branch(
                 &state, &project.id, session_id, "next".into(), crate::workspace::Trust::Desktop,
-            ).await.unwrap_err();
+            )).await.expect("the active reservation must refuse before waiting for the exit").unwrap_err();
             assert_eq!(refused, "Wait for the active operation in this folder to finish before switching branches.");
         }
         drop(busy);
@@ -653,9 +665,39 @@ mod tests {
                     default_branch: String::new(),
                 })
             },
-        ).await.unwrap();
+        );
+        let switched = finish_exit_while_waiting(switched, pending).await.unwrap();
         assert_eq!(switched.current, "next");
         assert!(!checkout_reserved(&state.agents, &checkout.root));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn desktop_branch_switch_reaps_the_checkout_spare_before_git_runs() {
+        let _serial = providers::spare_pool_test_lock().lock().await;
+        let checkout = Checkout::new();
+        let state = test_state();
+        let project = state.store.lock().unwrap().add_project(&checkout.pkg_a).unwrap();
+        let spare = format!("desktop-switch-spare-{}", uuid::Uuid::new_v4());
+        let pid = providers::insert_spare_in_cwd_for_test(&spare, checkout.pkg_b.clone(), false);
+        let agents = state.agents.clone();
+        let spare_at_switch = spare.clone();
+        let switched = crate::switch_branch_with(
+            &state, &project.id, None, "next".into(), crate::workspace::Trust::Desktop,
+            move |root, branch, _| {
+                if !providers::process_gone_for_test(pid) || providers::has_spare_for_test(&spare_at_switch) {
+                    return Err("The pooled spare must exit before switching branches.".into());
+                }
+                assert!(checkout_reserved(&agents, root));
+                Ok(crate::workspace::BranchList {
+                    current: branch.into(),
+                    branches: vec![branch.into()],
+                    default_branch: String::new(),
+                })
+            },
+        ).await;
+        providers::quiesce(&spare).await.unwrap();
+        assert_eq!(switched.unwrap().current, "next");
     }
 
     #[tokio::test]
@@ -668,7 +710,10 @@ mod tests {
             store.create_session(&project.id, "claude", "default", "ask").unwrap()
         };
         let busy = reserve_idle_checkouts(&state, vec![checkout.pkg_b.clone()], "busy").await.unwrap();
-        let refused = crate::attach_worktree_in_state(&state, &task.id, "next".into(), None, false).await;
+        let pending = providers::hold_exit_in_cwd_for_test(&task.id, checkout.pkg_b.clone());
+        let refused = tokio::time::timeout(
+            Duration::from_secs(2), crate::attach_worktree_in_state(&state, &task.id, "next".into(), None, false),
+        ).await.expect("the active reservation must refuse before waiting for the exit");
         assert_eq!(refused.err().as_deref(), Some("Wait for the active operation in this folder to finish before moving this task into a worktree."));
         assert!(state.store.lock().unwrap().session(&task.id).unwrap().worktree_path.is_none());
         drop(busy);
@@ -701,7 +746,7 @@ mod tests {
             assert!(state.store.lock().unwrap().session(&task.id).unwrap().worktree_path.is_none());
             continue_creation.send(()).unwrap();
         };
-        let (saved, ()) = tokio::join!(attach, save);
+        let (saved, ()) = tokio::join!(finish_exit_while_waiting(attach, pending), save);
         let saved = saved.unwrap();
         let root = state.store.lock().unwrap().workspace_root(&task.project_id, Some(&task.id)).unwrap();
         assert_eq!(root, checkout.nested.canonicalize().unwrap());

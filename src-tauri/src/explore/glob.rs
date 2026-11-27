@@ -135,12 +135,17 @@ pub(super) fn split_list(raw: &str, names_path: impl Fn(&str) -> bool) -> Vec<&s
     parts.into_iter().map(str::trim).filter(|part| !part.is_empty()).collect()
 }
 
+/// A colon in a relative path may be a drive prefix or a stream. An absolute path's drive
+/// letter is allowed once its project root has been stripped.
+pub(super) fn literal_glob_path<'a>(item: &'a str, relative: Option<&'a str>) -> Option<&'a str> {
+    let relative = relative.unwrap_or(item);
+    (!relative.contains(':')).then_some(relative)
+}
+
 /// Whether `item` (with a comma in it) names a file or folder in the project, so it is one glob.
-/// Only a path `resolve_named` keeps in the project (no `..`, no symlink out, no root or drive)
-/// counts: whether a path outside exists is none of the reply's business. A colon never does,
-/// since on Windows `C:x,y` names a drive.
 fn names_path(ctx: &Ctx, item: &str) -> bool {
-    !item.contains(':') && named::resolve_named(ctx, item).is_ok_and(|(_, real)| real.starts_with(ctx.root) && real.symlink_metadata().is_ok())
+    let Some(relative) = literal_glob_path(item, ctx.relative(item)) else { return false };
+    named::resolve_named(ctx, relative).is_ok_and(|(_, real)| real.starts_with(ctx.root) && real.symlink_metadata().is_ok())
 }
 
 fn one_glob(root: &Path, glob: &str) -> Result<Override, String> {

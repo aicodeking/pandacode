@@ -4,13 +4,13 @@
 //! `OPENCODE_CONFIG_CONTENT` on top of all of them, so a deny written for each agent it could
 //! run wins, including over an agent whose Markdown allows skills itself.
 use super::*;
-use super::enforcement::{discover_opencode_config, OpenCodeToolDenies};
+use super::enforcement::{discover_opencode_config, OpenCodeToolRules};
 
 /// Primary and subagent built-ins (OpenCode 1.x/2.x: build, plan, general, explore).
 pub(super) const BUILTIN: [&str; 4] = ["build", "plan", "general", "explore"];
 const MAX_AGENTS: usize = 256;
 const MAX_LEVELS: usize = 32;
-const CONFIG_FILES: [&str; 3] = ["opencode.json", "opencode.jsonc", "config.json"];
+const CONFIG_FILES: [&str; 2] = ["opencode.json", "opencode.jsonc"];
 /// Agent folders are read recursively, mode folders only at their top level, like OpenCode.
 const AGENT_FOLDERS: [(&str, bool); 4] = [
     ("agent", true),
@@ -25,7 +25,14 @@ const MAX_DEPTH: usize = 8;
 pub(super) struct Agents {
     pub(super) names: BTreeSet<String>,
     pub(super) complete: bool,
-    pub(super) denied_tools: OpenCodeToolDenies,
+    pub(super) tool_rules: OpenCodeToolRules,
+    pub(super) has_v2_permissions: bool,
+}
+
+#[derive(Default)]
+struct Permissions {
+    tools: OpenCodeToolRules,
+    native: bool,
 }
 
 /// Effective launch paths: `None` also represents an explicit environment removal.
@@ -64,7 +71,7 @@ pub(super) fn agents_with_env(
 ) -> Agents {
     let mut names: BTreeSet<String> = BUILTIN.iter().map(|n| (*n).to_owned()).collect();
     let mut complete = true;
-    let mut denied_tools = OpenCodeToolDenies::default();
+    let mut permissions = Permissions::default();
     let mut add = |name: Option<&str>| match name {
         Some(name) if names.contains(name) => {}
         Some(name) if names.len() < MAX_AGENTS && valid(name) => {
@@ -84,47 +91,62 @@ pub(super) fn agents_with_env(
         .chain(home.map(|home| home.join(".opencode")))
         .chain(env.config_dir.iter().map(|dir| resolved(cwd, dir)));
     for dir in config_dirs {
-        read_dir_agents(&dir, &mut add, &mut denied_tools);
+        read_dir_agents(&dir, &mut add, &mut permissions);
     }
     // Other saved connections contribute agent names for Skills, but their permission
     // rules only apply when their directory is part of this launch's effective paths.
-    let mut other_denies = OpenCodeToolDenies::default();
+    let mut other_permissions = Permissions::default();
     for dir in homes.configured.get("opencode").into_iter().flatten() {
-        read_dir_agents(dir, &mut add, &mut other_denies);
+        read_dir_agents(dir, &mut add, &mut other_permissions);
     }
     if let Some(file) = &env.config {
-        config_agents(&resolved(cwd, file), &mut add, &mut denied_tools);
+        config_agents(&resolved(cwd, file), &mut add, &mut permissions);
     }
-    // Project configs from the task folder up to its repository root.
+    // Project files merge from the repository root toward the working directory.
     if let Some(cwd) = cwd {
+        let mut project = Vec::new();
         for dir in cwd.ancestors().take(MAX_LEVELS) {
-            for file in CONFIG_FILES.iter().take(2) {
-                config_agents(&dir.join(file), &mut add, &mut denied_tools);
-            }
-            read_dir_agents(&dir.join(".opencode"), &mut add, &mut denied_tools);
+            project.push(dir);
             if dir.join(".git").exists() || Some(dir) == home {
                 break;
             }
         }
+        for dir in project.iter().rev() {
+            for file in CONFIG_FILES {
+                config_agents(&dir.join(file), &mut add, &mut permissions);
+            }
+        }
+        for dir in project.into_iter().rev() {
+            read_dir_agents(&dir.join(".opencode"), &mut add, &mut permissions);
+        }
     }
-    Agents { names, complete, denied_tools }
+    Agents {
+        names,
+        complete,
+        tool_rules: permissions.tools,
+        has_v2_permissions: permissions.native,
+    }
 }
 
 fn resolved(cwd: Option<&Path>, path: &Path) -> PathBuf {
     cwd.map_or_else(|| path.to_path_buf(), |cwd| cwd.join(path))
 }
 
-fn read_dir_agents(
-    dir: &Path,
-    add: &mut impl FnMut(Option<&str>),
-    denied: &mut OpenCodeToolDenies,
-) {
-    for file in CONFIG_FILES {
-        config_agents(&dir.join(file), add, denied);
+fn read_dir_agents(dir: &Path, add: &mut impl FnMut(Option<&str>), permissions: &mut Permissions) {
+    for file in ["config.json"].into_iter().chain(CONFIG_FILES) {
+        config_agents(&dir.join(file), add, permissions);
     }
     for (folder, nested) in AGENT_FOLDERS {
         let mut budget = MAX_AGENTS;
-        markdown_agents(&dir.join(folder), "", nested, 0, &mut budget, add);
+        markdown_agents(
+            &dir.join(folder),
+            "",
+            nested,
+            0,
+            &mut budget,
+            add,
+            permissions,
+        );
     }
 }
 
@@ -136,6 +158,7 @@ fn markdown_agents(
     depth: usize,
     budget: &mut usize,
     add: &mut impl FnMut(Option<&str>),
+    permissions: &mut Permissions,
 ) {
     let Ok(entries) = fs::read_dir(dir) else {
         return;
@@ -163,18 +186,336 @@ fn markdown_agents(
                     depth + 1,
                     budget,
                     add,
+                    permissions,
                 );
             }
         } else if let Some(stem) = name.strip_suffix(".md") {
-            add(Some(&format!("{prefix}{stem}")));
+            let name = format!("{prefix}{stem}");
+            add(Some(&name));
+            let rules = read_text(&path)
+                .and_then(|text| markdown_permissions(&text, &mut permissions.native));
+            permissions.tools.collect_markdown(&name, rules);
         }
     }
 }
 
-fn config_agents(file: &Path, add: &mut impl FnMut(Option<&str>), denied: &mut OpenCodeToolDenies) {
+fn config_agents(file: &Path, add: &mut impl FnMut(Option<&str>), permissions: &mut Permissions) {
     if let Some(text) = read_text(file) {
-        discover_opencode_config(&text, add, denied);
+        discover_opencode_config(&text, add, &mut permissions.tools, &mut permissions.native);
+    } else if !matches!(fs::symlink_metadata(file), Err(error) if error.kind() == std::io::ErrorKind::NotFound)
+    {
+        add(None);
+        permissions.tools.withhold_config();
     }
+}
+
+type MarkdownRules = Vec<(String, String, String)>;
+
+enum Yaml {
+    Scalar(String),
+    Map(Vec<(String, Yaml)>),
+    List(Vec<Yaml>),
+}
+
+/// Read only the permission fields of the bounded frontmatter. Other metadata may use
+/// multiline descriptions. Unsupported syntax that can affect permission fields is opaque.
+fn markdown_permissions(text: &str, native: &mut bool) -> Option<MarkdownRules> {
+    let mut lines = text.trim_start_matches('\u{feff}').lines();
+    match lines.next().unwrap_or_default().trim_end() {
+        "---" | "---yaml" | "---yml" => {}
+        opener if opener.starts_with("---") && !opener.starts_with("----") => return None,
+        _ => return Some(Vec::new()),
+    }
+    let mut root = Vec::new();
+    loop {
+        let line = lines.next()?.trim_end();
+        if line == "---" {
+            break;
+        }
+        let content = line.trim_start_matches(' ');
+        if !content.is_empty() && !content.starts_with('#') {
+            root.push((line.len() - content.len(), content));
+        }
+    }
+
+    let Some(&(indent, first)) = root.first() else {
+        return Some(Vec::new());
+    };
+    let mut fields = if first.starts_with('{') {
+        let [(_, line)] = root.as_slice() else {
+            return None;
+        };
+        let Yaml::Map(fields) = yaml_inline(line, 0)? else {
+            return None;
+        };
+        fields
+    } else {
+        let mut input = root.as_slice();
+        let mut fields = Vec::new();
+        while let Some((&(column, line), rest)) = input.split_first() {
+            if column != indent {
+                return None;
+            }
+            let (key, value) = yaml_pair(line)?;
+            // An indentless sequence is valid under a mapping key, too.
+            let end = rest
+                .iter()
+                .position(|&(column, line)| {
+                    column < indent || (column == indent && yaml_list_item(line).is_none())
+                })
+                .unwrap_or(rest.len());
+            if matches!(key.as_str(), "permission" | "permissions" | "agents") {
+                fields.push((key, yaml_value(value, &rest[..end], 0)?));
+            }
+            input = &rest[end..];
+        }
+        fields
+    };
+    if yaml_duplicate_keys(&fields) {
+        return None;
+    }
+    // Native rules take precedence over the legacy map in the same document.
+    fields.sort_by_key(|(key, _)| key == "permissions");
+    let mut rules = Vec::new();
+    for (key, value) in fields {
+        markdown_rules(&key, value, native, &mut rules)?;
+    }
+    Some(rules)
+}
+
+fn markdown_rules(
+    key: &str,
+    value: Yaml,
+    native: &mut bool,
+    rules: &mut MarkdownRules,
+) -> Option<()> {
+    let effect = |value: Yaml| match value {
+        Yaml::Scalar(value) if matches!(value.as_str(), "allow" | "deny" | "ask") => Some(value),
+        _ => None,
+    };
+    match (key, value) {
+        ("permission", Yaml::Scalar(value)) => {
+            effect(Yaml::Scalar(value))?;
+        }
+        ("permission", Yaml::Map(values)) => {
+            for (action, value) in values {
+                match value {
+                    Yaml::Map(resources) => {
+                        for (resource, value) in resources {
+                            rules.push((action.clone(), resource, effect(value)?));
+                        }
+                    }
+                    value => rules.push((action, "*".into(), effect(value)?)),
+                }
+            }
+        }
+        ("permissions", Yaml::List(values)) => {
+            *native = true;
+            for value in values {
+                let Yaml::Map(fields) = value else {
+                    return None;
+                };
+                let (mut action, mut resource, mut rule_effect) = (None, None, None);
+                for (key, value) in fields {
+                    let Yaml::Scalar(value) = value else {
+                        return None;
+                    };
+                    let field = match key.as_str() {
+                        "action" => &mut action,
+                        "resource" => &mut resource,
+                        "effect" => &mut rule_effect,
+                        _ => return None,
+                    };
+                    if field.replace(value).is_some() {
+                        return None;
+                    }
+                }
+                rules.push((
+                    action?,
+                    resource.unwrap_or_else(|| "*".into()),
+                    effect(Yaml::Scalar(rule_effect?))?,
+                ));
+            }
+        }
+        ("agents", Yaml::Map(_)) => *native = true,
+        ("permission" | "permissions" | "<<", _) => return None,
+        _ => {}
+    }
+    Some(())
+}
+
+type YamlLine<'a> = (usize, &'a str);
+
+fn yaml_list_item(line: &str) -> Option<&str> {
+    line.strip_prefix("- ")
+        .or_else(|| (line == "-").then_some(""))
+}
+
+fn yaml_pair(line: &str) -> Option<(String, &str)> {
+    let mut rest = line;
+    let key = yaml_key(&mut rest, &[':'])?;
+    Some((key, rest.trim_start()))
+}
+
+fn yaml_key(text: &mut &str, delimiters: &[char]) -> Option<String> {
+    let quoted = text.trim_start().starts_with(['"', '\'']);
+    let key = yaml_scalar(text, delimiters)?;
+    let rest = text.trim_start().strip_prefix(':')?;
+    if key == "<<" || (!quoted && !rest.is_empty() && !rest.starts_with(char::is_whitespace)) {
+        return None;
+    }
+    *text = rest;
+    Some(key)
+}
+
+fn yaml_value(text: &str, lines: &[YamlLine<'_>], depth: usize) -> Option<Yaml> {
+    if depth >= 5 {
+        return None;
+    }
+    if text.is_empty() || text.starts_with('#') {
+        yaml_block(lines, depth)
+    } else if lines.is_empty() {
+        yaml_inline(text, depth)
+    } else {
+        None
+    }
+}
+
+fn yaml_block(mut lines: &[YamlLine<'_>], depth: usize) -> Option<Yaml> {
+    let &(indent, first) = lines.first()?;
+    let list = yaml_list_item(first).is_some();
+    let mut values = Vec::new();
+    let mut fields = Vec::new();
+    while let Some((&(column, line), rest)) = lines.split_first() {
+        if column != indent {
+            return None;
+        }
+        let end = rest
+            .iter()
+            .position(|&(column, _)| column <= indent)
+            .unwrap_or(rest.len());
+        let children = &rest[..end];
+        if list {
+            let item = yaml_list_item(line)?;
+            let trimmed = item.trim_start();
+            if yaml_pair(trimmed).is_some() {
+                let mut mapping = vec![(indent + 2 + item.len() - trimmed.len(), trimmed)];
+                mapping.extend_from_slice(children);
+                values.push(yaml_value("", &mapping, depth + 1)?);
+            } else {
+                values.push(yaml_value(trimmed, children, depth + 1)?);
+            }
+        } else {
+            let (key, value) = yaml_pair(line)?;
+            fields.push((key, yaml_value(value, children, depth + 1)?));
+        }
+        lines = &rest[end..];
+    }
+    if list {
+        Some(Yaml::List(values))
+    } else {
+        (!yaml_duplicate_keys(&fields)).then_some(Yaml::Map(fields))
+    }
+}
+
+fn yaml_duplicate_keys(fields: &[(String, Yaml)]) -> bool {
+    let keys: BTreeSet<_> = fields.iter().map(|(key, _)| key).collect();
+    keys.len() != fields.len()
+}
+
+fn yaml_inline(mut text: &str, depth: usize) -> Option<Yaml> {
+    let value = yaml_flow(&mut text, depth)?;
+    let rest = text.trim_start();
+    (rest.is_empty() || (text.starts_with(char::is_whitespace) && rest.starts_with('#')))
+        .then_some(value)
+}
+
+fn yaml_flow(text: &mut &str, depth: usize) -> Option<Yaml> {
+    if depth >= 5 {
+        return None;
+    }
+    *text = text.trim_start();
+    let (mapping, close) = if let Some(rest) = text.strip_prefix('{') {
+        *text = rest;
+        (true, '}')
+    } else if let Some(rest) = text.strip_prefix('[') {
+        *text = rest;
+        (false, ']')
+    } else {
+        return yaml_scalar(text, &[',', '}', ']']).map(Yaml::Scalar);
+    };
+    let mut values = Vec::new();
+    let mut fields = Vec::new();
+    loop {
+        *text = text.trim_start();
+        if let Some(rest) = text.strip_prefix(close) {
+            *text = rest;
+            return if mapping {
+                (!yaml_duplicate_keys(&fields)).then_some(Yaml::Map(fields))
+            } else {
+                Some(Yaml::List(values))
+            };
+        }
+        if mapping {
+            let key = yaml_key(text, &[':', ',', '}', ']'])?;
+            fields.push((key, yaml_flow(text, depth + 1)?));
+        } else {
+            values.push(yaml_flow(text, depth + 1)?);
+        }
+        *text = text.trim_start();
+        if !text.starts_with(close) {
+            *text = text.strip_prefix(',')?;
+        }
+    }
+}
+
+fn yaml_scalar(text: &mut &str, delimiters: &[char]) -> Option<String> {
+    *text = text.trim_start();
+    if let Some(rest) = text.strip_prefix('\'') {
+        let mut rest = rest;
+        let mut value = String::new();
+        loop {
+            let (part, tail) = rest.split_once('\'')?;
+            value.push_str(part);
+            if let Some(tail) = tail.strip_prefix('\'') {
+                value.push('\'');
+                rest = tail;
+            } else {
+                *text = tail;
+                return Some(value);
+            }
+        }
+    }
+    if text.starts_with('"') {
+        let mut escaped = false;
+        for (index, ch) in text.char_indices().skip(1) {
+            if ch == '"' && !escaped {
+                let (value, tail) = text.split_at(index + 1);
+                *text = tail;
+                return serde_json::from_str(value).ok();
+            }
+            escaped = ch == '\\' && !escaped;
+        }
+        return None;
+    }
+    let end = text
+        .char_indices()
+        .find(|&(index, ch)| {
+            delimiters.contains(&ch)
+                || (ch == '#' && (index == 0 || text.as_bytes()[index - 1].is_ascii_whitespace()))
+        })
+        .map_or(text.len(), |(index, _)| index);
+    let value = text[..end].trim_end();
+    // Aliases, tags and multiline or explicit complex keys need a full YAML parser.
+    if value.is_empty()
+        || value.starts_with(['&', '*', '!', '|', '>', '?', '[', '{', '-', '%', '@', '`'])
+        || value.contains([':', '[', ']', '{', '}'])
+        || value.chars().any(char::is_control)
+    {
+        return None;
+    }
+    *text = &text[value.len()..];
+    Some(value.into())
 }
 
 fn valid(name: &str) -> bool {

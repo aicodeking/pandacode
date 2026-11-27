@@ -126,8 +126,8 @@ jobs:
     # Each row copies its release.yml build row: same runner and TRANSCRIBE_CMAKE_ARGS (see the comment
     # there; an empty value adds no CMake arguments). Clippy covers the same targets as the Linux job;
     # the full suite stays on Linux, except targeted platform-sensitive unit tests (warm spares, Claude
-    # policy/roots, home and config-dir resolution, exits) on macOS arm64 and Windows x64, and the
-    # release-profile real-audio smoke (as in the Linux job) on macOS, Windows x64 and Linux arm64.
+    # policy/roots, home and config-dir resolution, exits, session state) on macOS arm64 and
+    # Windows x64, and the release-profile real-audio smoke on macOS, Windows x64 and Linux arm64.
     # The Linux arm64 row installs the same native packages as the Linux job.
     name: Rust clippy (${{ matrix.target }})
     strategy:
@@ -174,13 +174,12 @@ jobs:
         run: node --test scripts/release/ci-startup-smoke.test.mjs
       - run: npm run build
       - run: cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
-      # Run platform-sensitive warm-spare, Claude policy/roots, home-resolution, exit and checkout-busy
-      # tests on macOS and Windows so case-insensitive env vars, USERPROFILE, Windows managed-settings
-      # paths and checkout canonicalisation (`/var` vs `/private/var`, `\\?\` verbatim prefixes) are
-      # executed natively in CI rather than only clippy-checked. libtest ORs the filters as
-      # substrings of each test path. The separate Unix exit tests are also run on macOS, and
-      # Colab's settings tests live in `cloud::colab::tests`. A filter list
-      # that matched little would still pass, so require at least 200 passed tests on macOS and
+      # Run platform-sensitive tests on macOS and Windows. These cover case-insensitive env vars,
+      # USERPROFILE, Windows managed-settings paths, checkout canonicalisation (`/var` vs `/private/var`,
+      # `\\?\` verbatim prefixes), and session-state durability (including directory sync on macOS).
+      # libtest ORs the filters as substrings of each test path. The separate Unix exit tests also
+      # run on macOS, and Colab's settings tests live in `cloud::colab::tests`.
+      # A filter list that matched little would still pass, so require at least 200 passed tests on macOS and
       # Windows and at least one passing test for every prefix. Require Connect hard-link refusal
       # and both Windows Job Object cleanup tests by exact name. Log checks use portable awk.
       - name: Platform Rust unit tests (macOS and Windows)
@@ -200,6 +199,7 @@ jobs:
             path_match::
             lead_spare::
             session_launch_tests::
+            session_state::
             cloud::colab::tests::
             workspace::text_search::
           )

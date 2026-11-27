@@ -555,6 +555,97 @@ fn eval_v2_action(
 }
 
 #[test]
+fn skill_manager_opencode_exact_rules_follow_disk_inline_and_environment_order() {
+    let fixture = crate::skill_manager::tests::Fixture::new();
+    let root = fixture.0.join("repo");
+    let cwd = root.join("package");
+    fs::create_dir_all(root.join(".git")).unwrap();
+    fs::create_dir_all(&cwd).unwrap();
+    let tool = "pandacode_architect_pandacode_explore";
+    let alias = trailing_key(tool);
+    for native in [false, true] {
+        let config = |action: &str, effect: &str| {
+            let rule = if native {
+                serde_json::json!({"permissions": [{"action": action, "resource": "*", "effect": effect}]})
+            } else {
+                serde_json::json!({"permission": {(action): effect}})
+            };
+            let mut config = rule.clone();
+            config[if native { "agents" } else { "agent" }] = serde_json::json!({"plan": rule});
+            config.to_string()
+        };
+        fs::write(root.join("opencode.json"), config(&alias, "allow")).unwrap();
+        fs::write(cwd.join("opencode.json"), config(tool, "deny")).unwrap();
+        let agents = opencode_all_agents_with_env(Some(&cwd), &OpenCodeEnv::default());
+        let env_allow = serde_json::json!({(&alias): "allow"}).to_string();
+        for (inline, env, expected) in [
+            (
+                config("pandacode_architect_*", "allow"),
+                Some(r#"{"*":"allow"}"#),
+                "deny",
+            ),
+            (config(tool, "allow"), None, "allow"),
+            (config(tool, "deny"), Some(env_allow.as_str()), "allow"),
+        ] {
+            let (inline, _) =
+                opencode_tool_grants_with(&inline, env, &["pandacode_explore"], &agents).unwrap();
+            let config: serde_json::Value = serde_json::from_str(&inline).unwrap();
+            for target in [
+                &config,
+                &config[if native { "agents" } else { "agent" }]["plan"],
+            ] {
+                let effect = if native {
+                    target["permissions"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .rfind(|rule| rule["action"] == alias)
+                        .unwrap()["effect"]
+                        .as_str()
+                } else {
+                    target["permission"][&alias].as_str()
+                };
+                assert_eq!(effect, Some(expected), "{native}: {inline}");
+            }
+        }
+    }
+}
+
+#[test]
+fn skill_manager_opencode_only_a_later_exact_rule_clears_markdown_withholding() {
+    let fixture = crate::skill_manager::tests::Fixture::new();
+    let root = &fixture.0;
+    fs::create_dir_all(root.join(".git")).unwrap();
+    fs::create_dir_all(root.join(".opencode/agents")).unwrap();
+    fs::write(
+        root.join(".opencode/agents/reviewer.md"),
+        "---\npermission: *opaque\n---\nReview",
+    )
+    .unwrap();
+    let agents = opencode_all_agents_with_env(Some(root), &OpenCodeEnv::default());
+    let tool = "pandacode_architect_pandacode_explore";
+    for (action, effect, expected) in [
+        ("pandacode_architect_*", "allow", None),
+        (tool, "allow", Some("allow")),
+        (tool, "deny", Some("deny")),
+    ] {
+        let inline = serde_json::json!({"agent":{"reviewer":{"permission":{(action):effect}}}});
+        let (inline, _) =
+            opencode_tool_grants_with(&inline.to_string(), None, &["pandacode_explore"], &agents)
+                .unwrap();
+        let result: serde_json::Value = serde_json::from_str(&inline).unwrap();
+        assert_eq!(
+            result["agent"]["reviewer"]["permission"][tool].as_str(),
+            expected
+        );
+        assert_eq!(
+            result["agent"]["reviewer"]["permission"][trailing_key(tool)].as_str(),
+            expected
+        );
+    }
+}
+
+#[test]
 fn skill_manager_opencode_v2_disabled_skills_and_grants_evaluate_cleanly_across_layers() {
     let disabled = BTreeSet::from(["review".into()]);
     let agents = OpenCodeAgents {

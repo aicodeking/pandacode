@@ -1,12 +1,12 @@
 //! Background exit of clean Claude-family runs: `reap` finishes the process after the run
 //! returns, and `await_exit` makes the next same-session launch wait for it.
 
-use super::{redact::redact_key, wait_child, BACKGROUND_EXIT_WAIT, Child, ChildStdin, ChildStdout, ProcessGroup, StderrReader, EXIT_HARD_CAP, EXIT_WAIT};
+use super::{wait_child, BACKGROUND_EXIT_WAIT, Child, ChildStdin, ChildStdout, ProcessGroup, StderrReader, EXIT_HARD_CAP, EXIT_WAIT};
 use crate::checkout_busy::{checkout_identity, path_in_checkout_identity};
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex, OnceLock},
+    sync::{atomic::{AtomicBool, Ordering}, Arc, Mutex, OnceLock},
     time::Duration,
 };
 use tokio::time::Instant;
@@ -33,18 +33,56 @@ fn hurry_session(session_id: &str) {
 pub(super) struct ExitEntry {
     pub(super) exiting: tokio::sync::watch::Receiver<()>,
     pub(super) cwd: Option<PathBuf>,
+    pub(super) call_stopped: Option<Arc<AtomicBool>>,
 }
 
 /// Every pending exit of a session, oldest first: each keeps its own `cwd`, so a newer exit in
 /// another folder never hides an older one from `await_exits_in`.
 pub(super) type Registry = Mutex<HashMap<String, Vec<ExitEntry>>>;
 
-/// Processes of clean Claude-family runs still exiting, by session id. Claude Code's natural exit
+/// Processes of clean Claude-family runs still exiting, by session id, and saved-tool invocations
+/// still working in a checkout. Claude Code's natural exit
 /// after its `result` frame is within `BACKGROUND_EXIT_WAIT` (`EXIT_WAIT` once a launch waits); the run returns at once and `reap` waits instead.
 /// The sender drops when the process (and its group) is gone, or if the reaper is dropped.
 pub(super) fn exit_registry() -> &'static Registry {
     static EXITING: OnceLock<Registry> = OnceLock::new();
     EXITING.get_or_init(Default::default)
+}
+
+fn clear_exit(id: &str, exiting: &tokio::sync::watch::Receiver<()>) {
+    let mut registry = exit_registry().lock().unwrap_or_else(|p| p.into_inner());
+    if let Some(entries) = registry.get_mut(id) {
+        entries.retain(|entry| !entry.exiting.same_channel(exiting));
+        if entries.is_empty() {
+            registry.remove(id);
+        }
+    }
+}
+
+/// The blocking runner holds this through process cleanup. Waiters resolve when it drops,
+/// even if the runtime dropped the handler that started the runner.
+pub(crate) struct CheckoutWorkGuard {
+    id: String,
+    exiting: tokio::sync::watch::Receiver<()>,
+    _done: tokio::sync::watch::Sender<()>,
+}
+
+impl Drop for CheckoutWorkGuard {
+    fn drop(&mut self) {
+        clear_exit(&self.id, &self.exiting);
+    }
+}
+
+/// Register a saved tool by checkout. Its per-call key keeps the work visible to checkout
+/// busy checks even when they exclude the task that requested the mutation.
+pub(crate) fn track_checkout_work(cwd: PathBuf, call_stopped: Arc<AtomicBool>) -> CheckoutWorkGuard {
+    let id = format!("saved-tool:{}", uuid::Uuid::new_v4());
+    let (done, exiting) = tokio::sync::watch::channel(());
+    exit_registry().lock().unwrap_or_else(|p| p.into_inner()).insert(
+        id.clone(),
+        vec![ExitEntry { exiting: exiting.clone(), cwd: Some(cwd), call_stopped: Some(call_stopped) }],
+    );
+    CheckoutWorkGuard { id, exiting, _done: done }
 }
 
 /// Snapshot of `(session_id, cwd)` for every pending or in-flight exit in the registry.
@@ -124,21 +162,34 @@ pub(crate) use crate::path_match::{path_in_folder, resolve_path};
 /// Wait until every pending exit whose recorded working directory lies in `folder` has exited
 /// (hurrying them as `await_exit` does), bounded by `EXIT_HARD_CAP`.
 pub(crate) async fn await_exits_in(folder: &Path) -> Result<(), String> {
-    wait_in(exit_registry(), folder, EXIT_HARD_CAP, true, false).await
+    wait_in(exit_registry(), folder, EXIT_HARD_CAP, true, WaitScope::Folder).await
 }
 
 /// Wait for pending exits in this checkout, excluding independent linked worktrees below it.
 pub(crate) async fn await_exits_in_checkout(folder: &Path) -> Result<(), String> {
-    wait_in(exit_registry(), folder, EXIT_HARD_CAP, true, true).await
+    wait_in(exit_registry(), folder, EXIT_HARD_CAP, true, WaitScope::Checkout).await
 }
 
 /// Patient version of [`await_exits_in_checkout`] for Turn checks, bounded by
 /// `EXIT_HARD_CAP`.
 pub(crate) async fn await_exits_in_checkout_patiently(folder: &Path) -> Result<(), String> {
-    wait_in(exit_registry(), folder, EXIT_HARD_CAP, false, true).await
+    wait_in(exit_registry(), folder, EXIT_HARD_CAP, false, WaitScope::Checkout).await
 }
 
-async fn wait_in(registry: &Registry, folder: &Path, cap: Duration, hurry: bool, checkout_only: bool) -> Result<(), String> {
+/// Wait before starting a saved tool so retries cannot overlap a canceled process. Other
+/// active tool calls may run in parallel. Checkout mutations use the full checkout wait.
+pub(crate) async fn await_checkout_before_tool(folder: &Path) -> Result<(), String> {
+    wait_in(exit_registry(), folder, EXIT_HARD_CAP, true, WaitScope::BeforeTool).await
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum WaitScope {
+    Folder,
+    Checkout,
+    BeforeTool,
+}
+
+async fn wait_in(registry: &Registry, folder: &Path, cap: Duration, hurry: bool, scope: WaitScope) -> Result<(), String> {
     let wait = async {
         let mut resolved = None;
         let mut waited: Vec<tokio::sync::watch::Receiver<()>> = Vec::new();
@@ -149,6 +200,9 @@ async fn wait_in(registry: &Registry, folder: &Path, cap: Duration, hurry: bool,
                 .iter()
                 .flat_map(|(id, entries)| entries.iter().map(move |entry| (id, entry)))
                 .filter_map(|(id, entry)| {
+                    if scope == WaitScope::BeforeTool && entry.call_stopped.as_ref().is_some_and(|flag| !flag.load(Ordering::SeqCst)) {
+                        return None;
+                    }
                     if waited.iter().any(|done| done.same_channel(&entry.exiting)) {
                         return None;
                     }
@@ -162,7 +216,7 @@ async fn wait_in(registry: &Registry, folder: &Path, cap: Duration, hurry: bool,
             let previous = resolved.take();
             let (target_resolved, matching) = tokio::task::spawn_blocking(move || {
                 let target_resolved = previous.unwrap_or_else(|| {
-                    if checkout_only {
+                    if scope != WaitScope::Folder {
                         checkout_identity(&target)
                     } else {
                         resolve_path(&target)
@@ -171,7 +225,7 @@ async fn wait_in(registry: &Registry, folder: &Path, cap: Duration, hurry: bool,
                 let matching = snapshot
                     .into_iter()
                     .filter(|(_, cwd, _)| {
-                        if checkout_only {
+                        if scope != WaitScope::Folder {
                             path_in_checkout_identity(cwd, &target_resolved)
                         } else {
                             path_in_folder(cwd, &target, &target_resolved)
@@ -268,7 +322,7 @@ fn spawn_exit_hurried<F: std::future::Future<Output = ()> + Send + 'static>(
         // Earlier entries keep their own `cwd` (a folder wait still finds them); an exit without
         // one inherits the latest, as it continues that run in the same folder.
         let cwd = cwd.or_else(|| entries.last().and_then(|entry| entry.cwd.clone()));
-        entries.push(ExitEntry { exiting: exiting.clone(), cwd });
+        entries.push(ExitEntry { exiting: exiting.clone(), cwd, call_stopped: None });
         previous
     };
     let session_id = session_id.to_owned();
@@ -287,13 +341,7 @@ fn spawn_exit_hurried<F: std::future::Future<Output = ()> + Send + 'static>(
                 }
             }
         }
-        let mut registry = exit_registry().lock().unwrap_or_else(|p| p.into_inner());
-        if let Some(entries) = registry.get_mut(&session_id) {
-            entries.retain(|entry| !entry.exiting.same_channel(&exiting));
-            if entries.is_empty() {
-                registry.remove(&session_id);
-            }
-        }
+        clear_exit(&session_id, &exiting);
         drop(done);
     });
 }
@@ -390,26 +438,10 @@ pub(super) fn retire_gracefully_in_cwd(session_id: &str, mut child: Child, group
     });
 }
 
-/// The one log line for a reaped process that exited nonzero: session id and a short stderr
-/// tail with every known secret (relay key, named-connection values) redacted.
-pub(super) fn exit_note(
-    session_id: &str,
-    status: std::process::ExitStatus,
-    stderr: &str,
-    secrets: &[String],
-) -> Option<String> {
-    if status.success() {
-        return None;
-    }
-    let redacted = secrets.iter().fold(stderr.trim().to_owned(), |text, secret| redact_key(&text, Some(secret)));
-    let start = redacted.char_indices().rev().nth(NOTE_TAIL - 1).map_or(0, |(at, _)| at);
-    let tail = &redacted[start..];
-    let tail = if tail.is_empty() { String::new() } else { format!(": {tail}") };
-    Some(format!("The CLI of session {session_id} exited with {status} after its run ended{tail}"))
+/// The one log line for a reaped process that exited nonzero.
+pub(super) fn exit_note(session_id: &str, status: std::process::ExitStatus) -> Option<String> {
+    (!status.success()).then(|| format!("The CLI of session {session_id} exited with {status} after finishing its turn"))
 }
-
-/// Characters of stderr kept in `exit_note`.
-pub(super) const NOTE_TAIL: usize = 300;
 
 /// Process handles handed to [`reap`] once a clean Claude-family run finishes.
 pub(super) struct Reaped {
@@ -420,16 +452,18 @@ pub(super) struct Reaped {
     pub(super) stdout: ChildStdout,
     pub(super) group: ProcessGroup,
     pub(super) stderr: StderrReader,
-    pub(super) secrets: Vec<String>,
 }
 
 /// Finish a clean run's process in the background, with `finish_child`'s escalation. stdin is
 /// closed at once, before the wait behind any earlier exit of the session, so the CLI never
-/// idles with it open. Stdout is read to EOF and discarded meanwhile: Claude Code may still
-/// write while it flushes after `result`, and a closed pipe would fail it. A nonzero exit is
-/// logged once (`exit_note`); `secrets` are redacted from its stderr tail.
+/// idles with it open. Both output streams are drained while it flushes after `result`.
+/// A nonzero exit logs only its session and status. Child output can contain credentials.
 pub(super) fn reap(reaped: Reaped) {
-    let Reaped { session_id, cwd, mut child, stdin, mut stdout, mut group, mut stderr, secrets } = reaped;
+    reap_with_log(reaped, |note| eprintln!("{note}"));
+}
+
+pub(super) fn reap_with_log(reaped: Reaped, log: impl FnOnce(String) + Send + 'static) {
+    let Reaped { session_id, cwd, mut child, stdin, mut stdout, mut group, stderr } = reaped;
     // Outside a runtime nothing can drain or wait; the process dies with its handles.
     let Ok(runtime) = tokio::runtime::Handle::try_current() else { return };
     drop(stdin);
@@ -448,12 +482,9 @@ pub(super) fn reap(reaped: Reaped) {
         drain.abort();
         if escalated {
             // The status is PandaCode's own SIGTERM/SIGKILL, not a CLI failure.
-            eprintln!("The CLI of session {id} was still exiting after {:.1}s and was stopped", began.elapsed().as_secs_f32());
-        } else if let Some(status) = status.filter(|status| !status.success()) {
-            let tail = tokio::time::timeout(Duration::from_millis(500), &mut stderr.0).await.ok().and_then(Result::ok).unwrap_or_default();
-            if let Some(note) = exit_note(&id, status, &tail, &secrets) {
-                eprintln!("{note}");
-            }
+            log(format!("The CLI of session {id} was still exiting after {:.1}s and was stopped", began.elapsed().as_secs_f32()));
+        } else if let Some(note) = status.and_then(|status| exit_note(&id, status)) {
+            log(note);
         }
         drop(stderr);
     });
@@ -588,7 +619,6 @@ mod unit_tests {
             stdout,
             group,
             stderr: StderrReader(tokio::spawn(read_stderr(stderr))),
-            secrets: Vec::new(),
         });
     }
 
@@ -679,7 +709,7 @@ mod unit_tests {
     }
 
     #[test]
-    fn exit_note_redacts_secrets_and_bounds_tail_cross_platform() {
+    fn exit_note_reports_only_session_and_status_cross_platform() {
         #[cfg(unix)]
         let (failed, clean) = {
             use std::os::unix::process::ExitStatusExt;
@@ -691,20 +721,9 @@ mod unit_tests {
             (std::process::ExitStatus::from_raw(1), std::process::ExitStatus::from_raw(0))
         };
         assert!(!failed.success() && clean.success());
-        let secrets = ["relay-key-1".to_owned(), "conn-value-2".to_owned()];
-        assert!(exit_note("s1", clean, "relay-key-1", &secrets).is_none(), "a clean exit logs nothing");
-        let note = exit_note("s1", failed, "  boom relay-key-1 and conn-value-2\n", &secrets).unwrap();
-        assert!(note.contains("session s1") && note.ends_with(": boom [redacted] and [redacted]"), "{note}");
-        assert!(!note.contains("relay-key-1") && !note.contains("conn-value-2"), "{note}");
-        let note = exit_note("s2", failed, "", &secrets).unwrap();
-        assert!(note.ends_with("after its run ended"), "no stderr, no tail: {note}");
-        // The tail is the last `NOTE_TAIL` characters (not bytes), after redaction.
-        let long = format!("{}relay-key-1 {}", "é".repeat(NOTE_TAIL), "x".repeat(NOTE_TAIL));
-        let note = exit_note("s3", failed, &long, &secrets).unwrap();
-        let tail = note.rsplit(": ").next().unwrap();
-        assert_eq!(tail.chars().count(), NOTE_TAIL, "{note}");
-        assert!(tail.chars().all(|c| c == 'x'), "only the end is kept: {note}");
-        assert!(!note.contains("relay-key-1"), "{note}");
+        assert!(exit_note("s1", clean).is_none(), "a clean exit logs nothing");
+        let note = exit_note("s1", failed).unwrap();
+        assert_eq!(note, format!("The CLI of session s1 exited with {failed} after finishing its turn"));
     }
 
     /// End to end on Windows: a clean Claude-family run returns at its `result` frame and its CLI
@@ -806,7 +825,7 @@ Start-Sleep -Seconds 30
         // Timeout bounds a stuck exit.
         let stuck_id = format!("exit-in-stuck-{}", uuid::Uuid::new_v4().simple());
         let hold_stuck = hold_in_cwd_for_test(&stuck_id, folder.clone());
-        assert!(wait_in(exit_registry(), &folder, Duration::from_millis(60), false, false).await.is_err());
+        assert!(wait_in(exit_registry(), &folder, Duration::from_millis(60), false, WaitScope::Folder).await.is_err());
         drop(hold_stuck);
         await_exit(&stuck_id).await.unwrap();
 

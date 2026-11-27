@@ -3660,6 +3660,10 @@ async fn reserve_current_desktop_checkout(
     };
     for _ in 0..4 {
         let root = read_root().await?;
+        if checkout_busy::active_agent_or_reserved_in_state(state, &root).await? {
+            return Err(busy.into());
+        }
+        providers::await_exits_in_checkout_patiently(&root).await?;
         let reservation = checkout_busy::reserve_idle_checkouts(state, vec![root.clone()], busy).await?;
         if read_root().await? == root {
             return Ok((root, reservation));
@@ -3867,6 +3871,7 @@ async fn switch_branch_with(
         "This task's checkout changed while preparing to switch branches. Try again.",
     )
     .await?;
+    providers::quiesce_spares_in_checkout(&root).await?;
     blocking(move || {
         let _reservation = reservation;
         switch(&root, &branch, trust)
