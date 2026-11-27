@@ -35,6 +35,7 @@ import * as secrets from './secrets.ts';
 import { isLegacyHelloError, legacy as legacyCapabilities, parseHello, supports } from './api/hello.ts';
 import { attachLimits, uploadImages, type ImageChunk, type SendImage } from '../store/attach.ts';
 import { capabilitiesOf, forgetCapabilities, markMissing, refusalMeansStale, setCapabilities } from './api/capabilities.ts';
+import { wentOffline } from '../store/host-update.ts';
 import { AppState } from 'react-native';
 import { RelaySocket, type ConnectionQuality, type QualityListener } from './socket.ts';
 import { markCurrent, markStartup } from './perf.ts';
@@ -331,11 +332,25 @@ async function refreshIfDue() {
 const validDevice = (d: any): d is Device =>
   d && typeof d.id === 'string' && /^[\x21-\x7e]{1,200}$/.test(d.id) && typeof d.name === 'string' && typeof d.publicKey === 'string';
 
+/** Hosts presence last listed as online: a host in here that a presence frame no longer lists
+ * online has just gone down (or is mid-restart), so its waiting calls are failed at once. */
+const onlineHosts = new Set<string>();
+
 /** Every device signed in to the same GitHub account is the user's: presence is the whole list. */
 function applyDevices(list: unknown[]) {
   const devices = list.filter(validDevice).slice(0, 64);
   for (const id of keys.keys()) if (!devices.some(d => d.id === id && d.publicKey === keys.get(id)!.publicKey)) keys.delete(id);
   for (const map of [watched, glanced]) for (const id of map.keys()) if (!devices.some(d => d.id === id)) map.delete(id);
+  // A host that just left the list or went offline dropped its socket, as Update and restart does.
+  // A call already on its way there is never answered and no `undeliverable` comes (the relay had
+  // forwarded it), so it would wait out its 20 s timeout. Fail it now, with LOST like a closed
+  // socket: the request may have reached the host, so a prompt stays "Unconfirmed" rather than
+  // being dropped as never sent (`promptMaybeRan`).
+  for (const id of wentOffline(onlineHosts, devices)) {
+    onlineHosts.delete(id);
+    pending.fail(id, undefined, LOST);
+  }
+  for (const d of devices) if (d.online) onlineHosts.add(d.id);
   patch({ devices });
   discoverAll();
 }
@@ -918,6 +933,7 @@ function schedulePrefetch() {
 /** Sign-out and account deletion: nothing of any thread stays in memory or on disk. */
 function forgetThreads() {
   helloed.clear();
+  onlineHosts.clear();
   forgetCapabilities();
   forgetResends();
   prefetch.replace([]);

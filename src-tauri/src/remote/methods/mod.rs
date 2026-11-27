@@ -26,6 +26,7 @@ pub(crate) mod design;
 pub(crate) mod files;
 pub(crate) mod git;
 pub(crate) mod github;
+pub(crate) mod host_methods;
 pub(crate) mod projects;
 pub(crate) mod rewind;
 pub(crate) mod rooms;
@@ -116,9 +117,9 @@ const START_METHODS: [&str; 4] = ["github.startTask", "chat.start", "team.start"
 /// are here, so a retry runs beside its first try and waits for its answer instead of queueing
 /// behind it. Each one waits in the queue at most [`background_timeout`] (socket.rs).
 /// `slash.resolve` may run discovery for up to the phone's 30 s, so it never blocks a Stop.
-const BACKGROUND_METHODS: [&str; 18] = [
+const BACKGROUND_METHODS: [&str; 20] = [
     "btw.ask", "pull.review", "checks.run", "git.commit", "git.push", "github.comment", "pull.create", "recipes.run", "worktree.create", "worktree.merge", "worktree.remove", "vm.start", "vm.stop",
-    "schedules.runNow", "bot.runSchedule", "rewind.to", "moodboards.add", "slash.resolve",
+    "schedules.runNow", "bot.runSchedule", "rewind.to", "moodboards.add", "slash.resolve", "host.checkUpdate", "host.updateAndRestart",
 ];
 
 /// How long the phone waits for a background call (its `timeoutMs` in
@@ -134,8 +135,9 @@ pub(crate) fn background_timeout(name: &str, params: &Value) -> std::time::Durat
         // `task.pullMerge` (host.rs, Round 23): client.ts `MERGE_TIMEOUT_MS`.
         "git.commit" | "worktree.create" | "worktree.merge" | "worktree.remove" | "btw.ask" | "vm.start" | "vm.stop" | "task.pullMerge" => 60,
         "recipes.run" | "github.comment" | "pull.review" => 45,
-        // api/composer.ts: discovery may take the phone's whole 30 s.
-        "slash.resolve" => 30,
+        // api/composer.ts: discovery may take the phone's whole 30 s, and so may a release check
+        // (api/host.ts `CHECK_TIMEOUT_MS`), which also has a 30 s manifest ceiling on the host.
+        "slash.resolve" | "host.checkUpdate" => 30,
         // `schedules.runNow`, `bot.runSchedule`, `rewind.to`, `moodboards.add`: the default.
         _ => return super::client::TIMEOUT,
     };
@@ -197,7 +199,7 @@ impl PartialEq for Parsed {
 
 /// Every feature group, in the order `host.hello` lists them. A new feature file adds
 /// itself here (and its `mod` line above) once.
-const GROUPS: [(&str, &[Method]); 17] = [
+const GROUPS: [(&str, &[Method]); 18] = [
     ("hello", HELLO),
     ("threads", threads::METHODS),
     ("composer", composer::METHODS),
@@ -215,6 +217,7 @@ const GROUPS: [(&str, &[Method]); 17] = [
     ("rewind", rewind::METHODS),
     ("search", search::METHODS),
     ("rooms", rooms::METHODS),
+    ("host", host_methods::METHODS),
 ];
 
 /// Every registry method.
@@ -269,9 +272,9 @@ const BASE_FEATURES: [&str; 11] =
 /// they are off.
 /// `task.start` with a `repo` this computer has no project for refuses too
 /// (`start::refuse_clone`), but a start in an existing project does not, so it is not listed.
-pub(crate) const SWITCH_METHODS: [&str; 15] = [
+pub(crate) const SWITCH_METHODS: [&str; 17] = [
     "terminal.list", "terminal.open", "terminal.read", "terminal.write", "terminal.resize", "terminal.close", "runScript.start", "runScript.stop", "checks.run", "files.write", "skills.activate", "cloudAgents.start",
-    "moodboards.add", "projects.clone", "team.start",
+    "moodboards.add", "projects.clone", "team.start", "host.checkUpdate", "host.updateAndRestart",
 ];
 
 /// What `host.hello` answers: protocol, version, every method this host serves, its

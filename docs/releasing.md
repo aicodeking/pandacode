@@ -55,6 +55,14 @@ and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`. Forks without these secrets can still
 publish installers without automatic updates. The matching public key is in
 `tauri.conf.json`.
 
+The update state is shared between the desktop window's updater (`src/app-updates.ts`) and
+PandaConnect (`src-tauri/src/app_updates.rs`, docs/remote-access.md "Updates"). The window still owns
+the automatic check: it publishes what it found through the `app_update_publish` command, so a paired
+phone's `host.updateStatus` shows it without a second request to GitHub. A phone's `host.checkUpdate`
+and `host.updateAndRestart` write the same state, so whichever side checked last wins — deliberately.
+Both phone calls need Full access for remote tasks, and the restart they ask for drops every phone's
+connection (clients re-subscribe when presence returns).
+
 **Keep the private key safe.** Installed apps accept only updates signed by it. If it
 is lost, existing installs can no longer update and people must reinstall a build with
 a new key; if it leaks, rotate it the same way. The maintainer's copy lives outside the

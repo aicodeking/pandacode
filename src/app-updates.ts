@@ -48,11 +48,23 @@ export function startAppUpdates(host: UpdatesHost): AppUpdates {
   let state: UpdateState = nativeDesktop ? { kind: 'idle' } : { kind: 'off' };
   let mode: UpdateMode = (() => { try { return parseUpdateMode(localStorage.getItem(KEY)); } catch { return 'automatic' as const; } })();
   // Until the native answer arrives nothing has been checked, so nothing can install.
-  let installable = false, approved = false;
-  const known = !nativeDesktop ? Promise.resolve() : call<boolean>('app_update_install_supported')
-    .then(value => { installable = value; }, cause => { console.warn('Could not tell how PandaCode was installed:', cause); });
+  let installable = false, approved = false, running = '';
+  /** Tells the Rust side (app_updates.rs, shared with a paired phone's host.updateStatus) what this
+   * updater knows, so a phone sees a check the desktop already made without a second request. Only
+   * the fields a phone reads are published; a failure here must never break the updater. */
+  const publish = () => {
+    if (!nativeDesktop) return;
+    const update = state.kind === 'available' || state.kind === 'downloading' || state.kind === 'ready' || state.kind === 'installing' ? state.version : null;
+    void call('app_update_publish', { current: running, pending: update, installable, error: state.kind === 'error' ? state.message : null }).catch(() => { /* A phone's view of it only. */ });
+  };
+  // The running version is the phone's "PandaCode x.y.z" line; empty until read, and Rust falls back
+  // to its own package version for the gap.
+  const known = !nativeDesktop ? Promise.resolve() : Promise.all([
+    call<boolean>('app_update_install_supported').then(value => { installable = value; }, cause => { console.warn('Could not tell how PandaCode was installed:', cause); }),
+    import('@tauri-apps/api/app').then(app => app.getVersion()).then(value => { running = value; }, cause => { console.warn('Could not read the PandaCode version:', cause); }),
+  ]).then(publish);
   let pending: Pending | null = null, lastCheck = 0, lastInput = Date.now(), checking: Promise<void> | null = null;
-  const set = (next: UpdateState) => { state = next; listeners.forEach(listener => listener()); };
+  const set = (next: UpdateState) => { state = next; listeners.forEach(listener => listener()); publish(); };
   const message = (cause: unknown) => errorText(cause, 'An unexpected error occurred.');
 
   async function download(update: Pending): Promise<void> {

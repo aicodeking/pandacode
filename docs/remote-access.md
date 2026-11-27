@@ -302,6 +302,13 @@ methods as `fullAccessSwitch`, so a phone hides them and says why before calling
 - **Terminals:** one phone may have at most 4 shells open on a computer (`MAX_PHONE_TERMINALS`);
   a fifth `terminal.open` is refused with `This phone already has 4 terminals open on this
   computer. Close one to open another.` Opens still starting count, and a failed one frees its slot.
+- **Bot management:** every write in the `bots` group (`bot.edit`, `bot.reset`, `bot.delete`,
+  `bot.ruleAdd`/`bot.ruleDelete`, `bot.scheduleCreate`/`setEnabled`/`delete`) needs both the `full`
+  grant and the host's "Full access for remote tasks" switch. A bot takes untrusted input from
+  Telegram, Slack, Discord and WhatsApp and then acts on the computer, so its settings are a bigger
+  lever than a task's. `bot.edit` never accepts the bot's brief (`instructions`, `goals`, `soul`) and
+  cannot raise a bot to `full` mode without the switch. A schedule that runs, or one enabled again,
+  is gated the same way, because it lets the bot work unattended.
 - **Bots:** `bot.detail` to a `view` device is limited: `schedules`, `rules` and `memories` are
   empty lists, `memoryCount`, `scheduleCount` and `ruleCount` carry their sizes, and `limited:
   true` is set. The phone shows the counts with an access note instead of empty sections.
@@ -1248,6 +1255,9 @@ paged replies take `offset` and answer `next`.
 | `bot.pairingDecide` | full | O | `botId, channelId, senderId, decision: approved\|blocked\|removed` |
 | `bot.failoverDecide` | full | O | `sessionId, action: send\|wait, always?` |
 | `machines.list` / `cloud.machines` / `cloudAgents.list` / `routing.status` | view | RO | —. `routing.status` → `{ routing: { enabled, mode, minP, profiler, error, failed } }` with `error` a fixed sentence, never the router's own text. |
+| `host.updateStatus` | view | RO | — → `{ currentVersion, update: null \| { version }, installable, restarting, error }`. Reads the shared update state only: no network. `currentVersion` is the version the desktop updater published, or this build's; `error` is the last check's sentence. |
+| `host.checkUpdate` | full | B | — → the same status object. Makes a real (network) check for the release manifest, coalesced with any other caller's, so two phones never make two requests at once. Needs Full access for remote tasks. A check that finds nothing clears both the pending version and an older error; a failure records the error and leaves no pending update. The manifest request has a 30 s ceiling, so it never holds the background lane longer. |
+| `host.updateAndRestart` | full | B | — → `{ restarting: true }` (sent before the restart). With nothing pending it checks first, then downloads, installs and restarts ~750 ms later so the reply and a `host.restarting` event reach every viewer. Needs Full access for remote tasks. A copy that cannot install over itself (Linux outside an AppImage) is refused instead. A failed install clears `restarting`, records `error` and does **not** restart. The restart is claimed atomically, so two phones (or a retried call) never start two installs. |
 | `vm.frame` | control | RO | `name, frameId?, offset?` (a live picture of the VM's screen) |
 | `vm.start` / `vm.stop` | full | B | `name` |
 | `orchestration.respond` | full | O | `requestId, accept, deviceId?, access?: read\|ask\|full`; `full` also needs Full access for remote tasks. |
@@ -1260,6 +1270,27 @@ paged replies take `offset` and answer `next`.
 | `moodboards.add` | full | B | `projectId, board, imageId, name?` → `{ board }` (the desktop's `MoodboardDetail`, oldest images dropped to fit). Also needs Full access for remote tasks. `imageId` is an upload from this device's `image.put`, claimed as `task.send` claims one (given back if the add fails, removed from the capture folder after it); the desktop's `add_moodboard_image` decodes it into the board in app storage. `board` is a board id and `name` a plain file name (no folders, `..`, leading dot or control characters; default `Image from phone.png`). Emits `moodboards-changed { projectId, boardId }`. |
 | `deploy.targets` | view | RO | — → `{ targets: [{ id, connected, note? }] }` with `id` one of the desktop Deploy menu's targets in its order (`vercel`, `cloudflare`, `railway`, `netlify`, `aws`, `gcloud`, from `src/deploy.ts`). `connected` is decided as `deployItems()` does (`cloud_connections` lists that provider connected); `note` is the menu's "Connect it in Settings → Agents → Cloud sandboxes" for one that is not. No tokens, accounts or project details. |
 | `team.start` | full | S | Needs Full access for remote tasks (team workers run with full access). `projectId`, the `task.start` fields (no `repo`, `worktree` or `branch`), `auto?` or `profileId` (not both); `startId` (required, as for `chat.start`) shared with `task.startStatus` |
+
+### Updates
+
+A paired phone can see the computer's PandaCode version and ask it to update and restart, so a
+computer left running does not stay a release behind because nobody is at its keyboard.
+`host.hello` already carries `appVersion`; `host.updateStatus` adds whether an update is waiting,
+whether this copy can install one, and the last check's failure. The automatic check stays where it
+was: `src/app-updates.ts` in the desktop window still checks at launch and every six hours and
+publishes what it found through `app_update_publish`, so a phone reads a check the desktop already
+made without a second request to GitHub. `host.checkUpdate` and `host.updateAndRestart` are the two
+calls that need the network or change the machine; both need **Full access for remote tasks** turned
+on, because installing swaps the program the user runs. The check and the restart share one gate, so
+two phones asking at once make one manifest request and share its answer.
+
+A restart drops every phone's connection: the host answers `{ restarting: true }` first, tells each
+subscribed viewer with a `host.restarting` event, and only then installs and restarts (Windows exits
+into its installer; macOS and Linux relaunch). Clients that do not know the event simply see presence
+drop and re-subscribe when the computer is back — the host remembers subscriptions and hands the
+catch-up out on presence as it always does. Nothing is written to the chat's tasks by the restart
+itself; a running agent is stopped by the ordinary clean shutdown, and the update is applied the way
+the desktop's own updater applies it.
 
 ### Starting a task on another computer
 

@@ -12,10 +12,11 @@ import type { HostProject } from '../../connect/api/files.ts';
 import { computerSummary, platformName } from '../../store/inbox.ts';
 import { useConnect, useStatus } from '../../store/index.ts';
 import { Banner, Group, Row, StatusDot } from '../../ui/ds/index.ts';
-import { BOT_DETAIL, botRows, entryParams, hubSections, versionLine, type HubEntry } from '../../ui/hub/entries.ts';
+import { BOT_DETAIL, botRows, entryParams, hubSections, type HubEntry } from '../../ui/hub/entries.ts';
 import { AccessNote } from '../../ui/AccessNote.tsx';
 import { BotAvatar, openBotSettings } from '../../ui/BotRow.tsx';
 import { HeaderActions } from '../../ui/HeaderActions.tsx';
+import { HostUpdate } from '../../ui/hub/HostUpdate.tsx';
 import { Failed, glyph, Loading, ProjectRows, useDeviceTasks, useProjects } from '../../ui/hub/common.tsx';
 import { Icon } from '../../ui/Icon.tsx';
 import { showActions } from '../../ui/Menu.tsx';
@@ -33,7 +34,6 @@ function StatusCard({ device }: { device: string }) {
   const colors = useColors();
   const size = useIconSize(20);
   const row = useConnect(s => s.devices.find(d => d.id === device));
-  const caps = useHostCapabilities(device);
   const { connected } = useStatus();
   const { inbox } = useInbox();
   const bots = useConnect(s => s.bots[device]?.length ?? 0);
@@ -48,7 +48,6 @@ function StatusCard({ device }: { device: string }) {
     <Group>
       <Row title={row.name} subtitle={`${platformName(row.platform)} · ${state}`} trailing={summary || undefined}
         leading={row.online ? <StatusDot tone="running" size={9} /> : <Icon ios="moon.zzz" android="bedtime" size={size} color={colors.faint} />} />
-      {!!versionLine(caps) && <Row title={versionLine(caps)} leading={<Icon ios="app.badge" android="apps" size={size} color={colors.muted} />} />}
       <Row title={link} leading={<Icon ios="lock.shield" android="shield_lock" size={size} color={colors.muted} />} />
       {bots > 0 && !listed && <Row title={`${bots} ${bots === 1 ? 'bot' : 'bots'}`} subtitle="Listed under Bots in the inbox" leading={<Icon ios="person.crop.circle" android="smart_toy" size={size} color={colors.muted} />}
         chevron onPress={() => router.navigate({ pathname: '/inbox', params: { computer: device } })} />}
@@ -146,6 +145,7 @@ export default function ComputerHub() {
       }]} />
       <Banner visible={!online} title={`${name} is offline`} body="Its tools open once it is back online." icon={{ ios: 'moon.zzz', android: 'bedtime' }} />
       <StatusCard device={device} />
+      <HostUpdate device={device} online={online} />
       {/* Offline first: the list can't arrive, so say so rather than an error (the call failing because
           it's offline) or an endless skeleton. */}
       {!projects ? (!online ? <Group title="Project"><Row title={`Projects load when ${name} is online.`} /></Group>
