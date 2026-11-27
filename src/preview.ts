@@ -646,6 +646,7 @@ const previewThemes = (() => {
 })();
 /** Whether the preview's sample machine has rtk; installing it flips this. */
 let previewRtk = false;
+let previewPxpipe = false;
 const listeners = new Map<string, Set<(event: any) => void>>();
 const timers = new Map<string, number>();
 const activeTools = new Map<string, { activity: ToolActivity; message: Message }>();
@@ -2440,12 +2441,12 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       result = s; break;
     }
     case 'task_token_usage': result = { input: 91234, cacheRead: 1000000, cacheWrite: 45000, output: 152340, firstUsed: Date.now() - 86400000, lastUsed: Date.now() - 300000 }; break;
-    case 'token_saver_tools': result = { rtk: previewRtk, rtkVersion: previewRtk ? '1.0.1' : '', rtkInstall: 'brew install rtk' }; break;
+    case 'token_saver_tools': result = { rtk: previewRtk, rtkVersion: previewRtk ? '1.0.1' : '', rtkInstall: 'brew install rtk', pxpipe: previewPxpipe, pxpipeVersion: previewPxpipe ? '0.16.0' : '', pxpipeInstall: 'npm install -g pxpipe-proxy', pxpipeBin: previewPxpipe ? '/usr/local/bin/pxpipe' : '' }; break;
     case 'token_saver_install': {
-      if (args.tool !== 'rtk') throw new Error('Unknown tool.');
+      if (args.tool !== 'rtk' && args.tool !== 'pxpipe') throw new Error('Unknown tool.');
       await new Promise(resolve => setTimeout(resolve, 500));
-      previewRtk = true;
-      result = { rtk: true, rtkVersion: '1.0.1', rtkInstall: 'brew install rtk' }; break;
+      if (args.tool === 'rtk') previewRtk = true; else previewPxpipe = true;
+      result = { rtk: previewRtk, rtkVersion: previewRtk ? '1.0.1' : '', rtkInstall: 'brew install rtk', pxpipe: previewPxpipe, pxpipeVersion: previewPxpipe ? '0.16.0' : '', pxpipeInstall: 'npm install -g pxpipe-proxy', pxpipeBin: previewPxpipe ? '/usr/local/bin/pxpipe' : '' }; break;
     }
     case 'themes_list': result = previewThemes.list(); break;
     case 'theme_import': result = previewThemes.import(String(args.path ?? '')); break;

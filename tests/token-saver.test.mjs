@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 
 const memory = new Map();
 globalThis.localStorage = { getItem: key => memory.get(key) ?? null, setItem: (key, value) => memory.set(key, String(value)), removeItem: key => memory.delete(key) };
-const { REMIND_EVERY, contextFor, defaults, estimate, guidance, setDefaults, suggestion, threadSaver, updateThread } = await import('../src/token-saver.ts');
+const { REMIND_EVERY, contextFor, defaults, estimate, guidance, pxpipeEligible, pxpipeEnabled, pxpipeModelSupported, setDefaults, setPxpipeEnabled, suggestion, threadSaver, updateThread } = await import('../src/token-saver.ts');
 const noRtk = { rtk: false }, withRtk = { rtk: true };
 
 test('guidance rides along when it changes and as a periodic reminder, never every message', () => {
@@ -33,6 +33,42 @@ test('RTK guidance needs rtk installed, and packs combine in one block', () => {
   assert.match(block, /least code that fully solves/);
   assert.match(block, /rg -n pattern path/);
   assert.doesNotMatch(block, /caveman/i);
+});
+
+test('pxpipe guidance needs pxpipe installed and names the detected CLI', () => {
+  memory.clear();
+  updateThread('px', { packs: ['pxpipe'] });
+  assert.equal(contextFor('px', noRtk), '', 'without pxpipe the pack is inert');
+  const on = { rtk: false, pxpipe: true, pxpipeBin: '/opt/homebrew/bin/pxpipe' };
+  const block = guidance(['pxpipe'], 'full', on);
+  assert.match(block, /pxpipe is installed/);
+  assert.match(block, /\/opt\/homebrew\/bin\/pxpipe export <path>/);
+  assert.match(block, /Read factsheet\.txt first/);
+  assert.match(block, /fall back to reading the file/);
+  assert.ok(estimate(['pxpipe'], 'full', noRtk) === 0, 'unavailable pxpipe saves nothing');
+  assert.ok(estimate(['pxpipe'], 'full', on) > 0, 'installed pxpipe counts');
+});
+
+test('pxpipe skips unsupported models and can be turned off entirely', () => {
+  memory.clear();
+  assert.equal(pxpipeEnabled(), true, 'on by default');
+  assert.equal(pxpipeModelSupported('claude', 'fable'), true);
+  assert.equal(pxpipeModelSupported('antigravity', 'gemini-4-hydrogen'), true);
+  assert.equal(pxpipeModelSupported('antigravity', 'gemini-3.8-flash'), true);
+  assert.equal(pxpipeModelSupported('claude', 'opus'), false, 'a strong reader but not a dense-page reader');
+  assert.equal(pxpipeModelSupported('antigravity', 'claude-sonnet-4-6'), false);
+  assert.equal(pxpipeModelSupported('grok', 'grok-4.6'), false, 'no image input');
+  assert.equal(pxpipeModelSupported('zcode', 'glm-5.3'), false, 'no image input');
+  assert.equal(pxpipeEligible('claude', 'fable'), true);
+  updateThread('off', { packs: ['pxpipe'] });
+  const available = () => ({ rtk: false, pxpipe: pxpipeEligible('claude', 'fable'), pxpipeBin: '/usr/bin/pxpipe' });
+  setPxpipeEnabled(false);
+  assert.equal(pxpipeEnabled(), false);
+  assert.equal(pxpipeEligible('claude', 'fable'), false, 'the switch skips even supported models');
+  assert.equal(contextFor('off', available()), '', 'turned off, the pack sends nothing');
+  setPxpipeEnabled(true);
+  assert.equal(pxpipeEligible('claude', 'fable'), true);
+  assert.notEqual(contextFor('off', available()), '', 'turned on again, guidance returns');
 });
 
 test('threads start from the saved default and keep their own changes', () => {

@@ -776,6 +776,11 @@ const github = createGithub({
 /* Per-thread token saving: packs ride along with messages as folded guidance. */
 const tokenSaver = createTokenSaver({
   call, notify, notifyError,
+  // pxpipe's eligibility (the saved switch plus the model's support) is decided in the saver.
+  sessionModel: sessionId => {
+    const s = state.sessions.find(item => item.id === sessionId);
+    return s ? { provider: s.provider, model: s.model } : null;
+  },
   contextUsage: sessionId => {
     const s = session();
     return s && s.id === sessionId ? state.streams.get(s.id)?.contextUsage ?? s.contextUsage ?? null : null;

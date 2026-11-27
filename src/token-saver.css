@@ -39,6 +39,8 @@ html[data-theme="dark"] .composer-saver-button[aria-pressed="true"]{color:var(--
 .saver-default{display:inline-flex;align-items:center;gap:6px;font-size:var(--type-meta);color:var(--muted);cursor:pointer}
 .saver-default input{accent-color:var(--ds-primary-bg);width:13px;height:13px;margin:0}
 .saver-default:has(input:disabled){opacity:.5;cursor:default}
+.saver-setting{display:inline-flex;align-items:center;gap:6px;padding:2px 0 4px;font-size:var(--type-meta);color:var(--muted);cursor:pointer}
+.saver-setting input{accent-color:var(--ds-primary-bg);width:13px;height:13px;margin:0}
 .saver-off{font-size:var(--type-body);color:var(--muted);padding:3px 6px;border-radius:var(--ds-control-radius)}
 .saver-off:hover:not(:disabled){color:var(--text);background:color-mix(in srgb,var(--text) 6%,transparent)}
 .saver-off:disabled{opacity:.4}
