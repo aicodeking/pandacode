@@ -461,9 +461,42 @@ async fn discover_attempt(
         stderr: String::new(),
     })?;
     command.arg("app-server");
-    let workspace = std::env::temp_dir();
+    snapshot_attempt(command, &std::env::temp_dir(), DISCOVERY_OUTPUT_LIMIT, deadline, parse_models).await
+}
+
+/// Share the bounded throwaway session with slash discovery without weakening
+/// model discovery's diagnostics, retry policy, or catalog validation.
+pub(crate) async fn create_snapshot(
+    command: Command,
+    workspace: &Path,
+    output_limit: u64,
+) -> Result<Value, String> {
+    snapshot_attempt(
+        command,
+        workspace,
+        output_limit,
+        tokio::time::Instant::now() + DISCOVERY_TIMEOUT,
+        |snapshot| Ok(snapshot.clone()),
+    )
+    .await
+    .map_err(|report| format_discovery_failure(
+        &report.failure,
+        report.exit_status.as_deref(),
+        &report.stderr,
+        &crate::provider_settings::environment("zcode"),
+    ))
+}
+
+async fn snapshot_attempt<T>(
+    mut command: Command,
+    workspace: &Path,
+    output_limit: u64,
+    deadline: tokio::time::Instant,
+    parse: impl FnOnce(&Value) -> Result<T, String>,
+) -> Result<T, DiscoveryReport> {
+    let workspace = workspace.to_path_buf();
     command
-        .current_dir(&workspace)
+        .current_dir(super::external_path(&workspace))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -491,7 +524,7 @@ async fn discover_attempt(
                 .take()
                 .ok_or_else(|| DiscoveryFailure::Io("ZCode stdout unavailable".into()))?,
         )
-        .take(DISCOVERY_OUTPUT_LIMIT + 1);
+        .take(output_limit + 1);
         if send_discovery_json(
             &mut stdin,
             &json!({"id": ID_CREATE, "method": "session/create", "params": {
@@ -518,7 +551,7 @@ async fn discover_attempt(
                 .await
                 .map_err(|e| DiscoveryFailure::Io(e.to_string()))?;
             total += count as u64;
-            if total > DISCOVERY_OUTPUT_LIMIT {
+            if total > output_limit {
                 return Err(DiscoveryFailure::OutputLimit);
             }
             if count == 0 {
@@ -559,7 +592,7 @@ async fn discover_attempt(
                 }}),
             )
             .await;
-            return parse_models(&value["result"]).map_err(DiscoveryFailure::InvalidCatalog);
+            return parse(&value["result"]).map_err(DiscoveryFailure::InvalidCatalog);
         }
     })
     .await
@@ -939,6 +972,7 @@ impl Protocol {
         }
         step.events
             .push(self.event("session", self.remote_id.clone(), None));
+        self.commands_changed(result, step);
         let settings = &result["settings"];
         let current = &result["session"]["model"];
         self.zcode.context_window = context_window_of(settings, current);
@@ -1155,6 +1189,10 @@ mod tests {
                 "thoughtLevel": {"enabled": true, "current": "max",
                                  "available": [{"value": "low"}, {"value": "high"}, {"value": "max"}]},
             },
+            "slashCommands": [
+                {"name": "goal", "description": "Set the session goal", "inputHint": "<goal>", "source": "builtin"},
+                {"name": "compact", "description": "Compact the conversation", "source": "builtin"},
+            ],
             "messages": [],
         })
     }
@@ -1176,6 +1214,11 @@ mod tests {
         let step = p
             .receive(json!({"id": ID_CREATE, "result": snapshot()}))
             .unwrap();
+        assert_eq!(step.events[0].kind, "session");
+        assert!(
+            step.events.iter().any(|event| event.kind == "commands_changed"),
+            "create snapshot publishes slashCommands",
+        );
         (p, step)
     }
 
