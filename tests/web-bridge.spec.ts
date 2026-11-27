@@ -99,8 +99,8 @@ function nextQueueEventReply(page: Page, sessionId: string) {
   });
 }
 
-async function openQueueClients(page: Page, beforeConnect?: (host: Page, sessionId: string, agentStatus: (running: boolean) => Promise<void>) => Promise<void>) {
-  const host = await page.context().newPage();
+async function openQueueClients(page: Page, beforeConnect?: (host: Page, sessionId: string, agentStatus: (running: boolean) => Promise<void>) => Promise<void>, separateHost?: Page) {
+  const host = separateHost ?? await page.context().newPage();
   await host.goto('/');
   await expect(host.locator('#prompt')).toBeEnabled();
   const sessionId = (await selected(host).getAttribute('data-id'))!;
@@ -252,6 +252,33 @@ test.describe('web mode', () => {
     await page.reload();
     await expect(page.getByText('Paused until the usage limit resets', { exact: true })).toBeVisible({ timeout: 15_000 });
     await expect(resume).toHaveCount(0);
+  });
+
+  test('an older queue hold event cannot restore a released hold', async ({ page }) => {
+    const { sessionId, web } = await openQueueClients(page, async (host, sessionId, agentStatus) => {
+      await agentStatus(true);
+      await host.evaluate(async sessionId => {
+        const { invoke } = await import('/src/preview.ts');
+        await invoke('set_queue_hold', { sessionId, held: true, reason: 'reset' });
+        await invoke('queue_add', { sessionId, text: 'Follow up after Resume', attachments: [] });
+      }, sessionId);
+    });
+    const resume = page.getByRole('button', { name: 'Resume after this run', exact: true });
+    await expect(resume).toBeVisible();
+    const sendHold = (held: boolean, holdSeq: number) => web.socket().send(JSON.stringify({
+      type: 'event', name: 'queue-changed', payload: { sessionId, held, holdSeq, ...(held ? { reason: 'reset' } : {}) },
+    }));
+    sendHold(false, 20);
+    await expect(resume).toHaveCount(0);
+
+    const row = await queueRows(page).elementHandle();
+    const refreshed = nextQueueEventReply(page, sessionId);
+    sendHold(true, 19);
+    await refreshed;
+    // Wait for the stale event's queue redraw before checking that the hold stayed released.
+    await expect.poll(() => row.evaluate(element => element.isConnected)).toBe(false);
+    await expect(resume).toHaveCount(0);
+    await expect(queueRows(page)).toHaveText(['Follow up after Resume']);
   });
 
   test('delayed boot snapshots cannot restore a removed queue row or a released hold', async ({ page }) => {
@@ -499,6 +526,31 @@ test.describe('web mode', () => {
     await expect(page.locator('#toast[data-danger]')).toHaveCount(0);
   });
 
+  test('reconnecting after a draft is discarded on the host tears down its composer', async ({ page }) => {
+    const { host, sessionId, web } = await openQueueClients(page);
+    await page.getByRole('button', { name: 'New task ⌘ N', exact: true }).click();
+    const prompt = page.locator('#prompt');
+    await expect(prompt).not.toHaveAttribute('data-session-id', sessionId);
+    const draftId = (await prompt.getAttribute('data-session-id'))!;
+    expect(draftId).toBeTruthy();
+    await prompt.fill('Unsent text in the discarded draft');
+
+    const oldSocket = web.socket();
+    await disconnect(web);
+    const discarded = await host.evaluate(async sessionId => {
+      const { invoke } = await import('/src/preview.ts');
+      return invoke('discard_draft', { sessionId });
+    }, draftId);
+    expect(discarded).toBe(true);
+
+    web.controls.refuseSockets = false;
+    await expect.poll(() => web.socket() !== oldSocket && web.subscriptions.has('agent-event'), { timeout: 10_000 }).toBe(true);
+    await expect(page.locator(`#prompt[data-session-id="${draftId}"]`)).toHaveCount(0);
+    await expect(page.locator(`#navigation .task-item[data-id="${draftId}"]`)).toHaveCount(0);
+    await expect(selected(page)).toHaveCount(0);
+    await expect(page.locator('#toast[data-danger]')).toHaveCount(0);
+  });
+
   test('reconnecting after a missed done clears stale Send now so a later queue-changed does not send from the browser', async ({ page }) => {
     const urgent = 'Send now before disconnect', later = 'Queued after reconnect';
     const { host, sessionId, web, finishedRuns, sentCount } = await openQueueClients(page, async (host, sessionId, agentStatus) => {
@@ -597,6 +649,44 @@ test.describe('web mode', () => {
     await expect.poll(() => web.socket() !== oldSocket && web.subscriptions.has('agent-event'), { timeout: 10_000 }).toBe(true);
     await expect(stop).toHaveCount(0);
     await expect(page.locator('#transcript .agent-message').last()).toContainText('This is the browser preview.');
+  });
+
+  test('reconnecting into a replacement run loads saved history and starts a fresh live card', async ({ page, browser, baseURL }) => {
+    // Pause host runs independently of the browser's reconnect timer.
+    const host = await browser.newPage({ baseURL });
+    try {
+      const { sessionId, web, finishedRuns } = await openQueueClients(page, undefined, host);
+      await pausePreview(host);
+      const sendFromHost = (text: string) => host.evaluate(async ({ sessionId, text }) => {
+        const { invoke } = await import('/src/preview.ts');
+        await invoke('send_message', { sessionId, text });
+      }, { sessionId, text });
+      const sendLiveText = (text: string) => web.socket().send(JSON.stringify({
+        type: 'event', name: 'agent-event', payload: { sessionId, kind: 'text', text },
+      }));
+      const stop = page.getByRole('button', { name: 'Stop task', exact: true });
+      const live = page.locator('#stream-region');
+      await sendFromHost('Run A prompt');
+      sendLiveText('Run A stale text');
+      await expect(live).toContainText('Run A stale text');
+      await expect(stop).toBeVisible();
+
+      const oldSocket = web.socket();
+      await disconnect(web);
+      await host.clock.runFor(2_000);
+      await expect.poll(() => finishedRuns).toEqual([sessionId]);
+      await sendFromHost('Run B prompt');
+
+      web.controls.refuseSockets = false;
+      await expect.poll(() => web.socket() !== oldSocket && web.subscriptions.has('agent-event'), { timeout: 10_000 }).toBe(true);
+      await expect(page.locator('#transcript .agent-message').last()).toContainText('This is the browser preview.');
+      await expect(page.locator('#transcript')).toContainText('Run B prompt');
+      await expect(stop).toBeVisible();
+      sendLiveText('Run B fresh text');
+      await expect(live).toContainText('Run B fresh text');
+      await expect(live).not.toContainText('Run A stale text');
+      await expect(stop).toBeVisible();
+    } finally { await host.close(); }
   });
 
   test('a session snapshot from a lagged stream preserves newer live text', async ({ page }) => {
@@ -700,7 +790,10 @@ test.describe('web mode', () => {
     await expect.poll(() => finishedRuns).toEqual([sessionId]);
     await expect(queueRows(page)).toHaveCount(0);
     await expect(queueRows(host)).toHaveCount(0);
-    expect(queueEvents.filter(event => event.held !== undefined)).toEqual([{ sessionId, held: true, reason: 'stopped' }, { sessionId, held: false }]);
+    expect(queueEvents.filter(event => event.held !== undefined)).toEqual([
+      { sessionId, held: true, reason: 'stopped', holdSeq: expect.any(Number) },
+      { sessionId, held: false, holdSeq: expect.any(Number) },
+    ]);
     expect(await sentCount(text)).toBe(1);
     expect(web.commands.filter(command => ['set_queue_hold', 'queue_take', 'send_message'].includes(command))).toEqual(['set_queue_hold']);
   });

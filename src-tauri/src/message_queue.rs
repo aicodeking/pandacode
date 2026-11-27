@@ -15,7 +15,14 @@ use tauri::{Emitter, State};
 const MAX_PER_TASK: i64 = 50;
 const MAX_ATTACHMENTS: usize = 1024 * 1024;
 
-static HELD_QUEUES: LazyLock<Mutex<HashMap<String, String>>> = LazyLock::new(Default::default);
+#[derive(Default)]
+struct HoldState {
+    // Allocate event sequence numbers in the same critical section as the hold change.
+    seq: u64,
+    holds: HashMap<String, String>,
+}
+
+static HELD_QUEUES: LazyLock<Mutex<HoldState>> = LazyLock::new(Default::default);
 
 pub(crate) fn normalize_hold_reason(reason: Option<&str>) -> &str {
     match reason {
@@ -24,42 +31,48 @@ pub(crate) fn normalize_hold_reason(reason: Option<&str>) -> &str {
     }
 }
 
-pub fn set_queue_hold_state(session_id: &str, held: bool, reason: Option<&str>) {
-    let mut queues = HELD_QUEUES.lock().unwrap_or_else(PoisonError::into_inner);
+pub fn set_queue_hold_state(session_id: &str, held: bool, reason: Option<&str>) -> u64 {
+    let mut state = HELD_QUEUES.lock().unwrap_or_else(PoisonError::into_inner);
     if held {
-        queues.insert(session_id.to_owned(), normalize_hold_reason(reason).to_owned());
+        state.holds.insert(session_id.to_owned(), normalize_hold_reason(reason).to_owned());
     } else {
-        queues.remove(session_id);
+        state.holds.remove(session_id);
     }
+    state.seq += 1;
+    state.seq
 }
 
-pub fn transition_queue_hold_reason(session_id: &str, from: &str, to: &str) -> bool {
-    let mut queues = HELD_QUEUES.lock().unwrap_or_else(PoisonError::into_inner);
-    if let Some(current) = queues.get_mut(session_id) {
-        if current == from {
-            *current = normalize_hold_reason(Some(to)).to_owned();
-            return true;
-        }
+pub fn transition_queue_hold_reason(session_id: &str, from: &str, to: &str) -> Option<u64> {
+    let mut state = HELD_QUEUES.lock().unwrap_or_else(PoisonError::into_inner);
+    let current = state.holds.get_mut(session_id)?;
+    let to = normalize_hold_reason(Some(to));
+    if current != from || current == to {
+        return None;
     }
-    false
+    *current = to.to_owned();
+    state.seq += 1;
+    Some(state.seq)
 }
 
-pub fn clear_queue_hold_if(session_id: &str, reasons: &[&str]) -> bool {
-    let mut queues = HELD_QUEUES.lock().unwrap_or_else(PoisonError::into_inner);
-    if queues.get(session_id).is_some_and(|r| reasons.contains(&r.as_str())) {
-        queues.remove(session_id);
-        return true;
+pub fn clear_queue_hold_if(session_id: &str, reasons: &[&str]) -> Option<u64> {
+    let mut state = HELD_QUEUES.lock().unwrap_or_else(PoisonError::into_inner);
+    let current = state.holds.get(session_id)?;
+    if !reasons.contains(&current.as_str()) {
+        return None;
     }
-    false
+    state.holds.remove(session_id);
+    state.seq += 1;
+    Some(state.seq)
 }
 
-pub fn hold_queue_if_unheld(session_id: &str, reason: &str) -> bool {
-    let mut queues = HELD_QUEUES.lock().unwrap_or_else(PoisonError::into_inner);
-    if !queues.contains_key(session_id) {
-        queues.insert(session_id.to_owned(), normalize_hold_reason(Some(reason)).to_owned());
-        return true;
+pub fn hold_queue_if_unheld(session_id: &str, reason: &str) -> Option<u64> {
+    let mut state = HELD_QUEUES.lock().unwrap_or_else(PoisonError::into_inner);
+    if state.holds.contains_key(session_id) {
+        return None;
     }
-    false
+    state.holds.insert(session_id.to_owned(), normalize_hold_reason(Some(reason)).to_owned());
+    state.seq += 1;
+    Some(state.seq)
 }
 
 #[allow(dead_code)]
@@ -68,16 +81,16 @@ pub fn set_queue_held(session_id: &str, held: bool) {
 }
 
 pub fn is_queue_held(session_id: &str) -> bool {
-    HELD_QUEUES.lock().unwrap_or_else(PoisonError::into_inner).contains_key(session_id)
+    HELD_QUEUES.lock().unwrap_or_else(PoisonError::into_inner).holds.contains_key(session_id)
 }
 
 #[allow(dead_code)]
 pub fn queue_hold_reason(session_id: &str) -> Option<String> {
-    HELD_QUEUES.lock().unwrap_or_else(PoisonError::into_inner).get(session_id).cloned()
+    HELD_QUEUES.lock().unwrap_or_else(PoisonError::into_inner).holds.get(session_id).cloned()
 }
 
 pub fn queue_holds_snapshot() -> HashMap<String, String> {
-    HELD_QUEUES.lock().unwrap_or_else(PoisonError::into_inner).clone()
+    HELD_QUEUES.lock().unwrap_or_else(PoisonError::into_inner).holds.clone()
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -645,52 +658,82 @@ mod tests {
     }
 
     #[test]
+    fn delayed_reset_keeps_its_sequence_after_resume() {
+        let session_id = crate::storage::id();
+        let limited_seq = set_queue_hold_state(&session_id, true, Some("limited"));
+        let reset_seq = transition_queue_hold_reason(&session_id, "limited", "reset").unwrap();
+        let clear_seq = set_queue_hold_state(&session_id, false, None);
+
+        // Resume can be emitted first if the reset notification was delayed after unlocking.
+        let emitted = [(false, clear_seq), (true, reset_seq)];
+        assert_eq!(emitted.iter().max_by_key(|event| event.1), Some(&(false, clear_seq)));
+        assert!(limited_seq < reset_seq && reset_seq < clear_seq);
+        assert!(!is_queue_held(&session_id));
+    }
+
+    #[test]
+    fn conditional_hold_mutations_sequence_only_successful_changes() {
+        let session_id = crate::storage::id();
+        assert_eq!(clear_queue_hold_if(&session_id, &["limited"]), None);
+
+        let hold_seq = hold_queue_if_unheld(&session_id, "limited").unwrap();
+        assert_eq!(hold_queue_if_unheld(&session_id, "failed"), None);
+        assert_eq!(clear_queue_hold_if(&session_id, &["failed"]), None);
+
+        let clear_seq = clear_queue_hold_if(&session_id, &["limited"]).unwrap();
+        assert_eq!(clear_queue_hold_if(&session_id, &["limited"]), None);
+        let next_hold_seq = hold_queue_if_unheld(&session_id, "failed").unwrap();
+        assert!(hold_seq < clear_seq && clear_seq < next_hold_seq);
+        set_queue_hold_state(&session_id, false, None);
+    }
+
+    #[test]
     fn atomic_queue_hold_transitions_respect_current_state() {
         let session_id = crate::storage::id();
 
         // Unheld: transition and conditional clear are no-ops; hold_queue_if_unheld succeeds.
-        assert!(!transition_queue_hold_reason(&session_id, "limited", "reset"));
+        assert_eq!(transition_queue_hold_reason(&session_id, "limited", "reset"), None);
         assert_eq!(queue_hold_reason(&session_id), None);
-        assert!(!clear_queue_hold_if(&session_id, &["limited", "reset", "restart"]));
+        assert_eq!(clear_queue_hold_if(&session_id, &["limited", "reset", "restart"]), None);
         assert_eq!(queue_hold_reason(&session_id), None);
 
-        assert!(hold_queue_if_unheld(&session_id, "limited"));
+        assert!(hold_queue_if_unheld(&session_id, "limited").is_some());
         assert_eq!(queue_hold_reason(&session_id).as_deref(), Some("limited"));
         // Already held: hold_queue_if_unheld leaves existing reason untouched.
-        assert!(!hold_queue_if_unheld(&session_id, "failed"));
+        assert_eq!(hold_queue_if_unheld(&session_id, "failed"), None);
         assert_eq!(queue_hold_reason(&session_id).as_deref(), Some("limited"));
 
         // Non-matching `from` leaves the hold unchanged.
-        assert!(!transition_queue_hold_reason(&session_id, "failed", "reset"));
+        assert_eq!(transition_queue_hold_reason(&session_id, "failed", "reset"), None);
         assert_eq!(queue_hold_reason(&session_id).as_deref(), Some("limited"));
 
         // Matching `from` transitions to normalized `to`.
-        assert!(transition_queue_hold_reason(&session_id, "limited", "reset"));
+        assert!(transition_queue_hold_reason(&session_id, "limited", "reset").is_some());
         assert_eq!(queue_hold_reason(&session_id).as_deref(), Some("reset"));
-        assert!(!transition_queue_hold_reason(&session_id, "limited", "reset"));
+        assert_eq!(transition_queue_hold_reason(&session_id, "limited", "reset"), None);
         assert_eq!(queue_hold_reason(&session_id).as_deref(), Some("reset"));
 
         // Unknown target reason normalizes to "stopped".
-        assert!(transition_queue_hold_reason(&session_id, "reset", "unknown"));
+        assert!(transition_queue_hold_reason(&session_id, "reset", "unknown").is_some());
         assert_eq!(queue_hold_reason(&session_id).as_deref(), Some("stopped"));
 
         // clear_queue_hold_if ignores non-matching reasons and empty slices.
-        assert!(!clear_queue_hold_if(&session_id, &[]));
-        assert!(!clear_queue_hold_if(&session_id, &["limited", "reset", "restart"]));
+        assert_eq!(clear_queue_hold_if(&session_id, &[]), None);
+        assert_eq!(clear_queue_hold_if(&session_id, &["limited", "reset", "restart"]), None);
         assert_eq!(queue_hold_reason(&session_id).as_deref(), Some("stopped"));
 
         // Matching reason clears the hold.
         for reason in ["limited", "reset", "restart"] {
             set_queue_hold_state(&session_id, true, Some(reason));
-            assert!(clear_queue_hold_if(&session_id, &["limited", "reset", "restart"]));
+            assert!(clear_queue_hold_if(&session_id, &["limited", "reset", "restart"]).is_some());
             assert!(!is_queue_held(&session_id));
             assert_eq!(queue_hold_reason(&session_id), None);
         }
 
         // hold_queue_if_unheld normalizes unknown reasons to "stopped".
-        assert!(hold_queue_if_unheld(&session_id, "unknown"));
+        assert!(hold_queue_if_unheld(&session_id, "unknown").is_some());
         assert_eq!(queue_hold_reason(&session_id).as_deref(), Some("stopped"));
-        assert!(!hold_queue_if_unheld(&session_id, "failed"));
+        assert_eq!(hold_queue_if_unheld(&session_id, "failed"), None);
         assert_eq!(queue_hold_reason(&session_id).as_deref(), Some("stopped"));
 
         set_queue_hold_state(&session_id, false, None);

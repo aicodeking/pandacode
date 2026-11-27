@@ -1710,6 +1710,7 @@ function discardDraft(id: string): void {
   state.drafts.delete(id);
   provisionalTasks.delete(id);
   deletedSessions.add(id);
+  queueHoldServerSeq.delete(id);
   setQueueHold(id);
   const pending = provisionalCorrections.get(id);
   const drop = () => void call<boolean>('discard_draft', { sessionId: id }).catch(() => undefined);
@@ -1779,7 +1780,7 @@ function stream(id: string): Stream {
   if (!s) {
     finishingStreams.delete(id);
     const now = Date.now();
-    s = { body: new TailText(), thought: new TailText(), get text() { return this.body.value; }, get thinking() { return this.thought.value || undefined; }, tools: [], accountSwitches: [], status: '', approvals: new Map(), inputs: new Map(), revision: 0, lastResponseAt: null, startedAt: now, turnKey: 'turn:live:' + id, omittedActivity: false };
+    s = { body: new TailText(), thought: new TailText(), get text() { return this.body.value; }, get thinking() { return this.thought.value || undefined; }, tools: [], accountSwitches: [], status: '', approvals: new Map(), inputs: new Map(), revision: 0, lastPromptAt: state.sessions.find(task => task.id === id)?.lastPromptAt ?? undefined, lastResponseAt: null, startedAt: now, turnKey: 'turn:live:' + id, omittedActivity: false };
     state.streams.set(id, s);
   }
   return s;
@@ -5204,24 +5205,31 @@ async function loadSessions({ reconcileStreams }: { reconcileStreams: boolean })
       const sessionById = new Map(sessions.map(task => [task.id, task]));
       if (detailResult.status === 'rejected' && !deletedSessions.has(selectedId) && sessionById.has(selectedId)) throw detailResult.reason;
       const details = detailResult.status === 'fulfilled' ? detailResult.value : null;
+      const detailMessage = detailResult.status === 'rejected' ? errorText(detailResult.reason) : '';
+      const selectedMissing = reconcileStreams &&
+        (detailMessage === 'Conversation not found.' || detailMessage === 'Task not found');
       const reconciledIds = new Set<string>();
       if (reconcileStreams) {
-        // A missed done or offline deletion can leave a live card behind. Events received since the request win over the snapshot.
+        // Rebuild pre-disconnect cards from saved history, even if the host is still running.
+        // Events received since the request started win over the snapshot.
         const isLiveStatus = (task: Session | undefined) => Boolean(task && ['running', 'starting', 'waiting', 'waiting_approval'].includes(task.status));
         for (const [id, live] of Array.from(state.streams.entries())) {
-          const s = sessionById.get(id);
-          if (isLiveStatus(s)) continue;
           if ((streamEventVersion.get(id) ?? 0) > resyncAt) continue;
           clearAgentInputs(live);
           state.streams.delete(id);
+          reconciledIds.add(id);
+          const s = sessionById.get(id), running = isLiveStatus(s);
+          const replaced = s?.lastPromptAt != null && live.lastPromptAt != null && s.lastPromptAt !== live.lastPromptAt;
+          if (running && !replaced) continue;
           runEndings.delete(id);
           sendFirst.delete(id);
           for (const [steerId, item] of steers) if (item.sessionId === id) steers.delete(steerId);
-          if (s) subagents.runEnded(id); else subagents.forget(id);
           tilePages.delete(id);
-          queueMicrotask(() => btwPanel.event(id, 'done'));
-          queueMicrotask(() => tiles.event(id));
-          reconciledIds.add(id);
+          if (!running) {
+            if (s) subagents.runEnded(id); else subagents.forget(id);
+            queueMicrotask(() => btwPanel.event(id, 'done'));
+            queueMicrotask(() => tiles.event(id));
+          }
         }
         // A tab connected mid-run may hold runEndings or a stopping sendFirst without a state.streams entry.
         for (const id of Array.from(runEndings.keys())) {
@@ -5237,7 +5245,8 @@ async function loadSessions({ reconcileStreams }: { reconcileStreams: boolean })
         if (reconciledIds.size) updateWorkTimer();
       }
       // The open draft is not listed natively until its first prompt; keep it while it is still a draft.
-      const drafts = state.sessions.filter(task => task.draft && !sessionById.has(task.id)).map(task => task.id === selectedId && details ? details : task);
+      const drafts = state.sessions.filter(task => task.draft && !sessionById.has(task.id) && !(selectedMissing && task.id === selectedId))
+        .map(task => task.id === selectedId && details ? details : task);
       state.sessions = [...sessions, ...drafts].filter(task => !deletedSessions.has(task.id));
       // A task's New task state may have changed (a failed first send left it a draft): its kept text follows.
       state.drafts.reclaimAll();
@@ -5256,7 +5265,10 @@ async function loadSessions({ reconcileStreams }: { reconcileStreams: boolean })
         const context = state.streams.get(s.id)?.contextUsage;
         if (context) s.contextUsage = context;
       }
-      if (state.sessionId && !selected && !deletedSessions.has(state.sessionId) && (reconciledIds.has(state.sessionId) || (reconcileStreams && selectedId === state.sessionId && detailResult.status === 'rejected'))) {
+      if (state.sessionId && !selected && !deletedSessions.has(state.sessionId) && selectedId === state.sessionId && selectedMissing) {
+        tilePages.delete(state.sessionId);
+        removeDeletedSessions([state.sessionId]);
+      } else if (state.sessionId && !selected && !deletedSessions.has(state.sessionId) && (reconciledIds.has(state.sessionId) || (reconcileStreams && selectedId === state.sessionId && detailResult.status === 'rejected'))) {
         const vanishedId = state.sessionId;
         subagents.forget(vanishedId); tilePages.delete(vanishedId); sendFirst.delete(vanishedId);
         ++state.generation; ++overlayOpenRequest;
@@ -5285,6 +5297,7 @@ function removeDeletedSessions(ids: string[]): void {
   for (const id of removed) {
     provisionalTasks.delete(id);
     deletedSessions.add(id); writeLink(localStorage, id, null);
+    queueHoldServerSeq.delete(id);
     setQueueHold(id); passedLimitResets.delete(id);
     const live = state.streams.get(id); if (live) clearAgentInputs(live);
     state.streams.delete(id); streamEventVersion.delete(id); finishingStreams.delete(id); teams.delete(id);
@@ -5470,6 +5483,7 @@ const sendFirst = new Map<string, { id: string; stopping?: boolean; hold?: HoldR
 let queueClock = 0;
 const queueListVersion = new Map<string, number>();
 const queueHoldVersion = new Map<string, number>();
+const queueHoldServerSeq = new Map<string, number>();
 let lastQueueHoldSnapshot = 0;
 function queueOf(id: string): QueuedMessage[] { return state.queues.get(id) ?? []; }
 function setQueue(id: string, entries: QueuedMessage[]): void { if (entries.length) state.queues.set(id, entries); else state.queues.delete(id); btwPanel.event(id, 'queue'); }
@@ -9721,12 +9735,13 @@ async function boot(): Promise<void> {
   // Follow-up changes are shared across clients. On the host, an idle, unheld task sends right away.
   listening.push(subscribe('queue-changed', payload => run((async () => {
     const id = payload?.sessionId; if (!id || deletedSessions.has(id)) return;
-    if (payload.held === false) {
+    const lastHoldSeq = queueHoldServerSeq.get(id);
+    const staleHold = typeof payload.holdSeq === 'number' && lastHoldSeq !== undefined && payload.holdSeq <= lastHoldSeq;
+    if (!staleHold && typeof payload.held === 'boolean') {
+      if (typeof payload.holdSeq === 'number') queueHoldServerSeq.set(id, payload.holdSeq);
       queueHoldVersion.set(id, ++queueClock);
-      state.queueHolds.delete(id);
-    } else if (payload.held === true) {
-      queueHoldVersion.set(id, ++queueClock);
-      state.queueHolds.set(id, asHoldReason(payload.reason));
+      if (payload.held) state.queueHolds.set(id, asHoldReason(payload.reason));
+      else state.queueHolds.delete(id);
     }
     const seq = ++queueClock;
     queueListVersion.set(id, seq);
@@ -9734,7 +9749,7 @@ async function boot(): Promise<void> {
     if (queueListVersion.get(id) !== seq || deletedSessions.has(id)) return;
     setQueue(id, entries);
     if (id === state.sessionId) renderComposer();
-    if (payload.held !== true) await dispatchQueue(id);
+    if (staleHold || payload.held !== true) await dispatchQueue(id);
   })())));
   // The launcher and Agents dock open a task in the desktop window; connected browser tabs keep their own.
   if (!webMode) listening.push(subscribe('overlay-open-task', event => run((async () => {
@@ -10021,6 +10036,7 @@ function correctProvisionalTask(task: Session): Promise<'ok' | 'missing' | 'stal
         state.drafts.delete(live.id);
         provisionalTasks.delete(live.id);
         deletedSessions.add(live.id);
+        queueHoldServerSeq.delete(live.id);
         setQueueHold(live.id);
         void call<boolean>('discard_draft', { sessionId: live.id }).catch(() => undefined);
         return 'stale';

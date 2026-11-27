@@ -2,7 +2,6 @@
 /* Every release, newest first, from releases/X.Y.Z.md (lib/changelog.ts). */
 import Page from '../layouts/Page.astro';
 import { releases, latestPublished, publishedReleaseCount, formatDate } from '../lib/changelog';
-const latest = latestPublished ?? releases[0];
 const id = (version: string) => `v${version.replace(/\./g, '-')}`;
 const months = releases.reduce<{ label: string; versions: string[] }[]>((groups, release) => {
   const label = release.date ? new Date(`${release.date}T12:00:00Z`).toLocaleDateString('en-US', { month: 'long', year: 'numeric', timeZone: 'UTC' }) : 'Earlier';
@@ -12,11 +11,11 @@ const months = releases.reduce<{ label: string; versions: string[] }[]>((groups,
 ---
 <Page title="Changelog" current="changelog" eyebrow="LITTLE BY LITTLE"
   heading="What’s new in PandaCode."
-  description={latest ? `Every PandaCode release, newest first. Latest: ${latest.version}${latest.date ? `, ${formatDate(latest.date)}` : ''}.` : 'Every PandaCode release, newest first.'}
+  description={latestPublished ? `Every PandaCode release, newest first. Latest: ${latestPublished.version}${latestPublished.date ? `, ${formatDate(latestPublished.date)}` : ''}.` : 'Every PandaCode release, newest first.'}
   lede={`${publishedReleaseCount} published releases and counting. Published releases are on GitHub, with their source.`}>
-  {latest && (
+  {latestPublished && (
     <div slot="hero" class="changelog-latest page-rise">
-      <span class="live-dot" aria-hidden="true"></span>Latest <a href={`#${id(latest.version)}`}>{latest.version}</a>{latest.date && <> · <time datetime={latest.date}>{formatDate(latest.date)}</time></>}
+      <span class="live-dot" aria-hidden="true"></span>Latest <a href={`#${id(latestPublished.version)}`}>{latestPublished.version}</a>{latestPublished.date && <> · <time datetime={latestPublished.date}>{formatDate(latestPublished.date)}</time></>}
     </div>
   )}
 
@@ -30,10 +29,14 @@ const months = releases.reduce<{ label: string; versions: string[] }[]>((groups,
           <div class="release-marker" aria-hidden="true"><span></span></div>
           <div class="release-meta">
             <h2 id={`${id(release.version)}-title`}><a href={`#${id(release.version)}`}>{release.version}</a></h2>
-            {latest && release.version === latest.version && <span class="release-badge">Latest</span>}
-            {release.bundledIn && (
-              <span class="release-badge release-badge-bundled">
-                Shipped in <a href={`#${id(release.bundledIn)}`}>{release.bundledIn}</a> (not published separately)
+            {release === latestPublished && <span class="release-badge">Latest</span>}
+            {release.publicationStatus !== 'published' && (
+              <span class="release-badge release-badge-unpublished">
+                {release.bundledIn
+                  ? <>Shipped in <a href={`#${id(release.bundledIn)}`}>{release.bundledIn}</a> (not published separately)</>
+                  : release.publicationStatus === 'pre-public'
+                    ? 'Pre-public note (not on GitHub Releases)'
+                    : 'Not published on GitHub Releases'}
               </span>
             )}
             {release.date && <time datetime={release.date}>{formatDate(release.date)}</time>}
@@ -61,7 +64,7 @@ const months = releases.reduce<{ label: string; versions: string[] }[]>((groups,
     font: inherit;
     font-weight: bold;
   }
-  .release-badge-bundled {
+  .release-badge-unpublished {
     padding: 4px 10px;
     border-radius: 10px;
     background: #eef2e4;
@@ -73,7 +76,7 @@ const months = releases.reduce<{ label: string; versions: string[] }[]>((groups,
     line-height: 1.4;
     text-transform: none;
   }
-  .release-badge-bundled a {
+  .release-badge-unpublished a {
     color: var(--ink);
     font-weight: 650;
     text-decoration: underline;
@@ -81,7 +84,7 @@ const months = releases.reduce<{ label: string; versions: string[] }[]>((groups,
     text-decoration-thickness: 1.5px;
     text-underline-offset: 2px;
   }
-  .release-badge-bundled a:hover {
+  .release-badge-unpublished a:hover {
     color: #647a43;
   }
 </style>

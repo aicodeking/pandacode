@@ -1225,7 +1225,7 @@ async fn set_resume_at_reset(state: State<'_, AppState>, session_id: String, ena
 #[tauri::command]
 async fn clear_usage_limit(app: tauri::AppHandle, state: State<'_, AppState>, session_id: String) -> Result<()> {
     state.store.lock().map_err(|e| e.to_string())?.clear_limited(&session_id)?;
-    headless::release_limited_hold_to_reset(&session_id, |id, reason| headless::emit_queue_hold(&app, id, reason));
+    headless::release_limited_hold_to_reset(&session_id, |id, reason, seq| headless::emit_queue_hold(&app, id, reason, seq));
     // A team held on this limit goes now, not at the next watchdog tick.
     architect::wake(app);
     Ok(())
@@ -1233,11 +1233,11 @@ async fn clear_usage_limit(app: tauri::AppHandle, state: State<'_, AppState>, se
 #[tauri::command]
 fn set_queue_hold(app: tauri::AppHandle, session_id: String, held: bool, reason: Option<String>) {
     let effective = message_queue::normalize_hold_reason(reason.as_deref());
-    message_queue::set_queue_hold_state(&session_id, held, held.then_some(effective));
+    let seq = message_queue::set_queue_hold_state(&session_id, held, held.then_some(effective));
     let event = if held {
-        serde_json::json!({ "sessionId": session_id, "held": true, "reason": effective })
+        serde_json::json!({ "sessionId": session_id, "held": true, "reason": effective, "holdSeq": seq })
     } else {
-        serde_json::json!({ "sessionId": session_id, "held": false })
+        serde_json::json!({ "sessionId": session_id, "held": false, "holdSeq": seq })
     };
     let _ = app.emit("queue-changed", event);
     if !held {

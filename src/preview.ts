@@ -864,6 +864,7 @@ function sampleDailyTokens(): { date: string; tokens: number }[] {
   });
 }
 const previewQueueHolds = new Map<string, string>();
+let previewHoldSeq = 0;
 
 /** Preview queues persist in localStorage so a reload behaves like a restart. */
 type PreviewQueued = { id: string; sessionId: string; position: number; text: string; attachments: unknown[]; createdAt: number; updatedAt: number };
@@ -1979,7 +1980,7 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       s.limitedAt = null; s.limitedUntil = null; s.resumeAtReset = false;
       if (previewQueueHolds.get(s.id) === 'limited') {
         previewQueueHolds.set(s.id, 'reset');
-        emit('queue-changed', { sessionId: s.id, held: true, reason: 'reset' });
+        emit('queue-changed', { sessionId: s.id, held: true, reason: 'reset', holdSeq: ++previewHoldSeq });
       }
       result = null; break;
     }
@@ -1988,7 +1989,7 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       const { sessionId } = args, held = Boolean(args.held), reason = args.reason ?? 'stopped';
       if (held) previewQueueHolds.set(sessionId, reason);
       else previewQueueHolds.delete(sessionId);
-      emit('queue-changed', { sessionId, held, ...(held ? { reason } : {}) });
+      emit('queue-changed', { sessionId, held, holdSeq: ++previewHoldSeq, ...(held ? { reason } : {}) });
       break;
     }
     case 'queue_list': result = previewQueue().filter(entry => !args.sessionId || entry.sessionId === args.sessionId); break;

@@ -7,6 +7,12 @@ import {
   publishedReleaseSummary,
 } from '../website/src/lib/changelog-meta.ts';
 
+async function releaseNoteVersions() {
+  return (await readdir(new URL('../releases/', import.meta.url)))
+    .filter(name => /^\d+\.\d+\.\d+\.md$/.test(name))
+    .map(name => name.slice(0, -3));
+}
+
 test('releases/0.3.155.md has no dead v0.3.155 URLs and documents shipping bundled in v0.3.156', async () => {
   const notes = await readFile(new URL('../releases/0.3.155.md', import.meta.url), 'utf8');
   const urls = notes.match(/https?:\/\/[^\s)]+/g) ?? [];
@@ -47,6 +53,12 @@ test('bundledInVersion identifies unpublished rolled-up release notes only', asy
   assert.equal(bundledInVersion('0.3.153'), '0.3.154');
   assert.equal(bundledInVersion('0.3.143'), '0.3.144');
   assert.equal(bundledInVersion('0.3.141'), '0.3.142');
+  for (const patch of [115, 116, 117, 118]) {
+    assert.equal(bundledInVersion(`0.3.${patch}`), '0.3.119');
+  }
+  assert.equal(bundledInVersion('0.3.95'), '0.3.96');
+  assert.equal(bundledInVersion('0.3.58'), '0.3.59');
+  assert.equal(bundledInVersion('0.3.36'), '0.3.37');
 
   assert.equal(bundledInVersion('0.3.162'), undefined);
   assert.equal(bundledInVersion('0.3.161'), undefined);
@@ -57,15 +69,12 @@ test('bundledInVersion identifies unpublished rolled-up release notes only', asy
   assert.equal(bundledInVersion('toString'), undefined);
   assert.equal(bundledInVersion('constructor'), undefined);
 
-  const releaseFiles = new Set(
-    (await readdir(new URL('../releases/', import.meta.url)))
-      .filter(name => /^\d+\.\d+\.\d+\.md$/.test(name))
-      .map(name => name.slice(0, -3)),
-  );
+  const releaseFiles = new Set(await releaseNoteVersions());
   for (const [unpublished, target] of Object.entries(UNPUBLISHED_BUNDLED_IN)) {
     assert.ok(releaseFiles.has(unpublished), `missing release note for unpublished ${unpublished}`);
     assert.ok(releaseFiles.has(target), `missing release note for target ${target}`);
     assert.equal(bundledInVersion(target), undefined, `target ${target} must be a published release`);
+    assert.equal(publishedReleaseSummary([{ version: target }]).publishedCount, 1, `target ${target} must be published`);
     const note = await readFile(new URL(`../releases/${unpublished}.md`, import.meta.url), 'utf8');
     const urls = note.match(/https?:\/\/[^\s)]+/g) ?? [];
     assert.deepEqual(
@@ -122,4 +131,28 @@ test('publishedReleaseSummary excludes unpublished entries from latest and count
     latest: undefined,
     publishedCount: 0,
   });
+});
+
+test('every historical unpublished note is excluded even without a bundledIn field', async () => {
+  const noteVersions = new Set(await releaseNoteVersions());
+  const versions = [
+    ...Array.from({ length: 49 }, (_, patch) => `0.2.${patch}`),
+    ...[36, 58, 72, 95, 115, 116, 117, 118, 124, 141, 143, 153, 155, 159, 160].map(patch => `0.3.${patch}`),
+  ];
+  for (const version of versions) {
+    assert.ok(noteVersions.has(version), `missing release note for ${version}`);
+    assert.deepEqual(publishedReleaseSummary([{ version }]), {
+      latest: undefined,
+      publishedCount: 0,
+    }, `${version} must be excluded`);
+  }
+});
+
+test('repository notes match the published release totals through 0.3.163', async () => {
+  const compare = (a, b) => a.localeCompare(b, 'en', { numeric: true });
+  const versions = (await releaseNoteVersions()).sort((a, b) => compare(b, a));
+  for (const [version, publishedCount] of [['0.3.162', 143], ['0.3.163', 144]]) {
+    const releases = versions.filter(note => compare(note, version) <= 0).map(version => ({ version }));
+    assert.deepEqual(publishedReleaseSummary(releases), { latest: { version }, publishedCount });
+  }
 });
