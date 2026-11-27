@@ -1,0 +1,67 @@
+/* Context relay: the transcript's relay card and the composer's Extras popover.
+ * Always loaded with the main document (imported from main.ts), so the composer control
+ * never changes size on first use. Tokens only: no literal colours, greys or radii. */
+
+/* ---------- Relay card ---------- */
+
+.relay-card { margin-top: 16px; margin-bottom: 16px; color: var(--muted); font-size: var(--type-meta); line-height: var(--type-meta-leading); }
+.relay-card summary { justify-content: flex-start; width: 100%; min-width: 0; margin: 0; gap: 6px; }
+.relay-card summary > .icon:last-child { flex: none; color: var(--faint); transition: rotate var(--ds-ease-out) ease-out; }
+.relay-card[open] summary > .icon:last-child { rotate: 180deg; }
+.relay-card-route { display: inline-flex; align-items: center; flex: 0 1 auto; min-width: 0; gap: 6px; }
+.relay-card-provider { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--type-meta); line-height: var(--type-meta-leading); font-weight: var(--weight-medium); color: var(--text); }
+.relay-card-route > .icon { flex: none; color: var(--faint); }
+.relay-card-title { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--type-caption); line-height: var(--type-caption-leading); color: var(--muted); }
+.relay-card p { max-width: none; margin: 0; }
+.relay-card-body { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--ds-border); }
+.relay-card-summary { color: var(--muted); white-space: pre-wrap; overflow-wrap: anywhere; }
+.relay-card-carried { display: flex; flex-wrap: wrap; align-items: center; column-gap: 6px; row-gap: 2px; font-size: var(--type-caption); line-height: var(--type-caption-leading); color: var(--faint); }
+.relay-card-count { white-space: nowrap; }
+.relay-card-count + .relay-card-count::before { content: '·'; content: '·' / ''; margin-inline-end: 6px; }
+.relay-card-note { font-size: var(--type-caption); line-height: var(--type-caption-leading); color: var(--ds-warn); }
+.relay-card-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.relay-expand { min-height: 30px; padding: 0 10px; border-radius: var(--ds-control-radius); background: var(--ds-raised); box-shadow: inset 0 0 0 1px var(--ds-border); color: var(--text); font-size: var(--type-meta); line-height: var(--type-meta-leading); font-weight: var(--weight-medium); --press: 1; transition: background-color 160ms, box-shadow 160ms, color 160ms; }
+.relay-expand:hover:not(:disabled) { background: var(--ds-row-hover); }
+.relay-expand:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.relay-expand:disabled { cursor: progress; }
+.relay-card-status { min-width: 0; font-size: var(--type-caption); line-height: var(--type-caption-leading); color: var(--faint); }
+.relay-card-status:empty { display: none; }
+.relay-card-expanded { display: flex; flex-direction: column; gap: 8px; margin-top: 2px; }
+.relay-card-expanded[hidden] { display: none; }
+.relay-card-empty { font-size: var(--type-caption); line-height: var(--type-caption-leading); color: var(--faint); }
+.relay-expanded-message { min-width: 0; padding: 8px 10px; border: 1px solid var(--ds-border); border-radius: var(--ds-inner-radius); background: var(--ds-card-inner); }
+.relay-expanded-message header { display: flex; align-items: center; gap: 6px; }
+.relay-expanded-role { text-transform: uppercase; letter-spacing: var(--tracking-caps); font-size: var(--type-caption); line-height: var(--type-caption-leading); color: var(--muted); }
+.relay-expanded-message pre { max-height: 14em; margin: 4px 0 0; overflow: auto; overscroll-behavior: contain; font-family: var(--mono); font-size: var(--mono-size); line-height: var(--leading-code); color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; }
+.relay-checkpoint-chip { display: inline-flex; align-items: center; flex: none; font-size: var(--type-caption); line-height: var(--type-caption-leading); color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+/* ---------- Composer Extras ---------- */
+
+.composer-relay-button { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 10px 0 9px; border-radius: var(--ds-control-radius); color: var(--muted); font-size: var(--type-body); line-height: var(--type-body-leading); --press: 1; transition: color 160ms, background-color 160ms; }
+.composer-relay-button > .icon { width: 15px; height: 15px; }
+.composer-relay-button:hover:not(:disabled) { color: var(--text); background: color-mix(in srgb, var(--text) 6%, transparent); }
+.composer-relay-button:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.composer-relay-button[aria-expanded="true"] { color: var(--text); background: color-mix(in srgb, var(--text) 6%, transparent); }
+
+.relay-extras-panel { position: fixed; z-index: 90; max-height: min(560px, calc(100dvh - 90px)); overflow: auto; padding: 10px 12px; gap: 6px; }
+.relay-extras-panel.floating-menu { border-radius: var(--ds-card-radius); }
+.relay-extras-head { display: flex; align-items: center; gap: 6px; padding: 2px 0 4px; }
+.relay-extras-title { font-size: var(--type-heading); font-weight: var(--type-heading-weight); line-height: var(--type-heading-leading); letter-spacing: var(--tracking-tight); }
+.relay-extras-list { display: flex; flex-direction: column; list-style: none; margin: 0; padding: 0; }
+.relay-extras-row { display: flex; align-items: center; gap: 10px; min-height: 46px; padding: 4px 0; }
+.relay-extras-copy { display: flex; flex-direction: column; flex: 1; min-width: 0; gap: 1px; }
+.relay-extras-name { font-size: var(--type-subheading); font-weight: var(--type-subheading-weight); line-height: var(--type-subheading-leading); letter-spacing: var(--tracking-none); color: var(--text); }
+.relay-extras-copy small { font-size: var(--type-meta); line-height: var(--type-meta-leading); color: var(--muted); overflow-wrap: anywhere; }
+/* The design system's toggle (.ds-toggle): ON = the primary pair, OFF = a recessed track; no accent,
+   no overshoot. It slides only while the panel is in use, so a state set by a render lands at once. */
+.relay-extras-switch { position: relative; width: var(--ds-toggle-w); height: var(--ds-toggle-h); flex: none; margin-left: auto; border-radius: var(--radius-full); background: var(--ds-toggle-off); box-shadow: inset 0 0 0 1px var(--ds-border); --press: 1; }
+.relay-extras-switch::after { content: ""; position: absolute; top: 3px; left: 3px; width: calc(var(--ds-toggle-h) - 6px); height: calc(var(--ds-toggle-h) - 6px); border-radius: var(--radius-full); background: var(--ds-toggle-knob-off); box-shadow: var(--ds-toggle-knob-shadow); }
+.relay-extras-panel:is(:hover, :focus-within) .relay-extras-switch { transition: background-color var(--ds-ease-out) ease-out, box-shadow var(--ds-ease-out) ease-out; }
+.relay-extras-panel:is(:hover, :focus-within) .relay-extras-switch::after { transition: translate var(--spring-fast-duration) var(--spring-fast), background-color var(--ds-ease-out) ease-out, scale var(--spring-fast-duration) var(--spring-fast); }
+.relay-extras-switch[aria-checked="true"] { background: var(--ds-primary-bg); box-shadow: none; }
+.relay-extras-switch[aria-checked="true"]::after { background: var(--ds-primary-fg); box-shadow: none; translate: calc(var(--ds-toggle-w) - var(--ds-toggle-h)) 0; }
+.relay-extras-switch:not([aria-disabled="true"]):active::after { scale: 1.12 1; }
+.relay-extras-switch:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+@media (prefers-reduced-motion: reduce) { .relay-extras-switch, .relay-extras-switch::after, .relay-expand, .relay-card summary > .icon:last-child, .composer-relay-button { transition: none; } }
+@media (prefers-contrast: more) { .relay-extras-switch:not([aria-checked="true"]) { box-shadow: inset 0 0 0 1px var(--text); } }
+@media (forced-colors: active) { .relay-extras-switch { border: 1px solid CanvasText; } .relay-extras-switch::after { background: CanvasText; } .relay-expand { border: 1px solid ButtonText; } }

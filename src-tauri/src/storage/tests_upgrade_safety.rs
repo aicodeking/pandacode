@@ -290,6 +290,13 @@ INSERT INTO task_schedule_runs(id,schedule_id,session_id,title,at,outcome,detail
 INSERT INTO scheduler_settings(id,content) VALUES(1,'{"paused":true,"maxConcurrent":2}');
 INSERT INTO machine_threads(parent_session_id,session_id,created_at,reported,reported_by)
     VALUES('lead','remote',152,1,5);
+INSERT INTO task_checkpoints(id,session_id,ordinal,at,message_high_water,goal,task_stage,decisions,open_questions,files,commands)
+    VALUES('cp-1','lead',1,153,2,'Ship the migration','in_progress','["Reference by id"]','["Is the export complete?"]','["src-tauri/src/relay.rs"]','["cargo test --lib relay"]');
+INSERT INTO task_escalations(session_id,last_end,resumes,relays,updated_at)
+    VALUES('lead','harness',1,0,154);
+INSERT INTO task_relays(session_id,relay_id,packet,created_at,delivered_at)
+    VALUES('lead','relay-1','{"v":1,"relayId":"relay-1","taskId":"lead","goal":"Ship it","messages":[]}',155,156);
+INSERT INTO relay_settings(id,content) VALUES(1,'{"autoRelayOnCrash":true,"retrySameAgentFirst":false,"doneGate":true}');
 "#;
 
 fn install_legacy_team_status(db: &Connection) {

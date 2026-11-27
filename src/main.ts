@@ -15,6 +15,7 @@ import './turn-changes.css';
 import './team-progress.css';
 import './council.css';
 import './motion.css';
+import './relay.css';
 import './sidebar-tree.css';
 import './inspector-bar.css';
 import './message-queue.css';
@@ -137,6 +138,7 @@ import { projectIconHtml } from './project-icons';
 import { createPullView } from './github-pull';
 import { createSearchPanel } from './search-panel';
 import { createTokenSaver } from './token-saver-panel';
+import { mountRelayExtras, relayCardHtml } from './relay';
 import { createCouncil } from './council-panel';
 import { councilNotice } from './council';
 // No CSS of its own (architect.css arrives with ./architect): safe in the always-loaded bundle.
@@ -787,6 +789,8 @@ const tokenSaver = createTokenSaver({
   },
 });
 void tokenSaver.loadTools();
+/* Context relay's composer Extras: quick access to the relay preferences Settings → Relay also edits. */
+const relayExtras = mountRelayExtras();
 /* Council: an automatic team whose reviewers score the work until they reach the user's target. */
 const council = createCouncil({
   call,
@@ -3299,6 +3303,7 @@ function messageHtml(m: Message, afterTrace = false, actions = true, thread = sh
     if (!handoff) return '';
     return `<details class="provider-handoff"><summary>${providerLogo(handoff.fromProvider)}${icon('forward')}${providerLogo(handoff.toProvider)}<span>Conversation carried forward</span>${icon('down')}</summary><p>${escape(handoff.summary)}</p></details>`;
   }
+  if (m.role === 'relay') return relayCardHtml(m) ?? '';
   if (m.role === 'coordination') return renderCoordination(m);
   if (m.role === 'tool') {
     const tool = decodeToolActivity(m.content);
@@ -4387,7 +4392,7 @@ function renderComposer(): void {
     : `<button type="submit" class="send-button" title="Send message (${shortcut('Enter')})" aria-label="Send message" ${togglingTeam ? 'disabled' : ''}>${icon('arrow')}</button>`;
   // The composer redraws on every session change; the orchestration slot's nodes outlive it.
   const orchestrationSlot = document.querySelector('#machine-orchestration');
-  $('#composer-area').innerHTML = `<form id="composer" class="composer ${running ? 'composer-running' : ''}">${wakeStrip(s.id)}${queuePanel({ entries: state.queues.get(s.id) ?? [], hold: state.queueHolds.get(s.id) ?? null, running, steerable: !team && !offline, sendable: !botProjects.has(s.projectId) && !offline, editingId: state.queueEditing || null, busy: state.queueBusy.has(s.id), steering: steeringQueued, notSteered, agentName: botForThread()?.name ?? provider(s.provider)?.name })}${s.remoteDevice ? '' : council.strip(s.id)}<div id="attachments" class="attachments">${attachmentBar(s)}</div>${running && !team ? `<div class="composer-steer-bar"><button type="button" class="icon-button composer-steer-edit" data-action="steer-edit" title="Edit draft" aria-label="Edit draft">${icon('edit')}</button><button type="button" class="steer-button" data-action="steer" title="Steer: send into the running turn (${shortcut('Enter')})" aria-label="Steer the running turn">${STEER_ICON}<span class="sr-only">Steer</span></button><button type="button" class="icon-button composer-steer-clear" data-action="steer-clear" title="Clear draft" aria-label="Clear draft">${icon('close')}</button></div>` : !team && finishingStreams.has(s.id) && !finishingStreams.get(s.id)!.error ? '<div class="composer-steer-bar" data-holding aria-hidden="true"></div>' : ''}<div class="composer-input"><textarea id="prompt" dir="auto" data-session-id="${escape(s.id)}" aria-label="Message your coding agent" placeholder="${running ? (team ? 'Queue a follow-up…' : 'Queue a follow-up · ⌘↩ steers now') : composerPlaceholder()}" aria-description="${escape(promptDescription())}" rows="2"></textarea><div class="composer-actions">${button('attach', 'Attach files for context', 'attach', '', 'type="button"')}${webMode ? '' : voiceButtonHtml}<span class="composer-pill">${sendControl}</span></div></div><div class="composer-toolbar composer-tray"><div class="composer-tools">${modelTriggerHtml(s, modelLocked, true)}${modeTriggerHtml(s, running || togglingTeam, true)}${teamButton(s)}${tokenSaver.button(s.id)}${s.remoteDevice ? '' : council.button(s.id)}</div>${contextBarHtml(s, newTaskView())}</div></form>`;
+  $('#composer-area').innerHTML = `<form id="composer" class="composer ${running ? 'composer-running' : ''}">${wakeStrip(s.id)}${queuePanel({ entries: state.queues.get(s.id) ?? [], hold: state.queueHolds.get(s.id) ?? null, running, steerable: !team && !offline, sendable: !botProjects.has(s.projectId) && !offline, editingId: state.queueEditing || null, busy: state.queueBusy.has(s.id), steering: steeringQueued, notSteered, agentName: botForThread()?.name ?? provider(s.provider)?.name })}${s.remoteDevice ? '' : council.strip(s.id)}<div id="attachments" class="attachments">${attachmentBar(s)}</div>${running && !team ? `<div class="composer-steer-bar"><button type="button" class="icon-button composer-steer-edit" data-action="steer-edit" title="Edit draft" aria-label="Edit draft">${icon('edit')}</button><button type="button" class="steer-button" data-action="steer" title="Steer: send into the running turn (${shortcut('Enter')})" aria-label="Steer the running turn">${STEER_ICON}<span class="sr-only">Steer</span></button><button type="button" class="icon-button composer-steer-clear" data-action="steer-clear" title="Clear draft" aria-label="Clear draft">${icon('close')}</button></div>` : !team && finishingStreams.has(s.id) && !finishingStreams.get(s.id)!.error ? '<div class="composer-steer-bar" data-holding aria-hidden="true"></div>' : ''}<div class="composer-input"><textarea id="prompt" dir="auto" data-session-id="${escape(s.id)}" aria-label="Message your coding agent" placeholder="${running ? (team ? 'Queue a follow-up…' : 'Queue a follow-up · ⌘↩ steers now') : composerPlaceholder()}" aria-description="${escape(promptDescription())}" rows="2"></textarea><div class="composer-actions">${button('attach', 'Attach files for context', 'attach', '', 'type="button"')}${webMode ? '' : voiceButtonHtml}<span class="composer-pill">${sendControl}</span></div></div><div class="composer-toolbar composer-tray"><div class="composer-tools">${modelTriggerHtml(s, modelLocked, true)}${modeTriggerHtml(s, running || togglingTeam, true)}${teamButton(s)}${tokenSaver.button(s.id)}${relayExtras.button()}${s.remoteDevice ? '' : council.button(s.id)}</div>${contextBarHtml(s, newTaskView())}</div></form>`;
   // A refresh replaces the textarea and its native undo history with it (#277); the same thread's node goes back in carrying the refresh's attributes.
   if (oldPrompt && oldPrompt.dataset.sessionId === s.id) {
     const fresh = document.querySelector<HTMLTextAreaElement>('#prompt');
@@ -9361,6 +9366,7 @@ async function action(name: string, element: HTMLElement): Promise<void> {
     case 'deploy': await showDeploy(element); break;
     case 'tab-simulator': case 'simulator': if (name === 'simulator' && state.inspector && state.inspectorTab === 'simulator' && !inspectorSuppressed) { state.inspectorTab = 'changes'; renderInspector(); } else openSimulator(true); break;
     case 'token-saver': tokenSaver.open(element, state.sessionId); break;
+    case 'relay-extras': relayExtras.open(element); break;
     case 'council': if (element.getAttribute('aria-disabled') !== 'true') council.open(element, state.sessionId, element.dataset.councilFocus === 'target' || element.dataset.councilFocus === 'maxRounds' ? element.dataset.councilFocus : undefined); break;
     case 'council-keep-fixing': case 'council-accept': if (element.closest<HTMLElement>('.council-strip')?.dataset.sessionId === state.sessionId) await council.act(state.sessionId, name === 'council-accept' ? 'accept' : 'keep', element); break;
     case 'council-strip-toggle': council.toggle(state.sessionId); break;

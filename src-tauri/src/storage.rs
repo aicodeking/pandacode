@@ -192,7 +192,7 @@ pub(crate) use helpers::with_migration_pragmas;
 pub(crate) use helpers::{
     resolve_workspace_root, run_savepoint, serialize_subagent, ImmediateTxError, RollbackGuard,
 };
-use schema_v38::{log_slow_upgrade, repair_v38_objects, upgrade_v38};
+use schema_v38::{ensure_relay_schema, log_slow_upgrade, repair_v38_objects, upgrade_v38};
 use sql::{BASE_SCHEMA, LEGACY_PROMPT_CUTOFF_SCAN_SQL, LEGACY_PROMPT_CUTOFF_SQL, SIDEBAR_ORDER};
 // `storage_bench` (test-only) reads these.
 #[cfg(test)]
@@ -355,6 +355,7 @@ impl Store {
             version
         };
         repair_v38_objects(&mut db, opened_version)?;
+        ensure_relay_schema(&db)?;
         before_recovery();
         let (restart_interrupted, recovery_version, model_audit_usable) = recover_after_restart(&mut db)?;
         let store = Self {

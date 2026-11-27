@@ -2109,6 +2109,7 @@ const WEB_ALLOWED_COMMANDS: &[&str] = &[
     "jev_start", "jev_watch_run", "jev_cancel", "jev_list_runs", "jev_read_run", "jev_assist_prepare",
     "jev_assist_run", "jev_assist_list", "jev_assist_save_rules", "web_server_status", "web_server_configure",
     "web_server_rotate_token", "app_version",
+    "relay_state", "relay_settings", "relay_set_settings", "relay_checkpoint", "relay_queue", "relay_expand", "relay_cancel",
 ];
 
 fn web_allowed_command(command: &str) -> bool {

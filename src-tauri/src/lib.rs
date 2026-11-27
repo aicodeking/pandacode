@@ -74,6 +74,7 @@ mod providers;
 mod session_titles;
 mod slash_commands;
 mod recipes;
+mod relay;
 mod schedules;
 mod storage;
 #[cfg(test)]
@@ -2077,6 +2078,8 @@ struct PreparedRun {
     turn_message_id: i64,
     turn_started: std::time::Instant,
     context_handoff: Option<i64>,
+    /// The relay packet this run carries, acknowledged once the run succeeds (idempotent).
+    relay_ack: Option<String>,
     run_id: String,
     pending_approvals: Arc<Mutex<HashSet<String>>>,
     pending_requests: Arc<Mutex<HashMap<String, AgentEvent>>>,
@@ -2229,13 +2232,23 @@ fn prepare_task_run_in_project(
     {
         return Err(context_recovery::RECOVERY_REQUIRED.into());
     }
-    let (prompt, context_handoff) = if goal_control {
-        if needs_context {
+    // A cloud re-attach sends no prompt at all, so it never takes a relay packet.
+    let (prompt, context_handoff, relay_ack) = if goal_control || admission.cloud_attach {
+        if goal_control && needs_context {
             context_recovery::queue(&store, &session_id)?;
         }
-        (prompt, None)
+        (prompt, None, None)
     } else {
-        context_recovery::prepare(&store, &session, &prompt)?
+        // A provider switch queues `context_recovery` and a relay packet together. The packet is
+        // the better handoff (it names the checkpoint and the work done), so it replaces the
+        // recovery excerpt rather than both arriving and saying the same thing twice.
+        let (prompt, relay_id) = relay::apply_to_prompt(&store, &session_id, &prompt);
+        if relay_id.is_some() {
+            (prompt, None, relay_id)
+        } else {
+            let (prompt, through) = context_recovery::prepare(&store, &session, &prompt)?;
+            (prompt, through, None)
+        }
     };
     let turn_started = std::time::Instant::now();
     let turn_message_id = if admission.goal.is_some() {
@@ -2316,6 +2329,7 @@ fn prepare_task_run_in_project(
         turn_message_id,
         turn_started,
         context_handoff,
+        relay_ack,
         run_id,
         pending_approvals,
         pending_requests,
@@ -2368,6 +2382,7 @@ fn prepare_cloud_attach(
         turn_message_id: cloud.turn_message,
         turn_started: std::time::Instant::now(),
         context_handoff: None,
+        relay_ack: None,
         run_id: agent.run_id.clone(),
         pending_approvals: agent.approvals.clone(),
         pending_requests: agent.pending_requests.clone(),
@@ -2614,6 +2629,7 @@ async fn launch_operation_admitted(
         turn_message_id,
         turn_started,
         context_handoff,
+        relay_ack,
         run_id,
         pending_approvals,
         pending_requests,
@@ -3157,6 +3173,20 @@ async fn launch_operation_admitted(
                     if resumed {
                         if let Err(error) = context_recovery::acknowledge(&db, &session_id, through)
                         {
+                            successful = false;
+                            if let Ok(mut slot) = persistence_error.lock() {
+                                *slot = Some(error);
+                            }
+                        }
+                    }
+                }
+                // The packet reached a harness that finished the turn: acknowledge exactly this
+                // relay id, so a retry or a restart never injects it again. A run that failed
+                // leaves it queued, and the next attempt carries it (at-least-once).
+                if let Some(relay_id) = &relay_ack {
+                    match relay::acknowledge_relay(&db, relay_id) {
+                        Ok(_) => {}
+                        Err(error) => {
                             successful = false;
                             if let Ok(mut slot) = persistence_error.lock() {
                                 *slot = Some(error);
@@ -5106,6 +5136,13 @@ pub(crate) fn main_invoke_handler(invoke: tauri::ipc::Invoke<tauri::Wry>) -> boo
         bots::schedule::bot_schedule_set_enabled,
         bots::schedule::bot_schedule_delete,
         bots::schedule::bot_run_schedule_now,
+        relay::relay_state,
+        relay::relay_settings,
+        relay::relay_set_settings,
+        relay::relay_checkpoint,
+        relay::relay_queue,
+        relay::relay_expand,
+        relay::relay_cancel,
         schedules::schedules_list,
         schedules::schedule_create,
         schedules::schedule_update,

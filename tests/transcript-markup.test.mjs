@@ -19,11 +19,12 @@ const PINNED = {
   'src/turn-activity.ts': ['turnLabel'],
   'src/provider-logos.ts': ['providerLogo'],
   'src/provider-handoff.ts': ['historicalProvider'],
+  'src/relay.ts': ['relayCardHtml', 'decodeRelay'],
   'src/tool-activity.ts': ['renderToolGroup', 'renderToolActivity'],
   'src/turn-card.ts': ['replyHtml', 'timeHtml'],
   'src/transcript-host.ts': ['lastHandoff', 'turnMessages', 'markupShared'],
 };
-const RECORDED = '15eac7ddd3011483';
+const RECORDED = 'a2b1f271f01cf4bb';
 
 /** A top-level function's text in `file`, from its declaration to the next top-level statement. */
 function functionText(file, name) {
