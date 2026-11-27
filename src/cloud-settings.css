@@ -1,14 +1,25 @@
 /* Settings → Agents → Cloud sandboxes. */
 .cloud-form{display:flex;flex-direction:column;gap:8px;padding:2px calc(var(--ds-row-pad-x) - var(--ds-card-pad)) 12px}
-.cloud-form label{display:flex;align-items:center;gap:10px;font-size:var(--type-subheading);font-weight:var(--type-subheading-weight);line-height:var(--type-subheading-leading);}
-.cloud-form label>span{flex:none;width:7.5rem;color:var(--muted)}
+.cloud-form>label{display:flex;align-items:center;gap:10px;font-size:var(--type-subheading);font-weight:var(--type-subheading-weight);line-height:var(--type-subheading-leading);}
+.cloud-form>label>span{flex:none;width:7.5rem;color:var(--muted)}
 .cloud-form input{flex:1;min-width:0;height:32px;padding:0 10px;border:0;border-radius:var(--ds-control-radius);color:var(--text);font:inherit;font-size:var(--type-body);font-weight:var(--type-body-weight)}
+.cloud-form>label[hidden]{display:none}
 .cloud-form input:focus-visible{outline:2px solid var(--focus);outline-offset:1px}
 .cloud-note{margin:0;font-size:var(--type-meta);line-height:var(--type-meta-leading);color:var(--muted)}
 .cloud-progress{margin:0;font-size:var(--type-meta);color:var(--text)}
 .cloud-error{margin:0;font-size:var(--type-meta);color:var(--ds-danger)}
 .cloud-actions{display:flex;justify-content:flex-end;gap:8px}
-@media(max-width:560px){.cloud-form label{flex-direction:column;align-items:stretch;gap:4px}.cloud-form label>span{width:auto}}
+@media(max-width:560px){.cloud-form>label{flex-direction:column;align-items:stretch;gap:4px}.cloud-form>label>span{width:auto}.cloud-engine{flex-direction:column;align-items:stretch;gap:4px}.cloud-engine>span{width:auto}.cloud-engine-hint{margin-left:0}}
+.cloud-engine{display:flex;align-items:center;gap:10px;font-size:var(--type-subheading);font-weight:var(--type-subheading-weight);line-height:var(--type-subheading-leading)}
+.cloud-engine>span{flex:none;width:7.5rem;color:var(--muted)}
+.cloud-engine-picker{display:inline-flex;flex-wrap:wrap}
+.cloud-engine-option{position:relative;display:inline-flex;z-index:1}
+.cloud-engine-option input{position:absolute;inset:0;margin:0;opacity:0;pointer-events:none}
+.cloud-engine-option span{display:inline-flex;align-items:center;min-height:24px;padding:0 10px;border-radius:var(--ds-control-radius);font-size:var(--type-body);line-height:var(--type-body-leading);font-weight:var(--type-body-weight);color:var(--muted);cursor:pointer}
+.cloud-engine-option input:checked+span{color:var(--text)}
+.cloud-engine-option input:focus-visible+span{outline:2px solid var(--focus);outline-offset:1px}
+.cloud-engine-picker>.segment-thumb{border-radius:var(--ds-control-radius);background:var(--ds-thumb);box-shadow:var(--ds-thumb-shadow)}
+.cloud-engine-hint{margin:0 0 0 calc(7.5rem + 10px);font-size:var(--type-meta);line-height:var(--type-meta-leading);color:var(--muted)}
 .cloud-buttons{display:flex;gap:6px;align-items:center}
 .cloud-row-status{margin:-2px calc(var(--ds-row-pad-x) - var(--ds-card-pad)) 8px;font-size:var(--type-meta);color:var(--muted)}
 .cloud-row-status.cloud-error{color:var(--ds-danger)}
