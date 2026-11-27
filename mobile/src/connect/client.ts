@@ -351,6 +351,10 @@ function applyDevices(list: unknown[]) {
     pending.fail(id, undefined, LOST);
   }
   for (const d of devices) if (d.online) onlineHosts.add(d.id);
+  // Listed online again: whatever restart it announced has finished, so the card stops saying it is.
+  if (Object.keys(state().restarting).some(id => onlineHosts.has(id))) {
+    patch(s => ({ restarting: Object.fromEntries(Object.entries(s.restarting).filter(([id]) => !onlineHosts.has(id))) }));
+  }
   patch({ devices });
   discoverAll();
 }
@@ -551,6 +555,14 @@ function frame(text: string) {
     }
   }
   else if (message?.type === 'event' && message.name === 'run.finished') void finished(from, message.data);
+  // The computer is about to restart to install an update (host_methods.rs `tell_viewers`). The reply
+  // to host.updateAndRestart already marks the phone that asked; this is for every OTHER phone
+  // watching, which would otherwise only see the computer vanish and come back. Presence clears it
+  // once the computer is listed online again, so it never outlives the restart it describes.
+  else if (message?.type === 'event' && message.name === 'host.restarting') {
+    const version = typeof message.data?.version === 'string' ? message.data.version.slice(0, 40) : '';
+    if (version) patch(s => ({ restarting: { ...s.restarting, [from]: version } }));
+  }
 }
 
 const active = (status?: string) => status === 'running' || status === 'waiting';

@@ -17,7 +17,7 @@ const task = (sessionId: string, extra: Partial<TaskSummary> = {}): TaskSummary 
 /** A demo host over plain state; timers run only when `tick()` is called, and no fetch exists. */
 function host() {
   let state = {
-    configured: false, ready: true, signedIn: true, connected: true, account: null, deviceId: 'phone', error: null, demo: true, older: {}, teams: {},
+    configured: false, ready: true, signedIn: true, connected: true, account: null, deviceId: 'phone', error: null, demo: true, older: {}, teams: {}, restarting: {},
     devices: [
       { id: 'mac', name: 'Mac', platform: 'macos', publicKey: 'k', host: true, online: true, lastSeen: 0 },
       { id: 'off', name: 'Off', platform: 'macos', publicKey: 'k', host: true, online: false, lastSeen: 0 },

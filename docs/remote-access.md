@@ -1286,9 +1286,12 @@ two phones asking at once make one manifest request and share its answer.
 
 A restart drops every phone's connection: the host answers `{ restarting: true }` first, tells each
 subscribed viewer with a `host.restarting` event, and only then installs and restarts (Windows exits
-into its installer; macOS and Linux relaunch). Clients that do not know the event simply see presence
-drop and re-subscribe when the computer is back — the host remembers subscriptions and hands the
-catch-up out on presence as it always does. Nothing is written to the chat's tasks by the restart
+into its installer; macOS and Linux relaunch). The phone acts on that event: `client.ts` records the
+announced version per host in `restarting`, the hub's card shows the same calm "Restarting to
+update…" the phone that asked shows, and presence clears it once the computer is listed online
+again, when the card reads the version it restarted into. A client that does not know the event
+simply sees presence drop and re-subscribe when the computer is back — the host remembers
+subscriptions and hands the catch-up out on presence as it always does. Nothing is written to the chat's tasks by the restart
 itself; a running agent is stopped by the ordinary clean shutdown, and the update is applied the way
 the desktop's own updater applies it.
 

@@ -180,3 +180,20 @@ test('the hub reloads its status when the computer comes back online', () => {
   const common = readFileSync(new URL('../src/ui/hub/common.tsx', import.meta.url), 'utf8');
   assert.match(common, /useReloadOnReconnect\(device, run\);/);
 });
+
+test('another phone learns a restart from the computer’s frame, and stops saying it when it is back', () => {
+  const client = readFileSync(new URL('../src/connect/client.ts', import.meta.url), 'utf8');
+  // The frame host_methods.rs `tell_viewers` sends to every subscriber, not only the phone that asked.
+  assert.match(client, /message\.name === 'host\.restarting'/);
+  assert.match(client, /\.data\?\.version/);
+  // Stored per host, so two computers restarting do not read as one.
+  assert.match(client, /restarting: \{ \.\.\.s\.restarting, \[from\]: version \}/);
+  // Cleared when presence lists it online again: the restart it describes has finished, so the card
+  // reads the version it restarted into rather than saying "Restarting…" forever.
+  assert.match(client, /Object\.keys\(state\(\)\.restarting\)\.some\(id => onlineHosts\.has\(id\)\)/);
+  assert.match(client, /Object\.entries\(s\.restarting\)\.filter\(\(\[id\]\) => !onlineHosts\.has\(id\)\)/);
+  // The card shows it the same way as one this phone asked for.
+  const card = readFileSync(new URL('../src/ui/hub/HostUpdate.tsx', import.meta.url), 'utf8');
+  assert.match(card, /const announced = useConnect\(s => s\.restarting\[device\]\)/);
+  assert.match(card, /const shown = restarting \|\| announced \? markRestarting\(value \?\? null\) : value \?\? null;/);
+});

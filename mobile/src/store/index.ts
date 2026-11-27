@@ -44,6 +44,9 @@ export interface ConnectState {
   teams: Record<string, Team | null | 'outdated'>;
   /** Hosts that answered 'Unknown method.' to the pull request, changes or bot methods. */
   outdated: Record<string, boolean>;
+  /** Per host: the version it announced it is restarting into (the `host.restarting` frame), while
+   * it is away. Cleared once presence lists it online again, which is when the restart finished. */
+  restarting: Record<string, string>;
   /** The last user-facing connection error (sign-out, relay). */
   error: string | null;
   /** Demo mode (src/demo.ts): fake data, no network. */
@@ -52,7 +55,7 @@ export interface ConnectState {
 
 export const initialState = (): ConnectState => ({
   configured: !!build, ready: false, signedIn: false, connected: false, account: null, deviceId: '',
-  devices: [], tasks: {}, messages: {}, older: {}, history: {}, sent: {}, live: {}, providers: {}, models: {}, bots: {}, pulls: {}, teams: {}, outdated: {}, error: null, demo: false,
+  devices: [], tasks: {}, messages: {}, older: {}, history: {}, sent: {}, live: {}, providers: {}, models: {}, bots: {}, pulls: {}, teams: {}, outdated: {}, restarting: {}, error: null, demo: false,
 });
 
 export const useConnect = create<ConnectState>(() => initialState());

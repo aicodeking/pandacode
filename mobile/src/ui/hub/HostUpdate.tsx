@@ -7,7 +7,9 @@
 // whatever runs there, so a narrower phone reads the version and the state with an AccessNote below.
 //
 // A restart is the one action here that cannot be undone from the phone, so it sits behind a native
-// Alert that says what happens on that computer and on this one. After it, the computer's socket
+// Alert that says what happens on that computer and on this one. The phone that asked marks it at
+// once; every other phone learns it from the computer's `host.restarting` frame (client.ts), so a
+// watcher is not left guessing either. After it, the computer's socket
 // drops: presence marks it offline (the hub's banner), this card holds a calm "Restarting…", and
 // client.ts fails calls to it at once (LOST, as for a closed socket) instead of waiting out their
 // 20 s timeouts. When it is back, presence reloads this card (useLoad → useReloadOnReconnect) and it
@@ -15,6 +17,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Alert, StyleSheet, Text, View } from 'react-native';
 import { useHostAllows, useHostCapabilities, useHostSupports } from '../../connect/api/capabilities.ts';
+import { useConnect } from '../../store/index.ts';
 import { checkHostUpdate, hostUpdateStatus, installHostUpdate } from '../../connect/api/host.ts';
 import { maybeRan } from '../../connect/rpc.ts';
 import {
@@ -40,6 +43,9 @@ export function HostUpdate({ device, online }: { device: string; online: boolean
   const load = useCallback(() => hostUpdateStatus(device), [device]);
   const { value, error, reload } = useLoad<HostUpdateStatus>(served ? load : null, `${device}:host.update`);
   const [restarting, setRestarting] = useState(false);
+  /** A restart another phone (or the desktop itself) announced: client.ts sets it from the computer's
+   * `host.restarting` frame and clears it once presence lists the computer online again. */
+  const announced = useConnect(s => s.restarting[device]);
   const [checking, setChecking] = useState(false);
   const [actionError, setActionError] = useState('');
   /** The read that was on screen when Update and restart was tapped: a later one proves the restart. */
@@ -97,7 +103,7 @@ export function HostUpdate({ device, online }: { device: string; online: boolean
   // A host from before host.updateStatus: just the version line, as the status card always had it.
   if (!served) return version ? <Group><Row title={version} leading={<Icon {...APP_ICON} size={20} color={colors.muted} />} /></Group> : null;
 
-  const shown = restarting ? markRestarting(value ?? null) : value ?? null;
+  const shown = restarting || announced ? markRestarting(value ?? null) : value ?? null;
   // A read that failed after a good one keeps the last state (useLoad keeps its value); one that never
   // landed while the computer is away says so plainly, rather than its raw OFFLINE error again under
   // the hub's banner.
