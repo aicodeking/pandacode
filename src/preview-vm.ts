@@ -82,6 +82,7 @@ export function createPreviewVm() {
  * machines per provider, a drawn desktop for providers with screens, and recorded input. */
 const BASE = ['daytona', 'cloudflare', 'aws', 'vercel', 'railway', 'netlify', 'gcloud', 'docker', 'colab'];
 const KEYED = ['digitalocean', 'vultr', 'hetzner', 'runpod', 'e2b', 'modal', 'codesandbox', 'runloop', 'blaxel', 'tensorlake', 'freestyle', 'boat', 'instabox'];
+const NAMES: Record<string, string> = { daytona: 'Daytona', cloudflare: 'Cloudflare', aws: 'AWS', vercel: 'Vercel', railway: 'Railway', netlify: 'Netlify', gcloud: 'Google Cloud', docker: 'Docker', digitalocean: 'DigitalOcean', vultr: 'Vultr', hetzner: 'Hetzner', runpod: 'RunPod', e2b: 'E2B', modal: 'Modal', codesandbox: 'CodeSandbox', runloop: 'Runloop', blaxel: 'Blaxel', tensorlake: 'Tensorlake', freestyle: 'Freestyle', boat: 'boat', instabox: 'InstaBox' };
 const AGENT_TARGETS = [['e2b', 'E2B'], ['daytona', 'Daytona'], ['docker', 'Docker'], ['digitalocean', 'DigitalOcean'], ['vultr', 'Vultr'], ['hetzner', 'Hetzner'], ['runpod', 'RunPod'], ['modal', 'Modal'], ['vercel', 'Vercel Sandbox'], ['codesandbox', 'CodeSandbox'], ['runloop', 'Runloop'], ['blaxel', 'Blaxel'], ['tensorlake', 'Tensorlake'], ['freestyle', 'Freestyle'], ['boat', 'boat'], ['instabox', 'InstaBox'], ['cloudflare', 'Cloudflare'], ['aws', 'AWS EC2'], ['gcloud', 'Google Cloud'], ['colab', 'Google Colab']] as const;
 type PreviewCloudMachine = { id: string; provider: string; name: string; state: string; os: string; desktop: boolean; detail: string };
 const COLAB_ACCELERATORS = ['NONE', 'T4', 'L4', 'G4', 'A100', 'H100', 'V5E1', 'V6E1'];
@@ -189,7 +190,7 @@ export function createPreviewCloud(emit: PreviewEmit = () => {}) {
     if ((globalThis as any).__instaboxImagesFail) throw new Error('InstaBox did not answer in time.');
     return { images: [{ value: INSTABOX_DEFAULT, label: 'agent-browser (default, includes the open-computer-use desktop tool)' }, { value: 'snapshot:sn_preview1', label: 'clean-agents · sn_preview1' }], selected: instaboxImage };
   };
-  const connections = () => [...BASE, ...KEYED].map(provider => ({ provider, connected: connected.has(provider), detail: connected.get(provider) ?? null, ...(provider === 'cloudflare' ? { sandboxes: connected.has(provider) && sandboxes } : {}), ...(provider !== 'railway' ? { inheritEnvironment: inheritEnvironment.has(provider) } : {}) }));
+  const connections = () => [...BASE, ...KEYED].map(provider => ({ provider, connected: connected.has(provider), detail: connected.get(provider) ?? null, ...(provider === 'cloudflare' ? { sandboxes: connected.has(provider) && sandboxes } : {}), ...(provider !== 'railway' ? { inheritEnvironment: inheritEnvironment.has(provider) } : {}), ...(['docker', 'aws', 'gcloud'].includes(provider) ? { installed: !(globalThis as any).__cloudCliMissing } : {}) }));
   /* DigitalOcean's droplet options: three regions, a size pinned to New York only, one that works
    * everywhere, and the saved pair (nothing at first; create falls back to nyc1 and s-2vcpu-4gb).
    * `__digitalOceanCatalogFail` makes listing fail; picks are recorded in `__doOptionSaves`. */
@@ -282,6 +283,15 @@ export function createPreviewCloud(emit: PreviewEmit = () => {}) {
       if (![...BASE, ...KEYED].includes(id)) throw new Error('Choose an available cloud provider.');
       if (inherit) inheritEnvironment.add(id); else inheritEnvironment.delete(id);
       return connections();
+    },
+    /** `cloud_provider_test`: connected providers pass, unconnected ones say so; `__cloudTestFail` fails every check. */
+    test(provider: unknown) {
+      const id = String(provider);
+      if (![...BASE, ...KEYED].includes(id)) throw new Error('Unknown cloud provider.');
+      const name = NAMES[id] ?? id;
+      if (!connected.has(id)) return { ok: false, message: `Connect ${name} first.`, durationMs: 5 };
+      if ((globalThis as any).__cloudTestFail) return { ok: false, message: `${name} refused the credentials (HTTP 401). Check them in Settings → Cloud.`, durationMs: 40 };
+      return { ok: true, message: `${name} answered · 2 machines.`, durationMs: 40 };
     },
     instaboxImages,
     setInstaboxImage(image: unknown) {
