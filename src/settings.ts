@@ -31,6 +31,7 @@ import { mountRecommended } from './recommended-settings';
 import { enabled as turnChecksEnabled } from './turn-checks';
 import { crashRestartSettingsHtml, mountCrashRestartSettings, type KeepDrafts } from './crash-restart-settings';
 import { setStillSkyEnabled, stillSkyEnabled } from './sky-window';
+import { mountNotificationsSettings, notificationsSettingsHtml } from './notifications-settings';
 
 /** Panels that live elsewhere and are embedded here: each mounts into a host and returns its cleanup. */
 type Embed = (host: HTMLElement) => Promise<() => void>;
@@ -161,6 +162,7 @@ function sectionHtml(id: SettingsPage, options: SettingsOptions): string {
     case 'voice': return '<div id="voice-settings"></div>';
     case 'general': return `<div class="settings-group">${uiSizeControls()}${switchRow('compact-mode', 'Compact conversation', '', options.compact)}${switchRow('expand-tool-activity', 'Expand tool activity', '', options.activityExpanded)}</div>
       <h3 class="settings-heading">Quick launcher</h3><div id="launcher-settings"></div><h3 class="settings-heading">Running agents widget</h3><div id="agents-dock-settings"></div><h3 class="settings-heading">Crash recovery</h3>${crashRestartSettingsHtml()}${options.projects ? '<h3 class="settings-heading">Projects</h3><div id="projects-settings" class="settings-group"></div>' : ''}`;
+    case 'notifications': return notificationsSettingsHtml();
     case 'appearance': return `<div class="settings-group">
         ${settingRow('Theme', `<button type="button" class="secondary-button" data-action="toggle-theme">${icon(options.theme === 'dark' ? 'sun' : 'moon')}Use ${options.theme === 'dark' ? 'light' : 'dark'}</button>`, 'Imported VS Code themes keep their own.')}
         ${switchRow('daily-wallpapers', 'Wallpapers', 'Off, the thread shows a live sky that follows the time of day.', options.wallpapers)}
@@ -393,6 +395,7 @@ export function mountSettings(host: HTMLElement, options: SettingsOptions): Sett
       cleanups.push(mountAgentsDockSettings(panel.querySelector<HTMLElement>('#agents-dock-settings')!));
       cleanups.push(mountCrashRestartSettings(panel.querySelector<HTMLElement>('#crash-restart-settings')!, options.clearDrafts, options.keepDrafts));
     }
+    if (id === 'notifications') cleanups.push(mountNotificationsSettings(panel.querySelector<HTMLElement>('#notifications-settings')!));
     if (id === 'remote' && options.remote) cleanups.push(mountRemoteSettings(panel.querySelector<HTMLElement>('#remote-settings')!, options.remote));
     if (id === 'remote') {
       // Without the app's notifier: confirmations go to a polite status that clears itself; errors to an

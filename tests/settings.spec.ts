@@ -6,7 +6,7 @@ const dialog = (page: Page) => page.getByRole('region', { name: 'Settings', exac
 const tab = (page: Page, name: string) => dialog(page).getByRole('tab', { name, exact: true });
 const panel = (page: Page, name: string) => dialog(page).getByRole('tabpanel', { name, exact: true });
 const back = (page: Page) => dialog(page).getByRole('button', { name: 'Back to the workspace', exact: true });
-const GROUPS = ['Recommended', 'General', 'Appearance', 'Voice', 'Agents', 'Schedules', 'Tools', 'Connections', 'About'];
+const GROUPS = ['Recommended', 'General', 'Notifications', 'Appearance', 'Voice', 'Agents', 'Schedules', 'Tools', 'Connections', 'About'];
 const FIRST: Record<string,string> = { Agents: 'Harnesses', Tools: 'Add-ons', Connections: 'Cloud sandboxes' };
 const prompt = (page: Page) => page.getByRole('textbox', { name: 'Message your coding agent' });
 const providerCalls = (page: Page) => page.evaluate(() => (window as any).__settingsProviders.calls);
@@ -331,6 +331,9 @@ test('settings organization shows General at once and supports keyboard groups d
   const retainedGeneral = await panel(page, 'General').elementHandle();
   await tab(page, 'General').focus();
   await page.keyboard.press('ArrowDown');
+  await expect(tab(page, 'Notifications')).toBeFocused();
+  expect(await providerCalls(page)).toBe(startupCalls);
+  await page.keyboard.press('ArrowDown');
   await expect(tab(page, 'Appearance')).toBeFocused();
   expect(await providerCalls(page)).toBe(startupCalls);
   await page.keyboard.press('ArrowDown');
@@ -342,6 +345,7 @@ test('settings organization shows General at once and supports keyboard groups d
   await expect(panel(page, 'Harnesses')).toBeVisible();
   await expect.poll(() => providerCalls(page)).toBe(startupCalls + 1);
   await expect(page.getByRole('button', { name: 'Refresh agents', exact: true })).toBeDisabled();
+  await page.keyboard.press('ArrowUp');
   await page.keyboard.press('ArrowUp');
   await page.keyboard.press('ArrowUp');
   await page.keyboard.press('ArrowUp');
@@ -451,6 +455,7 @@ test('settings organization lists groups in order, moves between them by keyboar
   await page.keyboard.press('ArrowUp');
   await expect(tab(page, 'About')).toBeFocused();
   await page.keyboard.press('Home');
+  await page.keyboard.press('ArrowDown');
   await page.keyboard.press('ArrowDown');
   await page.keyboard.press('ArrowDown');
   await expect(tab(page, 'Appearance')).toHaveAttribute('aria-selected', 'true');

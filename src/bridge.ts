@@ -65,6 +65,8 @@ export async function subscribe(name: 'browser-state', callback: (event: Browser
 export async function subscribe(name: 'browser-element', callback: (event: BrowserElement) => void): Promise<() => void>;
 export async function subscribe(name: 'moodboards-changed', callback: (event: { projectId: string; boardId: string }) => void): Promise<() => void>;
 export async function subscribe(name: 'web-server-changed', callback: (event: any) => void): Promise<() => void>;
+/** A notification click (notifications.rs) reopening its task. */
+export async function subscribe(name: 'open-task', callback: (event: { sessionId?: string }) => void): Promise<() => void>;
 export async function subscribe(name: string, callback: (event: any) => void): Promise<() => void> {
   if (preview) return (await previewImport()).listen(name, callback);
   if (webMode) return (await webImport()).webListen(name, callback);

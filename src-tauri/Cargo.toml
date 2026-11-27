@@ -16,6 +16,7 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = ["macos-private-api", "unstable", "tray-icon", "image-png"] }
 tauri-plugin-dialog = "2"
+tauri-plugin-notification = "2"
 # The blocking error dialog when the desktop app cannot start (crash_guard/startup.rs); the
 # version tauri-plugin-dialog already brings in, which also picks its platform features.
 rfd = { version = "0.16", default-features = false }
@@ -87,7 +88,7 @@ objc2-av-foundation = { version = "0.3.2", default-features = false, features = 
 objc2 = "0.6.4"
 block2 = "0.6"
 objc2-web-kit = { version = "0.3.2", default-features = false, features = ["std", "WKWebView", "WKSnapshotConfiguration", "WKNavigation", "block2", "objc2-app-kit"] }
-objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSAccessibility", "NSAppearance", "NSColor", "NSGlassEffectView", "NSResponder", "NSView", "NSVisualEffectView", "NSWindow", "NSWorkspace", "objc2-core-foundation", "NSImage", "NSImageRep", "NSBitmapImageRep", "NSGraphics"] }
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSAccessibility", "NSAppearance", "NSColor", "NSGlassEffectView", "NSResponder", "NSSound", "NSView", "NSVisualEffectView", "NSWindow", "NSWorkspace", "objc2-core-foundation", "NSImage", "NSImageRep", "NSBitmapImageRep", "NSGraphics"] }
 objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSObject", "NSGeometry", "NSData", "NSDictionary", "NSString", "NSError", "NSURL"] }
 
 # These use the platform webview already required by Tauri; none enters the Mac build.

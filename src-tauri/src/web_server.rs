@@ -1967,7 +1967,8 @@ struct InvokeCall {
 /// tab, whatever the frontend asks. `tray_seen` stays allowed, so a task opened in a tab
 /// clears its unseen badge in the menu bar.
 fn web_blocked_command(command: &str) -> bool {
-    const DESKTOP_ONLY: [&str; 34] = [
+    const DESKTOP_ONLY: [&str; 35] = [
+        "notifications_show",
         "browser_open",
         "browser_inspect",
         "browser_bounds",
@@ -4258,7 +4259,7 @@ mod tests {
             assert!(!WEB_ALLOWED_COMMANDS.contains(&rust), "{rust} is a Rust name, not a wire name");
         }
         // Spot checks on the review itself.
-        for name in ["browser_inspect", "voice_start", "overlay_toggle", "reveal_path"] {
+        for name in ["notifications_show", "browser_inspect", "voice_start", "overlay_toggle", "reveal_path"] {
             assert!(commands.iter().any(|command| command == name) && web_blocked_command(name), "{name}");
         }
         assert!(WEB_ALLOWED_COMMANDS.contains(&"tray_seen") && WEB_ALLOWED_COMMANDS.contains(&"send_message"));
