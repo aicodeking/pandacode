@@ -136,14 +136,11 @@ fn gh_token_command(root: &Path, token: Option<&str>, args: &[&str], trust: Trus
     command.envs(tool_git_env(trust));
     command
 }
-pub(crate) fn run_gh_as(root: &Path, args: &[&str], timeout: Duration, trust: Trust) -> Result<Capture, String> {
-    run_gh_token_as(root, None, args, timeout, trust)
-}
 /// [`run_gh`] with a pinned project's token riding as `GH_TOKEN` (see [`gh_command`]).
 pub(crate) fn run_gh_token(root: &Path, token: Option<&str>, args: &[&str], timeout: Duration) -> Result<Capture, String> {
     run_gh_token_as(root, token, args, timeout, Trust::Desktop)
 }
-/// [`run_gh_as`] with a pinned project's token: the phone's GitHub calls pass both the
+/// Runs `gh` with a pinned project's token: the phone's GitHub calls pass both the
 /// call's trust and the project's pinned account once resolved.
 pub(crate) fn run_gh_token_as(root: &Path, token: Option<&str>, args: &[&str], timeout: Duration, trust: Trust) -> Result<Capture, String> {
     checked(run_process(gh_token_command(root, token, args, trust), "GitHub CLI", OUTPUT_LIMIT, timeout)?)
@@ -284,7 +281,7 @@ pub fn status(root: &Path, token: Option<&str>) -> GithubStatus {
 pub fn repository(root: &Path, token: Option<&str>) -> Result<Repository, String> {
     repository_as(root, token, Trust::Desktop)
 }
-/// [`repository`] with the caller's trust (see [`run_gh_as`]).
+/// [`repository`] with the caller's trust (see [`run_gh_token_as`]).
 pub(crate) fn repository_as(root: &Path, token: Option<&str>, trust: Trust) -> Result<Repository, String> {
     let output = run_gh_token_as(
         root,
@@ -333,7 +330,7 @@ fn item(kind: &str, value: &serde_json::Value) -> Option<Item> {
 pub(crate) fn view(root: &Path, token: Option<&str>, kind: &str, number: i64, fields: &str) -> Result<serde_json::Value, String> {
     view_as(root, token, kind, number, fields, Trust::Desktop)
 }
-/// [`view`] with the caller's trust (see [`run_gh_as`]).
+/// [`view`] with the caller's trust (see [`run_gh_token_as`]).
 pub(crate) fn view_as(root: &Path, token: Option<&str>, kind: &str, number: i64, fields: &str, trust: Trust) -> Result<serde_json::Value, String> {
     view_in_as(root, None, token, kind, number, fields, trust)
 }
@@ -559,7 +556,7 @@ pub(crate) fn pull_create_repo(root: &Path, trust: Trust) -> Result<Option<Strin
 }
 
 /// Open a pull request (a draft with `draft`) for an already pushed branch, with the caller's
-/// trust (see [`run_gh_as`]): the phone's `pull.create` must not let `gh` run the checkout's git
+/// trust (see [`run_gh_token_as`]): the phone's `pull.create` must not let `gh` run the checkout's git
 /// hooks or filters with desktop trust; the desktop passes `Trust::Desktop` (plain `run_gh`).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn create_pull_request_as(root: &Path, token: Option<&str>, title: &str, body: &str, base: &str, head: &str, draft: bool, trust: Trust) -> Result<PullRequest, String> {
@@ -643,7 +640,7 @@ fn pr_review_args(repo: &str, number: i64, event: ReviewEvent, body: &str) -> Ve
     args
 }
 
-/// Review pull request `number` with the caller's trust (see [`run_gh_as`]): the phone's
+/// Review pull request `number` with the caller's trust (see [`run_gh_token_as`]): the phone's
 /// `pull.review` must not let `gh` run the checkout's git hooks or filters with desktop trust.
 /// `repo` (`owner/name`) is the project's `origin`, passed as `--repo=…`.
 pub(crate) fn review_pull_as(root: &Path, repo: &str, token: Option<&str>, number: i64, event: ReviewEvent, body: &str, trust: Trust) -> Result<(), String> {

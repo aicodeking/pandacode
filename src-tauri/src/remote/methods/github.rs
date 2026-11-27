@@ -105,7 +105,7 @@ fn comment_args(repo: &str, pull: bool, number: i64, body: &str) -> Vec<String> 
     vec![command.to_owned(), "comment".to_owned(), number.to_string(), flag("repo", repo), flag("body", body)]
 }
 
-/// `gh` in the project's checkout (`root`) through [`crate::github::run_gh_as`], with
+/// `gh` in the project's checkout (`root`) through [`crate::github::run_gh_token_as`], with
 /// [`workspace::tool_git_env`] for the `git` it runs there when `trust` is an untrusted phone.
 fn gh_in(root: &Path, project: &str, args: &[&str], trust: Trust) -> Result<Capture> {
     let token = crate::github_token(project)?;
