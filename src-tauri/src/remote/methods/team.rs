@@ -8,8 +8,8 @@
 //! `profileId` names a saved agent team, whose own lead and workers are used as on the desktop.
 //! A `startId` runs the start once (`host::start_keyed`, shared with `task.start`, so
 //! `task.startStatus` answers it too), and the method holds a Start lane slot.
-use super::{full_access_off, id_param, name_param, valid_id, Access, Ctx, Method, Reply, Run};
-use crate::architect::{self, profiles, TeamConfig, WorkerProfile};
+use super::{allow_task_mode, drivable_task, full_access_off, id_param, name_param, valid_id, Access, Ctx, Method, Reply, Run};
+use crate::architect::{self, profiles, CouncilConfig, TeamConfig, WorkerProfile};
 use crate::remote::start::{self, Cancel, Start};
 use crate::{AppState, Result};
 use serde_json::{json, Value};
@@ -139,7 +139,8 @@ pub(crate) fn auto_config(harnesses: &[Harness], last: Option<&TeamConfig>) -> T
         workspace: "shared".into(),
         summary_limit: last.map_or(3072, |c| c.summary_limit),
         lead_guidance: None,
-        // The phone has no Council controls, so its automatic teams never convene one.
+        // Council is never turned on by a start: the desktop does not convene reviewers implicitly
+        // either. A phone turns it on afterwards with `team.setCouncil`.
         council: None,
     }
 }
@@ -378,9 +379,78 @@ impl Run for Roster {
     }
 }
 
+// ---- team.setCouncil / team.councilAccept ----
+//
+// Council on a phone: the same two desktop commands (`architect_set_council`,
+// `architect_council_accept`), so the rules are the desktop's own — a task on another computer
+// refuses, and native validates the setting. Without them a lead that asks the user to "press
+// Accept and finish on the Council card" would leave the phone with no card to press.
+
+/// The snapshot both Council methods answer with, the same one `task.team` sends (phones decode one type).
+fn council_reply(team: crate::architect::TeamSnapshot) -> Value {
+    super::super::host::remote_team_reply(&team)
+}
+
+#[derive(Debug)]
+struct SetCouncil {
+    session_id: String,
+    council: Option<CouncilConfig>,
+}
+
+fn council_config_param(params: &Value) -> Result<Option<CouncilConfig>> {
+    let Some(value) = params.get("council").filter(|value| !value.is_null()) else { return Ok(None) };
+    let read = |key: &str| value.get(key).cloned().ok_or_else(|| format!("Missing council.{key}."));
+    Ok(Some(CouncilConfig {
+        target: read("target")?.as_f64().ok_or("Invalid council.target.")?,
+        max_rounds: read("maxRounds")?.as_u64().and_then(|n| usize::try_from(n).ok()).ok_or("Invalid council.maxRounds.")?,
+        reviewers: read("reviewers")?.as_u64().and_then(|n| usize::try_from(n).ok()).ok_or("Invalid council.reviewers.")?,
+    }))
+}
+
+impl Run for SetCouncil {
+    fn run<'a>(self: Box<Self>, ctx: Ctx<'a>) -> Reply<'a> {
+        Box::pin(async move {
+            let SetCouncil { session_id, council } = *self;
+            // Gated as `task.teamResume` is: a setting starts a lead turn when it ends the asking
+            // state, and the lead it wakes may dispatch workers.
+            allow_task_mode(&drivable_task(ctx.app, ctx.from, &session_id, ctx.full_access).await?.mode, None, ctx.full_access)?;
+            super::allow_remote_team_for(&ctx.state(), &session_id, ctx.full_access).await?;
+            let team = architect::architect_set_council(ctx.app.clone(), ctx.state(), session_id, council).await?;
+            team.map_or_else(|| Err("This task has no team.".into()), |team| Ok(council_reply(team)))
+        })
+    }
+}
+
+fn parse_set_council(params: &Value) -> Result<Box<dyn Run>> {
+    Ok(Box::new(SetCouncil { session_id: id_param(params, "sessionId")?, council: council_config_param(params)? }))
+}
+
+#[derive(Debug)]
+struct CouncilAccept {
+    session_id: String,
+}
+
+impl Run for CouncilAccept {
+    fn run<'a>(self: Box<Self>, ctx: Ctx<'a>) -> Reply<'a> {
+        Box::pin(async move {
+            let CouncilAccept { session_id } = *self;
+            // Accepting wakes an idle lead once to finish, so it is gated exactly as Resume is.
+            allow_task_mode(&drivable_task(ctx.app, ctx.from, &session_id, ctx.full_access).await?.mode, None, ctx.full_access)?;
+            super::allow_remote_team_for(&ctx.state(), &session_id, ctx.full_access).await?;
+            Ok(council_reply(architect::architect_council_accept(ctx.app.clone(), ctx.state(), session_id).await?))
+        })
+    }
+}
+
+fn parse_council_accept(params: &Value) -> Result<Box<dyn Run>> {
+    Ok(Box::new(CouncilAccept { session_id: id_param(params, "sessionId")? }))
+}
+
 pub(crate) const METHODS: &[Method] = &[
     Method { name: "team.start", access: Access::Full, read_only: false, parse: parse_team_start },
     Method { name: "team.roster", access: Access::View, read_only: true, parse: |_| Ok(Box::new(Roster)) },
+    Method { name: "team.setCouncil", access: Access::Control, read_only: false, parse: parse_set_council },
+    Method { name: "team.councilAccept", access: Access::Control, read_only: false, parse: parse_council_accept },
 ];
 
 #[cfg(test)]
@@ -448,6 +518,59 @@ mod tests {
         let roster = super::super::find("team.roster").unwrap();
         assert_eq!(roster.access, Access::View);
         assert!(roster.read_only);
+    }
+
+    #[test]
+    fn council_methods_are_control_and_ordered() {
+        for name in ["team.setCouncil", "team.councilAccept"] {
+            let method = super::super::find(name).unwrap();
+            assert_eq!(method.access, Access::Control, "{name}");
+            assert!(!method.read_only, "{name} changes the team");
+            // Not a start and not slow: it joins the phone's ordered lane, never holding a Stop up
+            // behind a model call and never racing another change to the same team.
+            assert_eq!(super::super::lane_for(name), None, "{name}");
+        }
+    }
+
+    #[test]
+    fn the_council_methods_check_the_task_and_team_before_they_act() {
+        // Same order as task.teamResume: the task must be drivable (its mode allows it) and the team
+        // gate must pass before a setting is applied or a cycle accepted, so a View phone or a mirror
+        // task is refused before anything changes.
+        let source = include_str!("team.rs");
+        for (name, marker) in [("SetCouncil", "architect_set_council"), ("CouncilAccept", "architect_council_accept")] {
+            let run = &source[source.find(&format!("impl Run for {name}")).unwrap()..];
+            let body = &run[..run.find("\n    }\n").unwrap()];
+            let drive = body.find("drivable_task(").unwrap_or_else(|| panic!("{name} checks the task"));
+            let gate = body.find("allow_remote_team_for(").unwrap_or_else(|| panic!("{name} checks the team"));
+            let act = body.find(&format!("{marker}(")).unwrap_or_else(|| panic!("{name} calls {marker}"));
+            assert!(drive < gate && gate < act, "{name} gates before it acts");
+        }
+    }
+
+    #[test]
+    fn council_settings_are_validated_by_native() {
+        // The wire shape a phone sends: camelCase maxRounds/reviewers, absent for off.
+        assert_eq!(super::super::parse("team.setCouncil", &json!({"sessionId": "s1", "council": null})).unwrap().map(|p| format!("{:?}", p.call)), Ok("SetCouncil { session_id: \"s1\", council: None }".into()));
+        let on = json!({"sessionId": "s1", "council": {"target": 9.0, "maxRounds": 10, "reviewers": 3}});
+        let text = super::super::parse("team.setCouncil", &on).unwrap().map(|p| format!("{:?}", p.call)).unwrap();
+        assert!(text.contains("target: 9.0") && text.contains("max_rounds: 10") && text.contains("reviewers: 3"), "{text}");
+        // Off is also what an absent council means, so a bare session clears it.
+        assert!(super::super::parse("team.setCouncil", &json!({"sessionId": "s1"})).unwrap().map(|p| format!("{:?}", p.call)).unwrap().contains("council: None"));
+        assert_eq!(super::super::parse("team.councilAccept", &json!({"sessionId": "s1"})).unwrap().map(|p| format!("{:?}", p.call)), Ok("CouncilAccept { session_id: \"s1\" }".into()));
+        for (params, why) in [
+            (json!({"sessionId": "a b", "council": null}), "bad session"),
+            (json!({"sessionId": null}), "no session"),
+            (json!({"sessionId": "s1", "council": {"target": "high", "maxRounds": 3, "reviewers": 0}}), "target not a number"),
+            (json!({"sessionId": "s1", "council": {"maxRounds": 3, "reviewers": 0}}), "target missing"),
+            (json!({"sessionId": "s1", "council": {"target": 9, "reviewers": 0}}), "maxRounds missing"),
+            (json!({"sessionId": "s1", "council": {"target": 9, "maxRounds": 3}}), "reviewers missing"),
+            (json!({"sessionId": "s1", "council": {"target": 9, "maxRounds": -1, "reviewers": 0}}), "negative rounds"),
+            (json!({"sessionId": "s1", "council": {"target": 9, "maxRounds": 3, "reviewers": 1.5}}), "fractional reviewers"),
+        ] {
+            assert!(super::super::parse("team.setCouncil", &params).unwrap().is_err(), "{why}");
+        }
+        assert!(super::super::parse("team.councilAccept", &json!({})).unwrap().is_err(), "councilAccept needs a session");
     }
 
     #[test]

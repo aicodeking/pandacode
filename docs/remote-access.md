@@ -302,6 +302,13 @@ methods as `fullAccessSwitch`, so a phone hides them and says why before calling
 - **Terminals:** one phone may have at most 4 shells open on a computer (`MAX_PHONE_TERMINALS`);
   a fifth `terminal.open` is refused with `This phone already has 4 terminals open on this
   computer. Close one to open another.` Opens still starting count, and a failed one frees its slot.
+- **Bot management:** every write in the `bots` group (`bot.edit`, `bot.reset`, `bot.delete`,
+  `bot.ruleAdd`/`bot.ruleDelete`, `bot.scheduleCreate`/`setEnabled`/`delete`) needs both the `full`
+  grant and the host's "Full access for remote tasks" switch. A bot takes untrusted input from
+  Telegram, Slack, Discord and WhatsApp and then acts on the computer, so its settings are a bigger
+  lever than a task's. `bot.edit` never accepts the bot's brief (`instructions`, `goals`, `soul`) and
+  cannot raise a bot to `full` mode without the switch. A schedule that runs, or one enabled again,
+  is gated the same way, because it lets the bot work unattended.
 - **Bots:** `bot.detail` to a `view` device is limited: `schedules`, `rules` and `memories` are
   empty lists, `memoryCount`, `scheduleCount` and `ruleCount` carry their sizes, and `limited:
   true` is set. The phone shows the counts with an access note instead of empty sections.
@@ -1260,6 +1267,19 @@ paged replies take `offset` and answer `next`.
 | `moodboards.add` | full | B | `projectId, board, imageId, name?` → `{ board }` (the desktop's `MoodboardDetail`, oldest images dropped to fit). Also needs Full access for remote tasks. `imageId` is an upload from this device's `image.put`, claimed as `task.send` claims one (given back if the add fails, removed from the capture folder after it); the desktop's `add_moodboard_image` decodes it into the board in app storage. `board` is a board id and `name` a plain file name (no folders, `..`, leading dot or control characters; default `Image from phone.png`). Emits `moodboards-changed { projectId, boardId }`. |
 | `deploy.targets` | view | RO | — → `{ targets: [{ id, connected, note? }] }` with `id` one of the desktop Deploy menu's targets in its order (`vercel`, `cloudflare`, `railway`, `netlify`, `aws`, `gcloud`, from `src/deploy.ts`). `connected` is decided as `deployItems()` does (`cloud_connections` lists that provider connected); `note` is the menu's "Connect it in Settings → Agents → Cloud sandboxes" for one that is not. No tokens, accounts or project details. |
 | `team.start` | full | S | Needs Full access for remote tasks (team workers run with full access). `projectId`, the `task.start` fields (no `repo`, `worktree` or `branch`), `auto?` or `profileId` (not both); `startId` (required, as for `chat.start`) shared with `task.startStatus` |
+| `team.setCouncil` / `team.councilAccept` | control | O | `sessionId, council: { target, maxRounds, reviewers } \| null` / `sessionId` → the same `{ team }` snapshot `task.team` sends. Council is the reviewers that score a team's work until every one reaches the target (`docs/architect-workers.md`); these mirror `architect_set_council` / `architect_council_accept`, so native validates the setting and native's `councilStatus` stays authoritative. `team.start` never turns Council on by itself: a phone starts the team, then sets it. Without these a lead that tells the user to "press Accept and finish on the Council card" left the phone with no card. |
+
+### Updates
+
+A paired phone can see the computer's PandaCode version and ask it to update and restart, so a
+computer left running does not stay a release behind because nobody is at its keyboard.
+A restart drops every phone's connection: the host answers `{ restarting: true }` first, tells each
+subscribed viewer with a `host.restarting` event, and only then installs and restarts (Windows exits
+into its installer; macOS and Linux relaunch). Clients that do not know the event simply see presence
+drop and re-subscribe when the computer is back — the host remembers subscriptions and hands the
+catch-up out on presence as it always does. Nothing is written to the chat's tasks by the restart
+itself; a running agent is stopped by the ordinary clean shutdown, and the update is applied the way
+the desktop's own updater applies it.
 
 ### Starting a task on another computer
 
@@ -1452,6 +1472,16 @@ read in one query from the saved team, on the blocking pool.
 - A `run.finished` whose team is still running or waiting has `status: "running"`: the run ended,
   but the task did not, so the phone keeps it under Running. Without `status`, `run.finished`
   means what it always did.
+- **Council.** A task whose team has Council on carries, on the same snapshot as `status` and
+  `workers`, `council: { target, maxRounds, reviewers } | null`, native's
+  `councilStatus: { state, round, lowest, target, stale, notice? } | null` and `councilAccepted`.
+  A Council reviewer is a worker row with a `council: { round, lens, score, startedAt }` block; an
+  ordinary worker has none, so a viewer draws reviewers as reviewers. `councilStatus` is
+  authoritative (the desktop derives no state of its own), and its `notice` is the plain sentence
+  for the user — the refusal written for the lead stays out of `team.error`'s place on screen.
+  Only changed worker rows are streamed, so a state that moves on its own (`asking`, `passed`,
+  `accepted`) sends no event: a viewer that shows Council polls `task.team` while Council is on and
+  not yet accepted, rather than relying on the event stream alone.
 - When a team the host has reported or seen as active stops being `running` or `waiting` and no
   agent of the architect task is registered, the host sends a further `run.finished`:
   `{ sessionId, successful: team.status == "completed", stopped: team.status == "paused", text:

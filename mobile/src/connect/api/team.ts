@@ -1,6 +1,7 @@
 // Host calls for the `team` feature group (src-tauri/src/remote/methods/team.rs): starting a task
 // whose architect leads a team of agents (team.start, Full access) and what a team may use on the
-// computer (team.roster: installed harnesses and the named agent teams from Settings).
+// computer (team.roster: installed harnesses and the named agent teams from Settings), plus Council
+// (team.setCouncil, team.councilAccept: Control).
 //
 // With Auto the picked model leads and chooses worker models from every installed harness, as the
 // desktop's Team button does; a named team brings its own lead and workers. A team start carries a
@@ -10,8 +11,9 @@
 // calls, so node can load this file.
 import { registerMethods, START_TIMEOUT_MS } from '../rpc.ts';
 import { draftStartId, followStart, keepsStartId, type DraftStart, type StartReply } from '../start-retry.ts';
+import type { CouncilConfig, Team } from '../../store/team.ts';
 
-export const TEAM_METHODS = registerMethods(['team.start', 'team.roster'] as const);
+export const TEAM_METHODS = registerMethods(['team.start', 'team.roster', 'team.setCouncil', 'team.councilAccept'] as const);
 
 /** The team choice that leaves worker models to the lead. */
 export const AUTO_TEAM = 'auto';
@@ -102,4 +104,22 @@ export async function startTeamTask(deviceId: string, params: TeamStartParams): 
     if (!keepsStartId(e)) teamDraft = null;
     throw e;
   }
+}
+
+// ---- Council ----
+//
+// Both answer the same snapshot `task.team` does, and client.ts stores it, so a screen re-renders
+// from the store rather than keeping a copy. Control access: gate them with useHostAllows and
+// explain a refusal with blockedNote.
+
+/** Turns Council on, changes it, or (with null) turns it off. Takes effect at once, even mid-run. */
+export async function setCouncil(deviceId: string, sessionId: string, council: CouncilConfig | null): Promise<Team | null | 'outdated'> {
+  const { connect } = await client();
+  return connect.setCouncil(deviceId, sessionId, council);
+}
+
+/** Accept and finish: this cycle's scores stand for good (Council stays on for what comes next). */
+export async function acceptCouncil(deviceId: string, sessionId: string): Promise<Team | null | 'outdated'> {
+  const { connect } = await client();
+  return connect.councilAccept(deviceId, sessionId);
 }

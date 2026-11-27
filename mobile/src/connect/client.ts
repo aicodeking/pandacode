@@ -12,7 +12,7 @@ import { create } from 'zustand';
 import { BUILD_DEMO, DEMO_FILE, demoAtStart } from '../demo.ts';
 import { demoCall, type DemoHost } from '../demo-host.ts';
 import { delivering, settled, unconfirm, unconfirmedVerdict, undeliver, unmatched, withoutSent, type Sent } from '../store/sent.ts';
-import { applyTeamEvent, decodeTeam, decodeTeamRun, teamBusy, teamRun, type Team } from '../store/team.ts';
+import { applyTeamEvent, decodeTeam, decodeTeamRun, teamBusy, teamRun, type CouncilConfig, type Team } from '../store/team.ts';
 import { applyEvent, ended, fromList, fromSubscribe, idleLive, lastId, mergeMessages, prependMessages, staleLists, withTeamRun } from '../store/reduce.ts';
 import { cachedLastId, clearThreads, readThread, saveThread } from '../store/threads.ts';
 import { PrefetchQueue, prefetchOrder } from '../store/prefetch.ts';
@@ -1513,6 +1513,28 @@ async function resumeTeam(deviceId: string, sessionId: string): Promise<void> {
   await loadTeam(deviceId, sessionId).catch(() => undefined);
 }
 
+/** Council: both methods answer the same snapshot `task.team` does, so the card updates from one
+ * reply instead of a second round trip. `council: null` turns it off. */
+async function setCouncil(deviceId: string, sessionId: string, council: CouncilConfig | null): Promise<Team | null | 'outdated'> {
+  const reply = await call(deviceId, 'team.setCouncil', { sessionId, council }, TIMEOUT_MS);
+  return storeCouncil(deviceId, sessionId, reply);
+}
+
+/** Accept and finish: this cycle's scores stand, and Council stays on. */
+async function councilAccept(deviceId: string, sessionId: string): Promise<Team | null | 'outdated'> {
+  const reply = await call(deviceId, 'team.councilAccept', { sessionId }, TIMEOUT_MS);
+  return storeCouncil(deviceId, sessionId, reply);
+}
+
+/** Keeps the Card's snapshot from a Council call, and returns what was stored (the caller re-renders
+ * from the store, so nothing here has to be kept twice). */
+function storeCouncil(deviceId: string, sessionId: string, reply: unknown): Team | null | 'outdated' {
+  const key = taskKey(deviceId, sessionId);
+  const team = decodeTeam(reply);
+  if (team) patch(s => ({ teams: { ...s.teams, [key]: team } }));
+  return team;
+}
+
 const workerFetch = (deviceId: string, sessionId: string, workerId: string): Fetch => params =>
   call<MessagePage>(deviceId, 'task.workerMessages', { sessionId, workerId, ...params });
 
@@ -1552,7 +1574,7 @@ export const connect = {
   listTasks, refreshLists, listProviders, listModels, startTask, projectIcons,
   sendMessage, stopTask, steerTask, configureTask, respondApproval, respondInput,
   loadPull, pullDiff, mergePull, taskChanges, taskDiff, listBots, botThread, botMessage, pauseBot,
-  loadTeam, resumeTeam, workerMessages, olderWorkerMessages,
+  loadTeam, resumeTeam, setCouncil, councilAccept, workerMessages, olderWorkerMessages,
   attachment,
   dedupesSends, connectionQuality, subscribeQuality,
   sendAgain, discardSent, onRequeue,

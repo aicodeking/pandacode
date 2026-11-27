@@ -5,6 +5,7 @@
 import type { TeamRoster } from '../connect/api/team.ts';
 import type { StartParams } from '../connect/types.ts';
 import { started, withTask } from '../demo-host.ts';
+import { DEMO_TEAM_TASK, demoTeam, demoTeamKey } from '../demo-team.ts';
 import type { DemoHandlers } from './index.ts';
 
 /** The demo's one named agent team (Settings → Agent teams on the desktop). */
@@ -15,6 +16,36 @@ export const handlers: DemoHandlers = {
     harnesses: (state.providers[deviceId] ?? []).filter(p => p.installed).map(p => ({ id: p.id, name: p.name, models: p.models?.length ?? 0 })),
     teams: [{ ...DEMO_NAMED_TEAM, lead: { ...DEMO_NAMED_TEAM.lead } }],
   }),
+  // Both answer the same `{ team }` snapshot task.team does. The demo only has one team (the
+  // DEMO_TEAM_TASK example), so they rewrite that team's Council: accepting settles the asking
+  // cycle so the Accept card goes away, and a setting change lands at once.
+  'team.setCouncil': ({ host, state }, p) => {
+    if (typeof p?.sessionId !== 'string') throw new Error('Missing sessionId.');
+    if (p.sessionId !== DEMO_TEAM_TASK) throw new Error('This task has no team.');
+    const now = host.now();
+    const current = demoTeam(now);
+    const council = p.council && typeof p.council === 'object'
+      ? { target: Number(p.council.target), maxRounds: Number(p.council.maxRounds), reviewers: Number(p.council.reviewers) }
+      : null;
+    const team = {
+      ...current,
+      council,
+      // Off leaves no state to act on; a change simply keeps the asking cycle below the new target.
+      councilStatus: council ? { ...current.councilStatus, target: council.target } : null,
+      councilAccepted: false,
+    };
+    host.set(next => ({ ...next, teams: { ...next.teams, [demoTeamKey()]: team as never } }));
+    return { team };
+  },
+  'team.councilAccept': ({ host }, p) => {
+    if (typeof p?.sessionId !== 'string') throw new Error('Missing sessionId.');
+    if (p.sessionId !== DEMO_TEAM_TASK) throw new Error('This task has no team.');
+    const now = host.now();
+    const current = demoTeam(now);
+    const team = { ...current, status: 'completed', councilAccepted: true, councilStatus: { ...current.councilStatus, state: 'accepted' } };
+    host.set(next => ({ ...next, teams: { ...next.teams, [demoTeamKey()]: team as never } }));
+    return { team };
+  },
   'team.start': ({ host, deviceId, state, reply }, p) => {
     const prompt = String(p?.prompt ?? '').trim();
     if (!prompt) throw new Error('Missing prompt.');

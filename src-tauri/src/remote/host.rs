@@ -924,6 +924,17 @@ pub(crate) fn bounded_text(text: &str, max: usize) -> String {
     }
 }
 
+/// A Council reviewer's seat: which round and lens it sits in, and its score once it has one.
+/// Absent on an ordinary worker, so a phone tells a reviewer from a worker by its presence.
+fn remote_seat(seat: &crate::architect::CouncilSeat) -> Value {
+    json!({
+        "round": seat.round,
+        "lens": bounded_text(&seat.lens, 256),
+        "score": seat.score,
+        "startedAt": seat.started_at,
+    })
+}
+
 fn remote_worker(worker: &crate::architect::Worker) -> Value {
     let checkpoint = worker.checkpoint.as_ref().map(|checkpoint| {
         json!({
@@ -933,6 +944,7 @@ fn remote_worker(worker: &crate::architect::Worker) -> Value {
             "updatedAt": checkpoint.updated_at,
         })
     });
+    let council = worker.council.as_ref().map(remote_seat);
     json!({
         "id": worker.id,
         "name": worker.name,
@@ -956,7 +968,37 @@ fn remote_worker(worker: &crate::architect::Worker) -> Value {
         "abandoned": worker.abandoned,
         "filesTruncated": false,
         "parentWorker": worker.parent_worker,
+        "council": council,
     })
+}
+
+/// Council as a phone shows it: the setting (null when it is off), native's state, and whether this
+/// cycle's scores were accepted. `councilStatus` is authoritative when Council is on (the desktop
+/// derives no state of its own), so a phone prints it as it is.
+fn remote_council_config(team: &crate::architect::TeamSnapshot) -> Value {
+    match &team.config.council {
+        Some(council) => json!({
+            "target": council.target,
+            "maxRounds": council.max_rounds,
+            "reviewers": council.reviewers,
+        }),
+        None => Value::Null,
+    }
+}
+
+fn remote_council_status(team: &crate::architect::TeamSnapshot) -> Value {
+    let Some(status) = &team.council_status else { return Value::Null };
+    let mut value = json!({
+        "state": status.state,
+        "round": status.round,
+        "lowest": status.lowest,
+        "target": status.target,
+        "stale": status.stale,
+    });
+    if let Some(notice) = &status.notice {
+        value["notice"] = json!(bounded_text(notice, 1024));
+    }
+    value
 }
 
 fn remote_team(team: &crate::architect::TeamSnapshot, workers: Vec<Value>) -> Value {
@@ -972,7 +1014,16 @@ fn remote_team(team: &crate::architect::TeamSnapshot, workers: Vec<Value>) -> Va
         // Rounds have no maximum; 0 keeps an older phone from showing "round 25 of 8".
         "rounds": {"used": team.round, "max": 0},
         "workers": workers,
+        "council": remote_council_config(team),
+        "councilStatus": remote_council_status(team),
+        "councilAccepted": team.council_accepted == Some(team.council_since),
     })
+}
+
+/// A whole `task.team` reply (`{ team }`) for `team`, fitted to one page. Shared with the Council
+/// methods, so every team snapshot a phone reads has the one shape it decodes.
+pub(crate) fn remote_team_reply(team: &crate::architect::TeamSnapshot) -> Value {
+    fit_team_reply(json!({"team": remote_team(team, team.workers.iter().map(remote_worker).collect())}))
 }
 
 /// A phone's Resume may be late or repeated: it never restarts a team that is working or finished.
@@ -1593,7 +1644,7 @@ async fn run_one(app: &tauri::AppHandle, from: &str, call: Call, full_access: bo
                 let Some(team) = crate::architect::load(&store, &session_id)? else {
                     return Ok(json!({"team": null}));
                 };
-                Ok(fit_team_reply(json!({"team": remote_team(&team, team.workers.iter().map(remote_worker).collect())})))
+                Ok(remote_team_reply(&team))
             })
             .await
         }
@@ -4489,6 +4540,51 @@ mod tests {
         assert_eq!(settled, json!({"sessionId": "t", "successful": true, "stopped": false, "text": "Team completed", "status": "completed", "teamSettled": true, "team": {"status": "completed", "activeWorkers": 0}}));
         let paused = settled_finished("t", "running", &team_state("paused", 0, 6));
         assert_eq!((paused["status"].as_str(), paused["stopped"].as_bool(), paused["text"].as_str()), (Some("interrupted"), Some(true), Some("Team paused")));
+    }
+
+    #[test]
+    fn a_team_snapshot_carries_council_and_a_reviewer_carries_its_seat() {
+        let mut team = team_fixture(vec![worker_fixture("w1", "running"), worker_fixture("w2", "completed")]);
+        // Off: explicit nulls and a false, so a phone can tell "off" from "an old host that omits it".
+        let reply = remote_team_reply(&team);
+        assert_eq!(reply["team"]["council"], Value::Null);
+        assert_eq!(reply["team"]["councilStatus"], Value::Null);
+        assert_eq!(reply["team"]["councilAccepted"], json!(false));
+        assert_eq!(reply["team"]["workers"][0]["council"], Value::Null, "an ordinary worker has no seat");
+
+        team.config.council = Some(crate::architect::CouncilConfig { target: 9.5, max_rounds: 10, reviewers: 3 });
+        team.council_status = Some(crate::architect::CouncilStatus {
+            state: "asking".into(), round: 2, lowest: Some(8.25), target: 9.5, stale: false,
+            notice: Some("The lead is asking how to continue.".into()),
+        });
+        team.council_since = 100;
+        team.council_accepted = None;
+        team.workers[1].council = Some(crate::architect::CouncilSeat { round: 2, lens: "security".into(), score: Some(8.25), started_at: 1_700_000_000_000 });
+        let reply = remote_team_reply(&team);
+        assert_eq!(reply["team"]["council"], json!({"target": 9.5, "maxRounds": 10, "reviewers": 3}));
+        assert_eq!(reply["team"]["councilStatus"], json!({"state": "asking", "round": 2, "lowest": 8.25, "target": 9.5, "stale": false, "notice": "The lead is asking how to continue."}));
+        assert_eq!(reply["team"]["councilAccepted"], json!(false));
+        assert_eq!(reply["team"]["workers"][1]["council"], json!({"round": 2, "lens": "security", "score": 8.25, "startedAt": 1_700_000_000_000i64}));
+        assert_eq!(reply["team"]["workers"][0]["council"], Value::Null);
+
+        // Once the user accepts this cycle, the phone stops offering Accept.
+        team.council_accepted = Some(team.council_since);
+        assert_eq!(remote_team_reply(&team)["team"]["councilAccepted"], json!(true));
+    }
+
+    #[test]
+    fn a_council_notice_is_cut_to_fit_the_snapshot() {
+        let mut team = team_fixture(vec![worker_fixture("w1", "running")]);
+        team.config.council = Some(crate::architect::CouncilConfig { target: 9.0, max_rounds: 3, reviewers: 0 });
+        team.council_status = Some(crate::architect::CouncilStatus {
+            state: "asking".into(), round: 1, lowest: None, target: 9.0, stale: true, notice: Some("notice ".repeat(2048)),
+        });
+        let reply = remote_team_reply(&team);
+        assert!(reply.to_string().len() <= PAGE_BUDGET);
+        let notice = reply["team"]["councilStatus"]["notice"].as_str().unwrap();
+        // `bounded_text` cuts at the limit and then appends its marker, so the tail is the marker.
+        assert!(notice.ends_with("[Truncated]"), "{}", &notice[notice.len().saturating_sub(40)..]);
+        assert!(notice.len() < 2048, "cut from a much longer notice: {}", notice.len());
     }
 
     #[test]
