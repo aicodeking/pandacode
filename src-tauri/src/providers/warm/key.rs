@@ -4,7 +4,7 @@ use super::*;
 use crate::connections::Connection;
 
 /// Everything that shapes the launch: the command line, the folder and the tool catalog.
-/// `None` when the launch's Claude config folder cannot be known: no spare is started or adopted.
+/// `None` when the launch's Claude config cannot be fingerprinted: no spare is started or adopted.
 /// A launch keys itself with `key_fields` and `with_git_status`, which give the same string.
 #[cfg(test)]
 pub(in crate::providers) fn key(config: &RunConfig, tools: &[Value]) -> Option<String> {
@@ -48,7 +48,7 @@ pub(super) fn key_with_disabled(
 }
 
 /// The warm key's fields (no `gitStatus`) with the task's named connection looked up: what a
-/// spare is spawned and a renewal checked with. `None` when the Claude config folder cannot be known.
+/// spare is spawned and a renewal checked with. `None` when the Claude config cannot be fingerprinted.
 pub(super) fn key_fields_with_disabled(
     config: &RunConfig,
     tools: &[Value],
@@ -77,7 +77,7 @@ pub(super) fn key_for_connection(
 
 /// The warm key's fields for a launch keyed against a pooled spare, without its `gitStatus`, so
 /// the config walk can run beside the working tree's `git status`; `with_git_status` completes it.
-/// `None` when the launch's Claude config folder cannot be known. Reads files: off the runtime.
+/// `None` when the launch's Claude config cannot be fingerprinted. Reads files: off the runtime.
 pub(in crate::providers) fn key_fields(config: &RunConfig, tools: &[Value]) -> Option<Value> {
     let connection = crate::connections::warm_key(&config.session_id, &config.provider);
     let disabled = crate::skill_manager::disabled_for(&config.session_id);
@@ -105,8 +105,8 @@ pub(super) fn key_fields_for_connection(
     disabled: &std::collections::BTreeSet<String>,
     stdio: &[mcp_host::Stdio],
 ) -> Option<Value> {
-    // Config files Claude reads only at startup: an edit while a spare idles starts cold. Not
-    // knowable at all (see `claude_config_fingerprint_with`): no key, so no spare.
+    // Config files Claude reads only at startup: an edit while a spare idles starts cold.
+    // An unavailable fingerprint (see `claude_config_fingerprint_with`) leaves no warm key.
     let claude_config = claude_config_fingerprint(config, named)?;
     Some(json!({
         "namedConnection": connection,
@@ -133,7 +133,7 @@ pub(super) fn key_fields_for_connection(
         "claudeConfig": claude_config,
         // Claude Code snapshots `gitStatus` (branch, recent commits, working tree) at spawn:
         // `gitHead` catches branch switches, detaches and commits; `gitStatus` (added via
-        // `with_git_status`) catches uncommitted working-tree edits on every spare.
+        // `with_git_status`) catches working-tree edits that change porcelain status.
         "gitHead": git_head_stamp(&config.cwd),
         // So does turning Colab's MCP on or off: its server rides `--mcp-config`.
         "stdioMcp": stdio.iter().map(|server| json!([server.name, server.command, server.args])).collect::<Vec<_>>(),
@@ -196,7 +196,7 @@ const CONFIG_WALK_ENTRIES: usize = 128;
 const CLAUDE_CONFIG_DIR: &str = "CLAUDE_CONFIG_DIR";
 
 /// Metadata of the Claude config files and folders this launch's process would read; `None`
-/// when that folder cannot be known (see `claude_config_fingerprint_with`).
+/// when the folder is unknown or a config walk exceeds its cap (see `claude_config_fingerprint_with`).
 pub(super) fn claude_config_fingerprint(config: &RunConfig, connection: Option<&Connection>) -> Option<Vec<Value>> {
     let env = claude_launch_env(crate::provider_settings::environment("claude"), connection);
     // A legacy connection may hold a folder variable as a secret, which is never read here.
@@ -256,7 +256,7 @@ pub(super) fn user_config_root(user_dir: Option<&Path>, empty_config: bool, secr
 /// and legacy IDE paths use home. Both `cwd` and `home_claude` then get the full user stamps,
 /// and the leading marker keeps the key apart from an unset variable. When the folder cannot be
 /// known (an empty value with no known home, an unresolvable home, or a folder variable kept as
-/// a secret) the files Claude Code reads cannot be stamped, so this returns `None` and no spare
+/// a secret) or a config walk exceeds `CONFIG_WALK_ENTRIES`, this returns `None` and no spare
 /// is started or adopted for the launch.
 pub(super) fn claude_config_fingerprint_with(
     cwd: &Path,
@@ -292,7 +292,7 @@ pub(super) fn claude_config_fingerprint_with(
         .into_iter()
         .flat_map(Path::ancestors);
     let mut home_memory_stamped = false;
-    let mut stamp_project = |root: &Path, files: &[&str], dirs: &[&str]| {
+    let mut stamp_project = |root: &Path, files: &[&str], dirs: &[&str]| -> Option<Value> {
         let claude = root.join(".claude");
         // The effective user folder is stamped below.
         let skip_claude = user_dir == Some(claude.as_path());
@@ -301,13 +301,14 @@ pub(super) fn claude_config_fingerprint_with(
             .iter()
             .filter(|name| !skip_claude || !name.starts_with(".claude/"))
             .map(|name| config_file_stamp(&root.join(name)));
-        let dirs = dirs
-            .iter()
-            .filter(|_| !skip_claude)
-            .map(|name| config_dir_stamp(&root.join(name)));
         let mut stamp = vec![json!(root.to_string_lossy())];
-        stamp.extend(files.chain(dirs));
-        Value::Array(stamp)
+        stamp.extend(files);
+        if !skip_claude {
+            for name in dirs {
+                stamp.push(config_dir_stamp(&root.join(name))?);
+            }
+        }
+        Some(Value::Array(stamp))
     };
 
     let mut stamps = vec![json!(marker)];
@@ -316,10 +317,10 @@ pub(super) fn claude_config_fingerprint_with(
             root,
             &PROJECT_CLAUDE_FILES,
             &PROJECT_CLAUDE_DIRS,
-        ));
+        )?);
     }
     for root in above_project {
-        stamps.push(stamp_project(root, &MEMORY_FILES, &[".claude/rules"]));
+        stamps.push(stamp_project(root, &MEMORY_FILES, &[".claude/rules"])?);
     }
     if let Some(main) = roots.main_worktree.filter(|main| user_dir != Some(main.join(".claude").as_path())) {
         stamps.push(json!([main.to_string_lossy(), config_file_stamp(&main.join(MAIN_LOCAL_SETTINGS))]));
@@ -330,19 +331,17 @@ pub(super) fn claude_config_fingerprint_with(
                 .iter()
                 .map(|name| config_file_stamp(&user.join(name))),
         );
-        stamps.extend(
-            USER_CLAUDE_DIRS
-                .iter()
-                .map(|name| config_dir_stamp(&user.join(name))),
-        );
+        for name in USER_CLAUDE_DIRS {
+            stamps.push(config_dir_stamp(&user.join(name))?);
+        }
     }
     if let Some(home) = home_claude.filter(|home| !home_memory_stamped && Some(*home) != user_dir) {
         stamps.push(config_file_stamp(&home.join("CLAUDE.md")));
-        stamps.push(config_dir_stamp(&home.join("rules")));
+        stamps.push(config_dir_stamp(&home.join("rules"))?);
     }
     for path in managed_paths {
         stamps.push(config_file_stamp(path));
-        stamps.push(config_dir_stamp(&path.with_extension("d")));
+        stamps.push(config_dir_stamp(&path.with_extension("d"))?);
     }
     stamps.push(json!(roots.error));
     Some(stamps)
@@ -423,28 +422,27 @@ pub(super) fn config_file_stamp(path: &Path) -> Value {
 }
 
 /// A config folder's own metadata and, sorted by relative path, that of every entry up to
-/// `CONFIG_WALK_DEPTH` levels and `CONFIG_WALK_ENTRIES` entries deep, plus `"capped"` when
-/// the walk stopped early. Never opens a file; a symlinked folder is walked (so editing a linked
-/// skill counts) unless its target was already visited, so a link loop cannot recurse.
-pub(super) fn config_dir_stamp(root: &Path) -> Value {
+/// `CONFIG_WALK_DEPTH` levels. Returns `None` if more than `CONFIG_WALK_ENTRIES` entries
+/// would be needed. Never opens a file; a symlinked folder is walked (so editing a linked skill
+/// counts) unless its target was already visited, so a link loop cannot recurse.
+pub(super) fn config_dir_stamp(root: &Path) -> Option<Value> {
     let meta = match std::fs::metadata(root) {
         Ok(meta) => meta,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Value::Null,
-        Err(error) => return error_stamp(&error),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Some(Value::Null),
+        Err(error) => return Some(error_stamp(&error)),
     };
     if !meta.is_dir() {
-        return metadata_stamp(&meta);
+        return Some(metadata_stamp(&meta));
     }
     let mut entries = Vec::new();
     let mut visited: std::collections::HashSet<PathBuf> = root.canonicalize().into_iter().collect();
-    let complete = walk_config_dir(root, "", 1, &mut entries, &mut visited);
+    if !walk_config_dir(root, "", 1, &mut entries, &mut visited) {
+        return None;
+    }
     entries.sort_by(|a, b| a.0.cmp(&b.0));
     let mut stamp = vec![metadata_stamp(&meta)];
     stamp.extend(entries.into_iter().map(|(relative, entry)| json!([relative, entry])));
-    if !complete {
-        stamp.push(json!("capped"));
-    }
-    Value::Array(stamp)
+    Some(Value::Array(stamp))
 }
 
 /// Collects `(relative path, stamp)` for `dir`'s entries in name order; false once capped.
@@ -455,13 +453,26 @@ fn walk_config_dir(
     entries: &mut Vec<(String, Value)>,
     visited: &mut std::collections::HashSet<PathBuf>,
 ) -> bool {
-    let mut names: Vec<std::ffi::OsString> = match std::fs::read_dir(dir) {
-        Ok(read) => read.filter_map(|entry| entry.ok().map(|entry| entry.file_name())).collect(),
+    let remaining = CONFIG_WALK_ENTRIES.saturating_sub(entries.len());
+    let read = match std::fs::read_dir(dir) {
+        Ok(read) => read,
         Err(error) => {
+            if remaining == 0 {
+                return false;
+            }
             entries.push((relative.to_owned(), error_stamp(&error)));
             return true;
         }
     };
+    let mut names = Vec::new();
+    for (index, entry) in read.enumerate() {
+        if index == remaining {
+            return false;
+        }
+        if let Ok(entry) = entry {
+            names.push(entry.file_name());
+        }
+    }
     names.sort();
     for name in names {
         if entries.len() >= CONFIG_WALK_ENTRIES {

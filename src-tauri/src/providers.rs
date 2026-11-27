@@ -973,7 +973,7 @@ pub(crate) fn sweep_cline_mcp_settings(data: &Path) {
 }
 
 pub(crate) fn opencode_configuration(mode: &str) -> String {
-    acp::configuration(mode, &[])
+    acp::configuration(mode, std::env::var("OPENCODE_CONFIG_CONTENT").ok().as_deref())
 }
 
 /// The saved Command Code key for discovery paths that build their own process.
@@ -4663,12 +4663,14 @@ fn configure_command_with_agents(
         }
     }
     if config.provider == "opencode" {
+        let inline = command_environment(command, "OPENCODE_CONFIG_CONTENT");
         command.env(
             "OPENCODE_CONFIG_CONTENT",
             crate::skill_manager::opencode_enforcement_with(
-                &opencode_configuration(&config.mode),
+                inline.as_deref().unwrap_or("{}"),
                 disabled,
                 opencode_agents,
+                None,
             ),
         );
     }

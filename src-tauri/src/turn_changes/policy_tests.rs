@@ -1,4 +1,5 @@
 use super::*;
+use crate::account_pool::DEFAULT;
 use crate::connections::{self, Connection, Launch};
 
 fn account(id: &str) -> Connection {
@@ -12,7 +13,8 @@ fn account(id: &str) -> Connection {
 fn pooled_reads_restricted(
     settings: &Settings,
     current: Option<Connection>,
-    pool: Option<Vec<Connection>>,
+    pool: Option<&[&str]>,
+    saved: &[Connection],
     launch: impl FnMut(&Connection) -> crate::Result<Launch>,
 ) -> bool {
     let cwd = settings.base.join("project");
@@ -20,7 +22,11 @@ fn pooled_reads_restricted(
     claude_restricts_reads_with(
         "claude",
         &cwd,
-        || read_account_launches(current, pool, launch),
+        || {
+            let ids = pool.map(|ids| ids.iter().map(|id| (*id).to_owned()).collect());
+            let get = |id: &str| saved.iter().find(|account| account.id == id).cloned();
+            read_account_launches(current, ids, get, launch)
+        },
         || false,
         |env| launch_config_dir_with(provider_env.clone(), env, None, &cwd),
     )
@@ -43,19 +49,29 @@ fn pooled_claude_read_denial_withholds_explore() {
         ..account("named")
     };
 
+    let saved = [account("clean"), named.clone()];
     assert!(pooled_reads_restricted(
         &settings,
         None,
-        Some(vec![account("clean"), named.clone()]),
+        Some(&["clean", "named"]),
+        &saved,
         connections::launch,
     ));
-    assert!(!pooled_reads_restricted(&settings, None, None, |_| {
+    assert!(!pooled_reads_restricted(
+        &settings,
+        None,
+        Some(&[DEFAULT, "clean"]),
+        &saved,
+        connections::launch,
+    ));
+    assert!(!pooled_reads_restricted(&settings, None, None, &saved, |_| {
         panic!("pool disabled")
     }));
     assert!(pooled_reads_restricted(
         &settings,
         Some(named),
-        Some(vec![account("clean")]),
+        Some(&["clean"]),
+        &saved,
         connections::launch,
     ));
 }
@@ -76,7 +92,7 @@ fn pooled_claude_policy_flags_withhold_explore() {
                 ..account("named")
             };
             assert!(
-                pooled_reads_restricted(&settings, None, Some(vec![named]), connections::launch),
+                pooled_reads_restricted(&settings, None, Some(&["named"]), &[named], connections::launch),
                 "{arg}"
             );
         }
@@ -94,7 +110,8 @@ fn pooled_claude_empty_config_dir_withholds_explore() {
     assert!(pooled_reads_restricted(
         &settings,
         None,
-        Some(vec![named]),
+        Some(&["named"]),
+        &[named],
         connections::launch,
     ));
 }
@@ -116,13 +133,13 @@ fn pooled_claude_unresolvable_home_withholds_explore() {
         claude_restricts_reads_with(
             "claude",
             &cwd,
-            || read_account_launches(None, pool, connections::launch),
+            || read_account_launches(None, pool, |id| (id == named.id).then(|| named.clone()), connections::launch),
             || false,
             |env| launch_config_dir_with(provider_env.clone(), env, None, &cwd),
         )
     };
     assert!(!restricted(None));
-    assert!(restricted(Some(vec![named])));
+    assert!(restricted(Some(vec![named.id.clone()])));
 }
 
 #[test]
@@ -132,8 +149,22 @@ fn pooled_claude_launch_failure_withholds_explore() {
     assert!(pooled_reads_restricted(
         &settings,
         None,
-        Some(vec![account("named")]),
+        Some(&["named"]),
+        &[account("named")],
         |_| Err("missing saved key".into()),
+    ));
+}
+
+#[test]
+fn pooled_claude_missing_eligible_account_withholds_explore() {
+    let settings = Settings::new();
+    settings.user("settings.json", "{}");
+    assert!(pooled_reads_restricted(
+        &settings,
+        None,
+        Some(&["removed"]),
+        &[],
+        |_| panic!("a missing account cannot launch"),
     ));
 }
 
@@ -153,7 +184,8 @@ fn pooled_claude_clean_accounts_allow_explore_and_launch_each_id_once() {
     assert!(!pooled_reads_restricted(
         &settings,
         Some(named.clone()),
-        Some(vec![named.clone(), other.clone(), other]),
+        Some(&["named", "other", "other"]),
+        &[other],
         |connection| {
             launched.push(connection.id.clone());
             connections::launch(connection)
@@ -166,13 +198,18 @@ fn pooled_claude_clean_accounts_allow_explore_and_launch_each_id_once() {
         pooled_reads_restricted(
             &settings,
             Some(named.clone()),
-            Some(vec![named.clone()]),
+            Some(&[DEFAULT, DEFAULT, "named"]),
+            &[],
             connections::launch,
         ),
-        "the default account must be checked even with a named assignment"
+        "an eligible default account applies alongside a named assignment"
     );
     assert!(
-        !pooled_reads_restricted(&settings, Some(named), None, connections::launch),
+        !pooled_reads_restricted(&settings, Some(named.clone()), Some(&["named"]), &[], connections::launch),
+        "an excluded default account does not apply to a named assignment"
+    );
+    assert!(
+        !pooled_reads_restricted(&settings, Some(named), None, &[], connections::launch),
         "with pooling disabled only the named assignment applies"
     );
 }
@@ -189,7 +226,8 @@ fn pooled_claude_named_account_requires_the_edit_tracking_handshake() {
     for (pool, expect_handshake) in [
         (None, false),
         (Some(vec![]), false),
-        (Some(vec![account("named")]), true),
+        (Some(vec![DEFAULT.to_owned()]), false),
+        (Some(vec!["named".to_owned()]), true),
     ] {
         let allows_edits = |config: &crate::providers::RunConfig| {
             claude_allows_edits_with(

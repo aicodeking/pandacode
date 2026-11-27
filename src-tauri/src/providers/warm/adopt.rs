@@ -2,15 +2,15 @@
 //! runtime, with the working tree's status beside it) and the spare it adopts, if any.
 use super::*;
 
-/// Why a pooled spare went unused for want of a warm key. An unknowable config folder or
+/// Why a pooled spare went unused for want of a warm key. An unavailable config fingerprint or
 /// working-tree status say the pool's spares cannot be checked, so they join its miss streak
 /// (`PoolChurn::missed`); a key check that failed to run says nothing about the spares.
-const NO_CONFIG_FOLDER: &str = "its config folder cannot be known";
+const NO_CONFIG_FINGERPRINT: &str = "its config cannot be fingerprinted";
 const NO_GIT_STATUS: &str = "its git status cannot be read";
 pub(super) const KEY_CHECK_FAILED: &str = "its warm key check failed";
 
-/// A pooled warm spare's launch check, made off the runtime: spares switched off, no key (the
-/// config folder cannot be known, or the working-tree status), or the warm key to adopt against.
+/// A pooled warm spare's launch check, made off the runtime: spares switched off, an unavailable
+/// config fingerprint or working-tree status, or the warm key to adopt against.
 #[derive(Debug, PartialEq, Eq)]
 enum WarmKey {
     Disabled,
@@ -22,7 +22,7 @@ enum WarmKey {
 impl WarmKey {
     /// The check's outcome once the off-runtime walk and the working tree's `git status` (run
     /// side by side) are both in: spares off first, then an unreadable status, then an
-    /// unknowable config folder. `walked`: `None` with spares off, else the key's fields
+    /// unavailable config fingerprint. `walked`: `None` with spares off, else the key's fields
     /// (`key_fields`); `git_status`: the working tree's digest, `None` if it could not be read.
     fn of(walked: Option<Option<Value>>, git_status: Option<String>) -> Self {
         match (walked, git_status) {
@@ -68,7 +68,7 @@ pub(in crate::providers) async fn adopt_for_launch(config: &RunConfig, host: Opt
             None
         }
         // No key: the pooled spare is retired and logged.
-        Ok(WarmKey::NoKey) => without_key(NO_CONFIG_FOLDER, true),
+        Ok(WarmKey::NoKey) => without_key(NO_CONFIG_FINGERPRINT, true),
         Ok(WarmKey::NoGitStatus) => without_key(NO_GIT_STATUS, true),
         Err(err) => {
             eprintln!("Warm Claude key check failed: {err}");

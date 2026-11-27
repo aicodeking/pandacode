@@ -4,6 +4,7 @@
 //! `OPENCODE_CONFIG_CONTENT` on top of all of them, so a deny written for each agent it could
 //! run wins, including over an agent whose Markdown allows skills itself.
 use super::*;
+use super::enforcement::{discover_opencode_config, OpenCodeToolDenies};
 
 /// Primary and subagent built-ins (OpenCode 1.x/2.x: build, plan, general, explore).
 pub(super) const BUILTIN: [&str; 4] = ["build", "plan", "general", "explore"];
@@ -24,6 +25,7 @@ const MAX_DEPTH: usize = 8;
 pub(super) struct Agents {
     pub(super) names: BTreeSet<String>,
     pub(super) complete: bool,
+    pub(super) denied_tools: OpenCodeToolDenies,
 }
 
 /// Effective launch paths: `None` also represents an explicit environment removal.
@@ -51,17 +53,18 @@ pub(super) fn agents(cwd: &Path, home: &Path, homes: &Homes) -> Agents {
 pub(super) fn agents_opt(cwd: Option<&Path>, home: &Path, homes: &Homes) -> Agents {
     let mut env = OpenCodeEnv::from_environment(|name| std::env::var_os(name));
     env.xdg_config = homes.xdg_config.clone();
-    agents_with_env(cwd, home, homes, &env)
+    agents_with_env(cwd, Some(home), homes, &env)
 }
 
 pub(super) fn agents_with_env(
     cwd: Option<&Path>,
-    home: &Path,
+    home: Option<&Path>,
     homes: &Homes,
     env: &OpenCodeEnv,
 ) -> Agents {
     let mut names: BTreeSet<String> = BUILTIN.iter().map(|n| (*n).to_owned()).collect();
     let mut complete = true;
+    let mut denied_tools = OpenCodeToolDenies::default();
     let mut add = |name: Option<&str>| match name {
         Some(name) if names.contains(name) => {}
         Some(name) if names.len() < MAX_AGENTS && valid(name) => {
@@ -69,51 +72,55 @@ pub(super) fn agents_with_env(
         }
         _ => complete = false,
     };
-    let mut config_dirs = vec![env
+    let xdg_config = env
         .xdg_config
-        .clone()
+        .as_ref()
         .filter(|p| p.is_absolute())
-        .unwrap_or_else(|| home.join(".config"))
-        .join("opencode")];
-    config_dirs.extend(
-        homes
-            .configured
-            .get("opencode")
-            .into_iter()
-            .flatten()
-            .cloned(),
-    );
-    config_dirs.push(home.join(".opencode"));
-    config_dirs.extend(env.config_dir.clone().filter(|p| p.is_absolute()));
-    for dir in &config_dirs {
-        read_dir_agents(dir, &mut add);
+        .cloned()
+        .or_else(|| home.map(|home| home.join(".config")));
+    let config_dirs = xdg_config
+        .map(|dir| dir.join("opencode"))
+        .into_iter()
+        .chain(home.map(|home| home.join(".opencode")))
+        .chain(env.config_dir.iter().map(|dir| resolved(cwd, dir)));
+    for dir in config_dirs {
+        read_dir_agents(&dir, &mut add, &mut denied_tools);
+    }
+    // Other saved connections contribute agent names for Skills, but their permission
+    // rules only apply when their directory is part of this launch's effective paths.
+    let mut other_denies = OpenCodeToolDenies::default();
+    for dir in homes.configured.get("opencode").into_iter().flatten() {
+        read_dir_agents(dir, &mut add, &mut other_denies);
     }
     if let Some(file) = &env.config {
-        let file = if file.is_relative() {
-            cwd.map(|cwd| cwd.join(file)).unwrap_or_else(|| file.clone())
-        } else {
-            file.clone()
-        };
-        config_agents(&file, &mut add);
+        config_agents(&resolved(cwd, file), &mut add, &mut denied_tools);
     }
     // Project configs from the task folder up to its repository root.
     if let Some(cwd) = cwd {
         for dir in cwd.ancestors().take(MAX_LEVELS) {
             for file in CONFIG_FILES.iter().take(2) {
-                config_agents(&dir.join(file), &mut add);
+                config_agents(&dir.join(file), &mut add, &mut denied_tools);
             }
-            read_dir_agents(&dir.join(".opencode"), &mut add);
-            if dir.join(".git").exists() || dir == home {
+            read_dir_agents(&dir.join(".opencode"), &mut add, &mut denied_tools);
+            if dir.join(".git").exists() || Some(dir) == home {
                 break;
             }
         }
     }
-    Agents { names, complete }
+    Agents { names, complete, denied_tools }
 }
 
-fn read_dir_agents(dir: &Path, add: &mut impl FnMut(Option<&str>)) {
+fn resolved(cwd: Option<&Path>, path: &Path) -> PathBuf {
+    cwd.map_or_else(|| path.to_path_buf(), |cwd| cwd.join(path))
+}
+
+fn read_dir_agents(
+    dir: &Path,
+    add: &mut impl FnMut(Option<&str>),
+    denied: &mut OpenCodeToolDenies,
+) {
     for file in CONFIG_FILES {
-        config_agents(&dir.join(file), add);
+        config_agents(&dir.join(file), add, denied);
     }
     for (folder, nested) in AGENT_FOLDERS {
         let mut budget = MAX_AGENTS;
@@ -164,36 +171,9 @@ fn markdown_agents(
     }
 }
 
-fn config_agents(file: &Path, add: &mut impl FnMut(Option<&str>)) {
-    let Some(text) = read_text(file) else {
-        return;
-    };
-    let (scrubbed, tokens) = super::enforcement::scrub_opencode_tokens(&text);
-    let Ok(value) =
-        serde_json::from_str::<serde_json::Value>(&crate::vsix_themes::strip_jsonc(&scrubbed))
-    else {
-        add(None);
-        return;
-    };
-    let Some(root) = value.as_object() else {
-        add(None);
-        return;
-    };
-    for key in ["agent", "agents", "mode"] {
-        let Some(entry) = root.get(key) else {
-            continue;
-        };
-        if let Some(map) = entry.as_object() {
-            for name in map.keys() {
-                if tokens.contains_sentinel_str(name) {
-                    add(None);
-                } else {
-                    add(Some(name));
-                }
-            }
-        } else if tokens.is_sentinel_value(entry) {
-            add(None);
-        }
+fn config_agents(file: &Path, add: &mut impl FnMut(Option<&str>), denied: &mut OpenCodeToolDenies) {
+    if let Some(text) = read_text(file) {
+        discover_opencode_config(&text, add, denied);
     }
 }
 
@@ -276,14 +256,14 @@ mod tests {
         // Homes::for_scan contributes saved provider/connection homes; keep their coverage.
         homes.configured.insert("opencode".into(), vec![saved_home]);
         let env = OpenCodeEnv { config: Some("launch.json".into()), config_dir: Some(dir), xdg_config: Some(xdg) };
-        let found = agents_with_env(Some(&repo), &home, &homes, &env);
+        let found = agents_with_env(Some(&repo), Some(&home), &homes, &env);
         assert!(found.complete);
         for name in ["from-launch-xdg", "from-launch-dir", "from-launch-file", "from-configured-home"] {
             assert!(found.names.contains(name), "{name}: {:?}", found.names);
         }
         assert!(!found.names.contains("from-old-xdg"));
         // Explicitly absent effective paths don't fall back to the scanner's primary XDG home.
-        let removed = agents_with_env(Some(&repo), &home, &homes, &OpenCodeEnv::default());
+        let removed = agents_with_env(Some(&repo), Some(&home), &homes, &OpenCodeEnv::default());
         assert!(removed.complete);
         for name in ["from-launch-xdg", "from-launch-dir", "from-launch-file", "from-old-xdg"] {
             assert!(!removed.names.contains(name), "{name}: {:?}", removed.names);

@@ -86,6 +86,7 @@ fn skill_manager_opencode_bound_tool_grants_stay_last_after_layered_merges() {
     let agents = OpenCodeAgents {
         names: BTreeSet::from(["build".into(), "plan".into()]),
         complete: true,
+        ..Default::default()
     };
     for (pattern, wildcard) in [
         ("*", "ask"),
@@ -95,7 +96,7 @@ fn skill_manager_opencode_bound_tool_grants_stay_last_after_layered_merges() {
     ] {
         // An earlier config has the exact name before its wildcard; mergeDeep keeps that order.
         let rules = format!(
-            r#"{{"{tool}":"deny","{pattern}":"{wildcard}","other_server_*":"ask","bash":{{"*":"ask","deploy *":"deny"}},"skill":{{"review":"allow","*":"allow"}}}}"#
+            r#"{{"{tool}":"ask","{pattern}":"{wildcard}","other_server_*":"ask","bash":{{"*":"ask","deploy *":"deny"}},"skill":{{"review":"allow","*":"allow"}}}}"#
         );
         let project = r#"{"permission":RULES,"agent":{"build":{"permission":RULES},"plan":{"permission":RULES}}}"#
             .replace("RULES", &rules);
@@ -168,6 +169,7 @@ fn skill_manager_opencode_denies_stay_last_after_opencode_merges_project_allows(
     let agents = OpenCodeAgents {
         names: BTreeSet::from(["build".into()]),
         complete: true,
+        ..Default::default()
     };
     // A project's opencode.json, loaded before the inline layer.
     let project = r#"{"permission":{"skill":{"review":"allow","*":"allow"}},"agent":{"build":{"permission":{"skill":{"review":"allow","*":"allow"}}}}}"#;
@@ -283,7 +285,7 @@ fn skill_manager_opencode_1x_both_alias_collision_inline_vs_cross_layer() {
         ("pandacode_architect_*", "ask"),
         ("pandacode_architect_*", "deny"),
     ] {
-        let rules = format!(r#"{{"{tool}":"deny","{trailing}":"deny","{pattern}":"{wildcard}"}}"#);
+        let rules = format!(r#"{{"{tool}":"ask","{trailing}":"ask","{pattern}":"{wildcard}"}}"#);
         let inline_in = format!(
             r#"{{"permission":{rules},"agent":{{"build":{{"permission":{rules}}},"plan":{{"permission":{rules}}}}}}}"#
         );
@@ -369,6 +371,7 @@ fn skill_manager_opencode_tool_grants_cover_builtins_and_project_agents_after_wi
     let agents = OpenCodeAgents {
         names: discovered.names,
         complete: discovered.complete,
+        ..Default::default()
     };
     assert!(agents.names.contains("reviewer-v1"));
     assert!(agents.names.contains("auditor-v2"));
@@ -379,7 +382,7 @@ fn skill_manager_opencode_tool_grants_cover_builtins_and_project_agents_after_wi
         ("pandacode_architect_*", "ask"),
         ("pandacode_architect_*", "deny"),
     ] {
-        let rules = format!(r#"{{"{tool}":"deny","{pattern}":"{wildcard}"}}"#);
+        let rules = format!(r#"{{"{tool}":"ask","{pattern}":"{wildcard}"}}"#);
         let project = r#"{
             "permission": RULES,
             "agent": {
@@ -441,7 +444,7 @@ fn skill_manager_opencode_opaque_inline_grants_win_through_permission_env() {
     let tool = "pandacode_architect_pandacode_explore";
     let opaque = r#"{"provider":{"work": broken"#;
     let project_rules = format!(
-        r#"{{"{tool}":"deny","*":"deny","pandacode_architect_*":"ask","skill":{{"review":"deny"}}}}"#
+        r#"{{"{tool}":"ask","*":"deny","pandacode_architect_*":"ask","skill":{{"review":"deny"}}}}"#
     );
     for existing in [None, Some(project_rules.as_str())] {
         let (inline, permission) =
@@ -471,9 +474,10 @@ fn skill_manager_opencode_env_file_tokens_grant_per_agent_inline_over_wildcards(
             "reviewer".into(),
         ]),
         complete: true,
+        ..Default::default()
     };
     let inline_in = r#"{"provider":{"work":{"options":{"timeout":{env:TIMEOUT},"cert":{file:./cert.pem}}}}}"#;
-    let project_rules = format!(r#"{{"{tool}":"deny","*":"deny","pandacode_architect_*":"ask"}}"#);
+    let project_rules = format!(r#"{{"{tool}":"ask","*":"deny","pandacode_architect_*":"ask"}}"#);
     let project = r#"{
         "permission": RULES,
         "agent": {
@@ -562,6 +566,7 @@ fn skill_manager_opencode_v2_disabled_skills_and_grants_evaluate_cleanly_across_
             "custom-v2".into(),
         ]),
         complete: true,
+        ..Default::default()
     };
     let project_v2: serde_json::Value = serde_json::json!({
         "permissions": [

@@ -1,6 +1,7 @@
 //! Claude Code's own permission policy as it bears on file tracking: whether native edits wait
 //! for approval (mode plus the user's Edit/Write allow rules) and whether Read deny rules,
 //! managed settings or a linked worktree's main checkout restrict reads.
+use crate::account_pool::{eligible_member_ids, DEFAULT};
 use crate::connections::{self, Connection, Launch};
 use serde_json::Value;
 use std::collections::HashSet;
@@ -47,12 +48,12 @@ pub(super) fn edits_wait_for_run_using(
 /// with `--setting-sources ""`, so user, project and local settings files do not apply to them,
 /// but Claude Code still enforces enterprise `managed-settings.json`, and a named connection on
 /// any Claude-family harness may pass `--allowedTools` or use another Claude config folder.
-/// An assigned or pooled named account is therefore treated as allowing edits.
+/// An assigned or rotation-eligible named account is therefore treated as allowing edits.
 pub(super) fn claude_allows_edits(config: &crate::providers::RunConfig) -> bool {
     claude_allows_edits_with(
         config,
         || connections::for_task(&config.session_id, &config.provider).is_some(),
-        || enabled_pool_members(&config.provider),
+        || eligible_member_ids(&config.provider),
         host_managed_settings_may_allow,
         || {
             let env = crate::provider_settings::environment("claude");
@@ -64,14 +65,14 @@ pub(super) fn claude_allows_edits(config: &crate::providers::RunConfig) -> bool 
 pub(super) fn claude_allows_edits_with(
     config: &crate::providers::RunConfig,
     has_connection: impl FnOnce() -> bool,
-    pool_members: impl FnOnce() -> Option<Vec<Connection>>,
+    pool_members: impl FnOnce() -> Option<Vec<String>>,
     managed_settings: impl FnOnce() -> bool,
     claude_config_dir: impl FnOnce() -> Option<std::path::PathBuf>,
 ) -> bool {
     if !crate::providers::claude_family(&config.provider) {
         return false;
     }
-    if has_connection() || pool_members().is_some_and(|members| !members.is_empty()) {
+    if has_connection() || pool_members().is_some_and(|ids| ids.iter().any(|id| id != DEFAULT)) {
         return true;
     }
     if managed_settings() {
@@ -94,7 +95,8 @@ pub(crate) fn claude_restricts_reads(session_id: &str, provider: &str, cwd: &Pat
         || {
             read_account_launches(
                 connections::for_task(session_id, provider),
-                enabled_pool_members(provider),
+                eligible_member_ids(provider),
+                connections::get,
                 connections::launch,
             )
         },
@@ -103,26 +105,27 @@ pub(crate) fn claude_restricts_reads(session_id: &str, provider: &str, cwd: &Pat
     )
 }
 
-fn enabled_pool_members(provider: &str) -> Option<Vec<Connection>> {
-    crate::account_pool::enabled(provider).then(|| connections::pool_members(provider))
-}
-
 /// Pool preparation and rotation can change the assignment after this policy check.
-/// With pooling enabled, include the default account and each named account once.
+/// Check the current launch and each eligible rotation member once.
 pub(super) fn read_account_launches(
     current: Option<Connection>,
-    pool: Option<Vec<Connection>>,
+    pool: Option<Vec<String>>,
+    mut get: impl FnMut(&str) -> Option<Connection>,
     mut launch: impl FnMut(&Connection) -> crate::Result<Launch>,
 ) -> impl Iterator<Item = crate::Result<Option<Launch>>> {
-    let extra_default = (current.is_some() && pool.is_some()).then_some(None);
-    let mut seen = HashSet::new();
-    std::iter::once(current)
-        .chain(extra_default)
-        .chain(pool.into_iter().flatten().map(Some))
-        .filter(move |connection| {
-            connection.as_ref().is_none_or(|connection| seen.insert(connection.id.clone()))
-        })
-        .map(move |connection| connection.as_ref().map(&mut launch).transpose())
+    let current_id = current.as_ref().map_or(DEFAULT, |account| account.id.as_str());
+    let mut seen = HashSet::from([current_id.to_owned()]);
+    let alternatives = pool.into_iter().flatten().filter(move |id| seen.insert(id.clone()));
+    let accounts = alternatives.map(move |id| {
+        if id == DEFAULT {
+            Ok(None)
+        } else {
+            get(&id).map(Some).ok_or_else(|| format!("Eligible pool member {id} is unavailable"))
+        }
+    });
+    std::iter::once(Ok(current))
+        .chain(accounts)
+        .map(move |account| account?.as_ref().map(&mut launch).transpose())
 }
 
 /// The Claude config folder of a launch whose environment is `provider_env` then

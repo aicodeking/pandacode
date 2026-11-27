@@ -1691,7 +1691,11 @@ mod tests {
         assert!(here[..here.find("\n}\n").unwrap()].contains("super::files::running_in_state(state, root)"), "the files.write check");
         let files = include_str!("files.rs").replace("\r\n", "\n");
         let reserve = &files[files.find("async fn reserve_current_target_checkout").unwrap()..];
-        assert!(reserve[..reserve.find("\n}\n").unwrap()].contains("running_in_state(state, &root)"), "one check for both");
+        let reserve = &reserve[..reserve.find("\n}\n").unwrap()];
+        let all_checkouts = reserve.find("for checkout in &roots").unwrap();
+        let check = reserve.find("running_in_state(state, checkout)").unwrap();
+        let atomic_reservation = reserve.find("reserve(roots).await?").unwrap();
+        assert!(all_checkouts < check && check < atomic_reservation, "writes check all affected checkouts before reserving them");
     }
 
     /// Round 21: `git.stage`, `git.switchBranch`, `git.commit`, `git.push` and `pull.create`

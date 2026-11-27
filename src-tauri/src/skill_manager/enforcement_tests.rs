@@ -5,6 +5,7 @@ fn skill_manager_opencode_unreadable_connection_config_is_kept_and_denied_throug
     let agents = OpenCodeAgents {
         names: BTreeSet::from(["build".into()]),
         complete: true,
+        ..Default::default()
     };
     // Genuinely broken JSON (or a substitution token standing in for a whole permission
     // container) stays untouched and falls back to OPENCODE_PERMISSION + reminder.
@@ -166,8 +167,9 @@ fn skill_manager_opencode_launch_reuses_one_agent_scan_for_every_configuration()
     let agents = OpenCodeAgents {
         names: BTreeSet::from(["listed-once".to_string()]),
         complete: false,
+        ..Default::default()
     };
-    let enforced = opencode_enforcement_with("{}", &disabled, &agents);
+    let enforced = opencode_enforcement_with("{}", &disabled, &agents, None);
     let config: serde_json::Value = serde_json::from_str(&enforced).unwrap();
     assert_eq!(
         config["agent"]["listed-once"]["permission"]["skill"]["review"],
@@ -360,7 +362,7 @@ mod agent_tests {
         .into_iter()
         .map(String::from)
         .collect();
-        let output = opencode_configuration_with(text, &BTreeSet::from(["review".into()]), &agents);
+        let output = opencode_configuration_with(text, &BTreeSet::from(["review".into()]), &agents, None);
         let config: serde_json::Value = serde_json::from_str(&output).unwrap();
         for agent in [
             "custom",
@@ -384,6 +386,35 @@ mod agent_tests {
 #[cfg(test)]
 mod tool_grant_tests {
     use super::*;
+
+    #[test]
+    fn skill_manager_opencode_native_exact_denies_respect_later_rules_and_resources() {
+        let tool = "pandacode_architect_pandacode_explore";
+        let alias = trailing_key(tool);
+        let input = serde_json::json!({
+            "agents": {
+                "build": {"permissions": [
+                    {"action": alias, "resource": "*", "effect": "deny"},
+                    {"action": tool, "resource": "*", "effect": "allow"}
+                ]},
+                "plan": {"permissions": [
+                    {"action": tool, "resource": "private", "effect": "deny"}
+                ]}
+            }
+        });
+        let (inline, _) =
+            opencode_tool_grants(&input.to_string(), None, &["pandacode_explore"]).unwrap();
+        let config: serde_json::Value = serde_json::from_str(&inline).unwrap();
+        let build = config["agents"]["build"]["permissions"].as_array().unwrap();
+        assert_eq!(build[2]["action"], tool);
+        assert_eq!(build[2]["effect"], "allow");
+        assert_eq!(build[3]["action"], alias);
+        assert_eq!(build[3]["effect"], "allow");
+        assert_eq!(
+            config["agents"]["plan"]["permissions"],
+            input["agents"]["plan"]["permissions"]
+        );
+    }
 
     #[test]
     fn skill_manager_opencode_tool_grants_append_to_native_permission_arrays() {
@@ -439,8 +470,12 @@ mod tool_grant_tests {
 
         let custom_rules = config["agents"]["custom"]["permissions"].as_array().unwrap();
         assert_eq!(custom_rules.len(), 6);
+        assert_eq!(custom_rules[0]["action"], "pandacode_architect_pandacode_explore");
+        assert_eq!(custom_rules[0]["effect"], "deny");
         assert_eq!(custom_rules[1]["effect"], "deny");
-        assert_eq!(&custom_rules[2..], &expected_grants);
+        assert_eq!(custom_rules[2]["effect"], "deny");
+        assert_eq!(custom_rules[3]["effect"], "deny");
+        assert_eq!(&custom_rules[4..], &expected_grants[2..]);
 
         // Agents without an existing `permissions` array (e.g. model-only overrides or `plan`)
         // still receive native 2.x grants so project-level agent wildcards cannot shadow them.
@@ -529,7 +564,7 @@ mod tool_grant_tests {
         let tool = "pandacode_architect_pandacode_explore";
         let trailing = trailing_key(tool);
         let rules = format!(
-            r#"{{"{tool}":"deny","{trailing}":"deny","pandacode_architect_*":"ask","*":"ask"}}"#
+            r#"{{"{tool}":"ask","{trailing}":"ask","pandacode_architect_*":"ask","*":"ask"}}"#
         );
         let text = format!(
             r#"{{"permission":{rules},"agent":{{"build":{{"permission":{rules}}},"plan":{{"permission":{rules}}}}}}}"#
@@ -604,6 +639,7 @@ mod tool_grant_tests {
                 "custom-v2".into(),
             ]),
             complete: true,
+            ..Default::default()
         };
 
         // 1.x inline config seeds all four built-ins plus discovered project/user agents.
@@ -703,13 +739,11 @@ mod tool_grant_tests {
         let (inline, perm) =
             opencode_tool_grants(opaque, Some(&existing), &["pandacode_explore"]).unwrap();
         assert_eq!(inline, opaque);
-        let perm = perm.unwrap();
-        assert_eq!(
-            perm,
-            format!(
-                r#"{{"*":"ask","skill":{{"review":"deny"}},"{tool}":"allow","{trailing}":"allow"}}"#
-            )
-        );
+        let perm: serde_json::Value = serde_json::from_str(&perm.unwrap()).unwrap();
+        assert_eq!(perm[tool], "deny");
+        assert_ne!(perm[&trailing], "allow");
+        assert_eq!(perm["*"], "ask");
+        assert_eq!(perm["skill"]["review"], "deny");
 
         // Existing bare action string: expand to wildcard before the grants.
         let (inline, perm) =
@@ -763,6 +797,7 @@ mod tool_grant_tests {
                 "custom-v2".into(),
             ]),
             complete: true,
+            ..Default::default()
         };
 
         // 1.x JSONC with unquoted {env:...} & {file:...}, comments containing {env:...},
@@ -861,6 +896,7 @@ mod tool_grant_tests {
                 "custom-v2".into(),
             ]),
             complete: true,
+            ..Default::default()
         };
         let v2_connection = r#"{
             "provider": {"work": {"options": {"timeout": {env:TIMEOUT}}}},

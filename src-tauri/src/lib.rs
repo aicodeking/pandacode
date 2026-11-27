@@ -121,8 +121,7 @@ use app_instructions::{custom_tools_offered, instruct_launch, plan_tools_note, H
 #[cfg(test)]
 use app_instructions::Role;
 pub(crate) use checkout_busy::{
-    guard_idle, prepare_checkout_for_checks, quiesce_worktree, refuse_worktree_merge_busy,
-    refuse_worktree_remove_busy,
+    guard_idle, quiesce_worktree, refuse_worktree_merge_busy, refuse_worktree_remove_busy,
 };
 use providers::{AgentEvent, RunConfig, RunInput};
 use serde::Serialize;
@@ -3574,29 +3573,100 @@ async fn attach_worktree(
     base: Option<String>,
     existing: Option<bool>,
 ) -> Result<Session> {
-    if lock_agents(&state.agents).map_err(|e| e.to_string())?.contains_key(&session_id) {
-        return Err("Stop the agent before moving this task into a worktree.".into());
+    attach_worktree_in_state(&state, &session_id, branch, base, existing.unwrap_or(false)).await
+}
+
+async fn attach_worktree_in_state(
+    state: &AppState,
+    session_id: &str,
+    branch: String,
+    base: Option<String>,
+    existing: bool,
+) -> Result<Session> {
+    attach_worktree_in_state_with(
+        state,
+        session_id,
+        branch,
+        base,
+        existing,
+        workspace::create_worktree_with,
+        Store::attach_worktree,
+    )
+    .await
+}
+
+fn attachable_checkout(store: &Store, session_id: &str) -> Result<PathBuf> {
+    if !store.worktree_attachable(session_id)? {
+        return Err("This conversation already started. Create a new task in a worktree instead.".into());
     }
+    let task = store.session(session_id)?;
+    store.workspace_root(&task.project_id, Some(session_id))
+}
+
+async fn attach_worktree_in_state_with(
+    state: &AppState,
+    session_id: &str,
+    branch: String,
+    base: Option<String>,
+    existing: bool,
+    create: impl FnOnce(&std::path::Path, &str, Option<&str>, bool) -> Result<workspace::Worktree> + Send + 'static,
+    attach: impl FnOnce(&Store, &str, &std::path::Path, &str) -> Result<Session> + Send + 'static,
+) -> Result<Session> {
+    const CHANGED: &str = "This task's checkout changed while preparing the worktree. Try again.";
+    let sid = session_id.to_owned();
+    let (root, reservation) = reserve_current_desktop_checkout(
+        state,
+        move |store| attachable_checkout(store, &sid),
+        "Wait for the active operation in this folder to finish before moving this task into a worktree.",
+        CHANGED,
+    )
+    .await?;
     let store = state.store.clone();
+    let session_id = session_id.to_owned();
     blocking(move || {
-        let (source, root) = {
+        // The source must stay reserved until the task points to the new worktree.
+        let _reservation = reservation;
+        let worktree = create(&root, &branch, base.as_deref(), existing)?;
+        let attached = (|| {
             let store = store.lock().map_err(|e| e.to_string())?;
-            if !store.worktree_attachable(&session_id)? {
-                return Err("This conversation already started. Create a new task in a worktree instead.".into());
+            if attachable_checkout(&store, &session_id)? != root {
+                return Err(CHANGED.into());
             }
-            let source = store.session(&session_id)?;
-            let root = store.workspace_root(&source.project_id, Some(&session_id))?;
-            (source, root)
-        };
-        let worktree = workspace::create_worktree_with(&root, &branch, base.as_deref(), existing.unwrap_or(false))?;
-        let store = store.lock().map_err(|e| e.to_string())?;
-        let attached = store.attach_worktree(&source.id, &worktree.path, &worktree.branch).map_err(|error| {
+            attach(&store, &session_id, &worktree.path, &worktree.branch)
+        })()
+        .map_err(|error| {
             format!("Worktree created at {}, but the task could not be updated: {error}", worktree.path.display())
         });
         skill_manager::projects_changed();
         attached
     })
     .await
+}
+
+/// Resolve again after reserving because a task may have moved since the first lookup.
+async fn reserve_current_desktop_checkout(
+    state: &AppState,
+    resolve: impl Fn(&Store) -> Result<PathBuf> + Clone + Send + 'static,
+    busy: &'static str,
+    changed: &'static str,
+) -> Result<(PathBuf, checkout_busy::Reservation)> {
+    let read_root = || {
+        let store = state.store.clone();
+        let resolve = resolve.clone();
+        blocking(move || {
+            let store = store.lock().map_err(|e| e.to_string())?;
+            resolve(&store)
+        })
+    };
+    for _ in 0..4 {
+        let root = read_root().await?;
+        let reservation = checkout_busy::reserve_idle_checkouts(state, vec![root.clone()], busy).await?;
+        if read_root().await? == root {
+            return Ok((root, reservation));
+        }
+        drop(reservation);
+    }
+    Err(changed.into())
 }
 
 /// The main checkout and this task's worktree, or an error when it has none.
@@ -3769,14 +3839,39 @@ async fn git_switch_branch(
 
 /// Switches branches for desktop Git with an explicit [`workspace::Trust`].
 pub(crate) async fn switch_branch(state: &AppState, project_id: &str, session_id: Option<&str>, branch: String, trust: workspace::Trust) -> Result<workspace::BranchList> {
-    if let Some(id) = session_id {
-        let store = state.store.lock().map_err(|e| e.to_string())?;
-        if store.session(id)?.worktree_path.is_some() {
-            return Err("This task works in its own worktree; its branch stays as it is.".into());
-        }
-    }
-    let root = state.root(project_id, session_id)?;
-    blocking(move || workspace::git_switch(&root, &branch, trust)).await
+    switch_branch_with(state, project_id, session_id, branch, trust, workspace::git_switch).await
+}
+
+async fn switch_branch_with(
+    state: &AppState,
+    project_id: &str,
+    session_id: Option<&str>,
+    branch: String,
+    trust: workspace::Trust,
+    switch: impl FnOnce(&std::path::Path, &str, workspace::Trust) -> Result<workspace::BranchList> + Send + 'static,
+) -> Result<workspace::BranchList> {
+    let project_id = project_id.to_owned();
+    let session_id = session_id.map(str::to_owned);
+    let (root, reservation) = reserve_current_desktop_checkout(
+        state,
+        move |store| {
+            if let Some(id) = &session_id {
+                let task = store.session(id)?;
+                if task.worktree_path.is_some() {
+                    return Err("This task works in its own worktree; its branch stays as it is.".into());
+                }
+            }
+            store.workspace_root(&project_id, session_id.as_deref())
+        },
+        "Wait for the active operation in this folder to finish before switching branches.",
+        "This task's checkout changed while preparing to switch branches. Try again.",
+    )
+    .await?;
+    blocking(move || {
+        let _reservation = reservation;
+        switch(&root, &branch, trust)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -4325,16 +4420,11 @@ async fn get_run_script(
 /// clean turn. Bounded; no plan is a result, not an error.
 #[tauri::command]
 async fn run_turn_checks(state: State<'_, AppState>, session_id: String) -> Result<serde_json::Value> {
-    let project_id = state
-        .store
-        .lock()
-        .map_err(|e| e.to_string())?
-        .session(&session_id)?
-        .project_id;
-    let root = state.root(&project_id, Some(&session_id))?;
-    let reservation = match prepare_checkout_for_checks(&state, &session_id, &root).await {
-        Ok(reservation) => reservation,
-        Err(reason) => return Ok(serde_json::json!({"checked": false, "reason": reason})),
+    use checkout_busy::TaskChecksError;
+    let (root, reservation) = match checkout_busy::prepare_task_checkout_for_checks(&state, &session_id, Store::session).await {
+        Ok(prepared) => prepared,
+        Err(TaskChecksError::Resolve(reason)) => return Err(reason),
+        Err(TaskChecksError::Prepare(reason)) => return Ok(serde_json::json!({"checked": false, "reason": reason})),
     };
     Ok(checks::turn_report_after_exit_guarded(&session_id, root, reservation).await)
 }

@@ -2,7 +2,7 @@
 //! sessions (running, in a harness console, or exiting in the background) hold a checkout, the refusals that keep a
 //! worktree operation or a checks run from racing an agent, and the shared idle guard.
 use crate::path_match::{path_in_folder, resolve_path};
-use crate::storage::Store;
+use crate::storage::{Session, Store};
 use crate::{blocking, lock_agents, providers, terminal, worktree_paths, Agents, AppState, Result, RunningAgent};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -421,6 +421,59 @@ pub(crate) async fn prepare_checkout_for_checks(state: &AppState, session_id: &s
     Ok(reservation)
 }
 
+#[derive(Debug)]
+pub(crate) enum TaskChecksError {
+    Resolve(String),
+    Prepare(String),
+}
+
+impl TaskChecksError {
+    pub(crate) fn into_reason(self) -> String {
+        match self {
+            Self::Resolve(reason) | Self::Prepare(reason) => reason,
+        }
+    }
+}
+
+/// Resolve using the caller's task access rules, including during post-reservation validation.
+pub(crate) async fn prepare_task_checkout_for_checks(
+    state: &AppState,
+    session_id: &str,
+    read_session: fn(&Store, &str) -> Result<Session>,
+) -> std::result::Result<(PathBuf, Reservation), TaskChecksError> {
+    prepare_task_checkout_for_checks_with(state, session_id, || {
+        let store = state.store.clone();
+        let session_id = session_id.to_owned();
+        blocking(move || {
+            let store = store.lock().map_err(|e| e.to_string())?;
+            let task = read_session(&store, &session_id)?;
+            store.workspace_root(&task.project_id, Some(&session_id))
+        })
+    })
+    .await
+}
+
+async fn prepare_task_checkout_for_checks_with<F>(
+    state: &AppState,
+    session_id: &str,
+    mut read_root: impl FnMut() -> F,
+) -> std::result::Result<(PathBuf, Reservation), TaskChecksError>
+where
+    F: std::future::Future<Output = Result<PathBuf>>,
+{
+    for _ in 0..4 {
+        let root = read_root().await.map_err(TaskChecksError::Resolve)?;
+        let reservation = prepare_checkout_for_checks(state, session_id, &root)
+            .await
+            .map_err(TaskChecksError::Prepare)?;
+        if read_root().await.map_err(TaskChecksError::Resolve)? == root {
+            return Ok((root, reservation));
+        }
+        drop(reservation);
+    }
+    Err(TaskChecksError::Prepare("This task's checkout changed while preparing checks. Try again.".into()))
+}
+
 /// Refuses a worktree merge while `session_id` is actively running or any OTHER session (or
 /// unpersisted worker/spare with matching `cwd`) is actively running or exiting in either the
 /// main checkout or the worktree. Allows `session_id`'s own pending exit so `merge_task_worktree`
@@ -566,6 +619,152 @@ mod tests {
             terminals: Default::default(),
             shutdown: Default::default(),
         }
+    }
+
+    #[tokio::test]
+    async fn desktop_switch_branch_refuses_and_holds_checkout_reservations() {
+        let checkout = Checkout::new();
+        let state = test_state();
+        let (project, task) = {
+            let store = state.store.lock().unwrap();
+            let project = store.add_project(&checkout.root).unwrap();
+            let task = store.create_session(&project.id, "claude", "default", "ask").unwrap();
+            (project, task)
+        };
+        let busy = reserve_idle_checkouts(&state, vec![checkout.pkg_b.clone()], "busy").await.unwrap();
+        for session_id in [None, Some(task.id.as_str())] {
+            let refused = crate::switch_branch(
+                &state, &project.id, session_id, "next".into(), crate::workspace::Trust::Desktop,
+            ).await.unwrap_err();
+            assert_eq!(refused, "Wait for the active operation in this folder to finish before switching branches.");
+        }
+        drop(busy);
+
+        let agents = state.agents.clone();
+        let sibling = checkout.pkg_b.clone();
+        let switched = crate::switch_branch_with(
+            &state, &project.id, Some(&task.id), "next".into(), crate::workspace::Trust::Desktop,
+            move |root, branch, _| {
+                assert!(checkout_reserved(&agents, root));
+                assert!(checkout_reserved(&agents, &sibling));
+                Ok(crate::workspace::BranchList {
+                    current: branch.into(),
+                    branches: vec![branch.into()],
+                    default_branch: String::new(),
+                })
+            },
+        ).await.unwrap();
+        assert_eq!(switched.current, "next");
+        assert!(!checkout_reserved(&state.agents, &checkout.root));
+    }
+
+    #[tokio::test]
+    async fn desktop_attach_worktree_reserves_source_until_the_task_moves() {
+        let checkout = Checkout::new();
+        let state = test_state();
+        let task = {
+            let store = state.store.lock().unwrap();
+            let project = store.add_project(&checkout.root).unwrap();
+            store.create_session(&project.id, "claude", "default", "ask").unwrap()
+        };
+        let busy = reserve_idle_checkouts(&state, vec![checkout.pkg_b.clone()], "busy").await.unwrap();
+        let refused = crate::attach_worktree_in_state(&state, &task.id, "next".into(), None, false).await;
+        assert_eq!(refused.err().as_deref(), Some("Wait for the active operation in this folder to finish before moving this task into a worktree."));
+        assert!(state.store.lock().unwrap().session(&task.id).unwrap().worktree_path.is_none());
+        drop(busy);
+
+        let (source_hold, at_creation) = tokio::sync::oneshot::channel();
+        let (continue_creation, released) = std::sync::mpsc::channel();
+        let agents = state.agents.clone();
+        let agents_at_save = state.agents.clone();
+        let source = checkout.root.clone();
+        let nested = checkout.nested.clone();
+        let attach = crate::attach_worktree_in_state_with(
+            &state, &task.id, "next".into(), None, false,
+            move |root, branch, _, _| {
+                assert!(checkout_reserved(&agents, root));
+                source_hold.send(()).unwrap();
+                released.recv_timeout(Duration::from_secs(5)).unwrap();
+                assert!(checkout_reserved(&agents, root));
+                Ok(crate::workspace::Worktree { path: nested, branch: branch.into() })
+            },
+            move |store, sid, path, branch| {
+                assert!(checkout_reserved(&agents_at_save, &source));
+                let saved = store.attach_worktree(sid, path, branch)?;
+                assert!(checkout_reserved(&agents_at_save, &source));
+                Ok(saved)
+            },
+        );
+        let save = async {
+            at_creation.await.unwrap();
+            assert!(reserve_idle_checkouts(&state, vec![checkout.root.clone()], "busy").await.is_err());
+            assert!(state.store.lock().unwrap().session(&task.id).unwrap().worktree_path.is_none());
+            continue_creation.send(()).unwrap();
+        };
+        let (saved, ()) = tokio::join!(attach, save);
+        let saved = saved.unwrap();
+        let root = state.store.lock().unwrap().workspace_root(&task.project_id, Some(&task.id)).unwrap();
+        assert_eq!(root, checkout.nested.canonicalize().unwrap());
+        assert_eq!(saved.worktree_branch.as_deref(), Some("next"));
+        assert!(!checkout_reserved(&state.agents, &checkout.root));
+    }
+
+    #[tokio::test]
+    async fn task_check_reservation_follows_a_move_during_exit_wait() {
+        let checkout = Checkout::new();
+        let state = test_state();
+        let task = {
+            let store = state.store.lock().unwrap();
+            let project = store.add_project(&checkout.root).unwrap();
+            store.create_session(&project.id, "claude", "default", "ask").unwrap()
+        };
+        let main = checkout.root.canonicalize().unwrap();
+        let nested = checkout.nested.canonicalize().unwrap();
+        let pending = providers::hold_exit_for_test(&task.id);
+        let (signal_root_read, root_read) = tokio::sync::oneshot::channel();
+        let mut signal_root_read = Some(signal_root_read);
+        let mut resolutions = 0;
+        let prepare = super::prepare_task_checkout_for_checks_with(&state, &task.id, || {
+            resolutions += 1;
+            let root = state.store.lock().unwrap().workspace_root(&task.project_id, Some(&task.id));
+            match resolutions {
+                1 => signal_root_read.take().unwrap().send(()).unwrap(),
+                2 => assert!(checkout_reserved(&state.agents, &main)),
+                3 => assert!(!checkout_reserved(&state.agents, &main)),
+                4 => assert!(checkout_reserved(&state.agents, &nested)),
+                _ => panic!("unexpected root resolution"),
+            }
+            std::future::ready(root)
+        });
+        let move_task = async {
+            root_read.await.unwrap();
+            state.store.lock().unwrap().attach_worktree(&task.id, &nested, "next").unwrap();
+            drop(pending);
+        };
+        let (prepared, ()) = tokio::join!(prepare, move_task);
+        let (root, reservation) = prepared.unwrap();
+        assert_eq!(resolutions, 4);
+        assert_eq!(root, nested);
+        assert!(!checkout_reserved(&state.agents, &main));
+        assert!(checkout_reserved(&state.agents, &nested));
+        drop(reservation);
+        assert!(!checkout_reserved(&state.agents, &nested));
+    }
+
+    #[tokio::test]
+    async fn task_checks_release_every_reservation_when_the_task_keeps_moving() {
+        let checkout = Checkout::new();
+        let state = test_state();
+        let mut resolutions = 0;
+        let result = super::prepare_task_checkout_for_checks_with(&state, "checks", || {
+            resolutions += 1;
+            let root = if resolutions % 2 == 1 { &checkout.root } else { &checkout.nested };
+            std::future::ready(Ok(root.clone()))
+        }).await;
+        assert!(matches!(result, Err(super::TaskChecksError::Prepare(reason)) if reason == "This task's checkout changed while preparing checks. Try again."));
+        assert_eq!(resolutions, 8);
+        assert!(!checkout_reserved(&state.agents, &checkout.root));
+        assert!(!checkout_reserved(&state.agents, &checkout.nested));
     }
 
     fn vendored_repo_in_nested_worktree(checkout: &Checkout) -> PathBuf {

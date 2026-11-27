@@ -383,7 +383,23 @@ fn signed_in_connection(provider: &str, connection: &Connection) -> bool {
 }
 
 fn members(provider: &str) -> Vec<String> {
-    candidates(provider).into_iter().filter(|(id, out, same)| !out && same.is_none() && signed_in(provider, id)).map(|(id, ..)| id).collect()
+    eligible_ids(candidates(provider), |id| signed_in(provider, id))
+}
+
+fn eligible_ids(
+    candidates: Vec<(String, bool, Option<String>)>,
+    mut signed_in: impl FnMut(&str) -> bool,
+) -> Vec<String> {
+    candidates
+        .into_iter()
+        .filter(|(id, out, same)| !out && same.is_none() && signed_in(id))
+        .map(|(id, ..)| id)
+        .collect()
+}
+
+/// Eligible rotation member IDs when pooling is enabled. The harness's own setup is [DEFAULT].
+pub(crate) fn eligible_member_ids(provider: &str) -> Option<Vec<String>> {
+    enabled(provider).then(|| members(provider))
 }
 
 /// Each candidate's state (`""` is the harness's own setup).
@@ -607,6 +623,23 @@ pub(crate) fn prepare(session_id: &str, provider: &str, resume_id: Option<&str>)
 mod tests {
     use super::*;
     use base64::Engine as _;
+
+    #[test]
+    fn eligible_ids_skip_excluded_duplicate_and_signed_out_members() {
+        let candidates = vec![
+            (DEFAULT.to_owned(), false, None),
+            ("excluded".into(), true, None),
+            ("duplicate".into(), false, Some(DEFAULT.to_owned())),
+            ("signed-out".into(), false, None),
+            ("signed-in".into(), false, None),
+        ];
+        let eligible = eligible_ids(candidates, |id| match id {
+            DEFAULT | "signed-in" => true,
+            "signed-out" => false,
+            _ => panic!("ineligible member must not need a login check"),
+        });
+        assert_eq!(eligible, [DEFAULT, "signed-in"]);
+    }
 
     /// A synthetic compact JWT; only the payload is ever decoded.
     fn jwt(claims: &str) -> String {

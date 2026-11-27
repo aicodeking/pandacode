@@ -297,7 +297,7 @@ fn a_named_connections_claude_folder_is_fingerprinted_instead_of_the_global_one(
 
 #[cfg(unix)]
 #[test]
-fn a_config_folder_walk_follows_symlinked_folders_once_and_is_capped() {
+fn a_config_folder_walk_follows_symlinked_folders_once() {
     let root = std::env::temp_dir().join(format!("pandacode-warm-walk-{}", uuid::Uuid::new_v4().simple()));
     let _cleanup = TempDir(root.clone());
     let skills = root.join("skills");
@@ -309,21 +309,48 @@ fn a_config_folder_walk_follows_symlinked_folders_once_and_is_capped() {
     let paths = |stamp: &Value| -> Vec<String> {
         stamp.as_array().unwrap().iter().filter_map(|item| item.get(0).and_then(Value::as_str).map(str::to_owned)).collect()
     };
-    let before = config_dir_stamp(&skills);
+    let before = config_dir_stamp(&skills).unwrap();
     let walked = paths(&before);
     assert!(walked.contains(&"a/loop".to_string()));
     assert!(!walked.iter().any(|path| path.starts_with("a/loop/")), "a link back to a visited folder is not walked: {walked:?}");
     assert!(walked.contains(&"linked/SKILL.md".to_string()), "a symlinked skill folder is walked: {walked:?}");
     write_config(&external, "SKILL.md", "ab");
-    assert_ne!(config_dir_stamp(&skills), before, "editing a linked skill in place must start the next turn cold");
-    for index in 0..140 {
+    assert_ne!(config_dir_stamp(&skills).unwrap(), before, "editing a linked skill in place must start the next turn cold");
+    assert_eq!(config_dir_stamp(&root.join("missing")), Some(Value::Null));
+}
+
+#[test]
+fn a_config_walk_overflow_leaves_the_launch_without_a_warm_key() {
+    let root = std::env::temp_dir().join(format!("pandacode-warm-walk-cap-{}", uuid::Uuid::new_v4().simple()));
+    let _cleanup = TempDir(root.clone());
+    let cwd = root.join("project");
+    let user = root.join("user");
+    let skills = cwd.join(".claude/skills");
+    std::fs::create_dir_all(&skills).unwrap();
+    let fingerprint = || claude_config_fingerprint_with(&cwd, UserConfigRoot::Resolved(&user), None, &[]);
+    for index in (0..128).rev() {
         std::fs::write(skills.join(format!("f{index:03}.md")), "x").unwrap();
     }
-    let capped = config_dir_stamp(&skills);
-    assert_eq!(capped.as_array().unwrap().last(), Some(&json!("capped")));
-    assert!(capped.as_array().unwrap().len() <= 128 + 2, "the entry cap holds");
-    assert_eq!(config_dir_stamp(&skills), capped, "a capped walk is deterministic");
-    assert_eq!(config_dir_stamp(&root.join("missing")), Value::Null);
+    let at_limit = config_dir_stamp(&skills).unwrap();
+    let entries = at_limit.as_array().unwrap();
+    assert_eq!(entries.len(), 129, "the root and all 128 entries are stamped");
+    assert_eq!(entries[1][0].as_str(), Some("f000.md"));
+    assert_eq!(entries[128][0].as_str(), Some("f127.md"));
+    assert_eq!(config_dir_stamp(&skills), Some(at_limit));
+    assert!(fingerprint().is_some());
+
+    write_config(&skills, "f128.md", "x");
+    assert_eq!(config_dir_stamp(&skills), None);
+    assert_eq!(fingerprint(), None, "an oversized folder disables the warm key");
+
+    std::fs::remove_file(skills.join("f128.md")).unwrap();
+    std::fs::remove_file(skills.join("f127.md")).unwrap();
+    let nested = skills.join("nested");
+    std::fs::create_dir(&nested).unwrap();
+    assert!(config_dir_stamp(&skills).is_some(), "an empty directory at the limit fits");
+    write_config(&nested, "SKILL.md", "x");
+    assert_eq!(config_dir_stamp(&skills), None);
+    assert_eq!(fingerprint(), None, "nested entries share the walk budget");
 }
 
 #[test]

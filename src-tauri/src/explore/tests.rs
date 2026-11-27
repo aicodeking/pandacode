@@ -689,6 +689,67 @@ fn many_broad_searches_on_deep_paths_stay_under_budget() {
 }
 
 #[test]
+fn windows_absolute_paths_match_ordinary_and_extended_roots() {
+    let disk = r"\\?\C:\repo\";
+    let unc = r"\\?\UNC\server\share\repo";
+    for (root, absolute, expected) in [
+        (disk, r"C:\repo\src\a.rs", Some(r"src\a.rs")),
+        (disk, "c:/repo/src/a.rs", Some("src/a.rs")),
+        (disk, r"c:/repo\src/a.rs", Some("src/a.rs")),
+        (disk, r"c:\repo", Some("")),
+        (disk, r"C:\repo\src\foo:bar.rs", Some(r"src\foo:bar.rs")),
+        (disk, r"D:\repo\a.rs", None),
+        (disk, r"C:\repo2\a.rs", None),
+        (disk, r"C:repo\a.rs", None),
+        (r"\\?\C:\", "c:/src/a.rs", Some("src/a.rs")),
+        (unc, r"\\SERVER\SHARE\repo\src\a.rs", Some(r"src\a.rs")),
+        (unc, "//SERVER/SHARE/repo/src/a.rs", Some("src/a.rs")),
+        (unc, "//server/share/repo", Some("")),
+        (unc, "//other/share/repo/a.rs", None),
+        (unc, "//server/share2/repo/a.rs", None),
+        (r"\\server\share\repo", r"\\?\UnC\server\share\repo\a.rs", Some("a.rs")),
+    ] {
+        let base = Path::new(root);
+        assert_eq!(relative_under(base, base, absolute, true), expected, "{absolute} under {root}");
+    }
+    assert_eq!(
+        relative_under(Path::new(disk), Path::new(r"C:\alias"), "c:/alias/src/a.rs", true),
+        Some("src/a.rs")
+    );
+}
+
+#[test]
+fn non_windows_paths_keep_path_strip_prefix_semantics() {
+    let root = Path::new("/project");
+    let given = Path::new("/alias");
+    assert_eq!(relative_under(root, given, "/project", false), Some(""));
+    assert_eq!(relative_under(root, given, "/alias/src/a.rs", false), Some("src/a.rs"));
+    assert_eq!(relative_under(root, given, "/project2/src/a.rs", false), None);
+    assert_eq!(relative_under(root, given, "/Project/src/a.rs", false), None);
+}
+
+#[cfg(windows)]
+#[test]
+fn ordinary_windows_reads_and_globs_work_with_a_canonical_root() {
+    let repo = Repo::new();
+    repo.write("src/a.rs", "needle\n");
+    repo.write("other.rs", "needle\n");
+    let root = crate::path_match::ordinary_windows_path(repo.0.to_str().unwrap()).unwrap();
+    let backslash = format!(r"{root}\src\a.rs");
+    let forward_slash = backslash.replace('\\', "/");
+    let reply = repo.explore(json!({
+        "read": [&backslash, &forward_slash],
+        "outline": [format!("{backslash}:stream")],
+        "search": ["needle"],
+        "glob": [format!("{}/src/**", root.replace('\\', "/"))],
+    }));
+    assert_eq!(reply["read"][0]["text"], "1:needle\n", "{reply}");
+    assert_eq!(reply["read"][1]["text"], "1:needle\n", "{reply}");
+    assert_eq!(shown_paths(&reply["search"][0]), ["src/a.rs"], "{reply}");
+    assert!(reply["outline"][0]["error"].as_str().unwrap().contains("colon"), "{reply}");
+}
+
+#[test]
 fn paths_under_the_root_as_given_are_inside_it() {
     let root = std::env::temp_dir().join(format!("pandacode-explore-alias-{}", uuid::Uuid::new_v4().simple()));
     fs::create_dir_all(root.join("src")).unwrap();

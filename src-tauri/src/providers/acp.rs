@@ -51,7 +51,8 @@ pub(super) fn configure(command: &mut Command, config: &RunConfig) {
         }
         "opencode" => {
             command.arg("acp");
-            command.env("OPENCODE_CONFIG_CONTENT", configuration(&config.mode, &[]));
+            let inline = super::command_environment(command, "OPENCODE_CONFIG_CONTENT");
+            command.env("OPENCODE_CONFIG_CONTENT", configuration(&config.mode, inline.as_deref()));
         }
         "grok" => {
             // Global flags precede `agent`; agent flags precede the `stdio` transport.
@@ -447,39 +448,21 @@ fn grok_read_only(tool: &Value) -> bool {
         || matches!(field(tool, "kind"), "read" | "search" | "fetch" | "think")
 }
 
-/// `served`: the auto-allowed PandaCode tools (explore, tool list/save) this run's bound server
-/// really lists, so OpenCode's own IDs for them run without asking. The last matching rule wins,
-/// and `*` sorts first.
-pub(super) fn configuration(mode: &str, served: &[&str]) -> String {
-    let mut permission = match mode {
+/// Apply process-local mode defaults while retaining exact tool denies from the effective config.
+pub(super) fn configuration(mode: &str, inline: Option<&str>) -> String {
+    let permission = match mode {
         "full" => json!({"*":"allow"}),
         "auto" => json!({"*":"ask","read":"allow","glob":"allow","grep":"allow","edit":"allow"}),
         // Investigation stays open: web lookups run; reads outside the project ask.
         "plan" => json!({"*":"deny","read":"allow","glob":"allow","grep":"allow","list":"allow","lsp":"allow","webfetch":"allow","websearch":"allow","external_directory":"ask"}),
         _ => json!({"*":"ask","read":"allow","glob":"allow","grep":"allow"}),
     };
-    for name in served {
-        permission[format!("pandacode_architect_{name}")] = json!("allow");
-    }
-    // Inline settings have the highest documented precedence and are private
-    // to this process. Preserve existing inline settings, except permissions
-    // which must follow the explicitly selected PandaCode policy.
-    let mut inline = std::env::var("OPENCODE_CONFIG_CONTENT")
-        .ok()
-        .and_then(|text| serde_json::from_str::<Value>(&text).ok())
-        .filter(Value::is_object)
-        .unwrap_or_else(|| json!({}));
-    inline["permission"] = permission.clone();
-    if !inline["agent"].is_object() {
-        inline["agent"] = json!({});
-    }
-    for mode in ["build", "plan"] {
-        if !inline["agent"][mode].is_object() {
-            inline["agent"][mode] = json!({});
-        }
-        inline["agent"][mode]["permission"] = permission.clone();
-    }
-    inline.to_string()
+    crate::skill_manager::opencode_enforcement_with(
+        inline.unwrap_or("{}"),
+        &Default::default(),
+        &Default::default(),
+        Some(&permission),
+    )
 }
 
 /// Add only the bound server's grants to the effective launch, after connection and skill rules.
@@ -3598,17 +3581,43 @@ mod tests {
             }
         }
         for mode in ["ask", "auto", "plan"] {
-            let unserved: Value = serde_json::from_str(&configuration(mode, &[])).unwrap();
+            let inline = configuration(mode, None);
+            let unserved: Value = serde_json::from_str(&inline).unwrap();
             assert!(!unserved.to_string().contains("pandacode_explore"), "{mode}: no rule for a tool this run does not list");
-            let config: Value = serde_json::from_str(&configuration(mode, &[crate::providers::EXPLORE_TOOL])).unwrap();
+            let (inline, _) = crate::skill_manager::opencode_tool_grants_with(
+                &inline, None, &[crate::providers::EXPLORE_TOOL], &Default::default(),
+            ).unwrap();
+            let config: Value = serde_json::from_str(&inline).unwrap();
             assert_eq!(config["permission"]["pandacode_architect_pandacode_explore"], "allow", "{mode}");
             assert_eq!(config["agent"]["plan"]["permission"]["pandacode_architect_pandacode_explore"], "allow", "{mode}");
             assert_eq!(config["permission"].as_object().unwrap().keys().next().unwrap(), "*", "{mode}");
         }
-        let full: Value = serde_json::from_str(&configuration("full", &[])).unwrap();
+        let full: Value = serde_json::from_str(&configuration("full", None)).unwrap();
         assert_eq!(full["permission"]["*"], "allow");
         assert_eq!(full["agent"]["build"]["permission"]["*"], "allow");
         assert_eq!(full["agent"]["plan"]["permission"]["*"], "allow");
+    }
+
+    #[test]
+    fn opencode_configuration_preserves_exact_denies_and_mode_defaults() {
+        let tool = "pandacode_architect_pandacode_explore";
+        let alias = format!("{tool} *");
+        let saved = format!(r#"{{
+            // Keep the selected mode's policy for other actions.
+            "permission": {{"{tool}": "deny", "read": "deny"}},
+            "agent": {{
+                "build": {{"permission": {{"{alias}": "deny"}}}},
+                "plan": {{"permission": {{"{tool}": "deny"}}}}
+            }},
+        }}"#);
+        for (mode, effect) in [("auto", "ask"), ("full", "allow"), ("plan", "deny")] {
+            let value: Value = serde_json::from_str(&configuration(mode, Some(&saved))).unwrap();
+            assert_eq!(value["permission"]["*"], effect);
+            assert_eq!(value["permission"][tool], "deny");
+            assert_ne!(value["permission"]["read"], "deny");
+            assert_eq!(value["agent"]["build"]["permission"][&alias], "deny");
+            assert_eq!(value["agent"]["plan"]["permission"][tool], "deny");
+        }
     }
 
     #[test]

@@ -121,14 +121,73 @@ struct Ctx<'a> {
 impl Ctx<'_> {
     /// An absolute path under the root, as given or canonical, made relative to it.
     fn relative<'p>(&self, absolute: &'p str) -> Option<&'p str> {
-        let path = Path::new(absolute);
-        path.strip_prefix(self.root).or_else(|_| path.strip_prefix(self.given)).ok().and_then(Path::to_str)
+        relative_under(self.root, self.given, absolute, cfg!(windows))
     }
 
     /// Like `relative`, with Windows `\` separators normalized to `/` for glob matching.
     fn relative_slash(&self, absolute: &str) -> Option<String> {
         self.relative(absolute).map(|rel| rel.replace('\\', "/"))
     }
+}
+
+fn relative_under<'p>(root: &Path, given: &Path, absolute: &'p str, windows: bool) -> Option<&'p str> {
+    let path = Path::new(absolute);
+    let strip = |base: &Path| {
+        path.strip_prefix(base).ok().and_then(Path::to_str).or_else(|| {
+            if !windows {
+                return None;
+            }
+            windows_relative_under(base.to_str()?, absolute)
+        })
+    };
+    strip(root).or_else(|| strip(given))
+}
+
+const WINDOWS_SEPARATORS: [char; 2] = ['\\', '/'];
+
+/// A drive or UNC server and share, followed by the path below that volume. This is
+/// lexical so globs can use it even when the suffix doesn't name an existing file.
+fn windows_volume(path: &str) -> Option<(&str, &str, &str)> {
+    let network = path.strip_prefix(WINDOWS_SEPARATORS)
+        .and_then(|tail| tail.strip_prefix(WINDOWS_SEPARATORS));
+    let extended = network.and_then(|tail| tail.strip_prefix('?'))
+        .and_then(|tail| tail.strip_prefix(WINDOWS_SEPARATORS));
+    let disk = extended.unwrap_or(path);
+    if let [drive, b':', b'\\' | b'/', ..] = disk.as_bytes() {
+        if drive.is_ascii_alphabetic() {
+            return Some((&disk[..2], "", &disk[3..]));
+        }
+    }
+    let unc = if let Some(extended) = extended {
+        let (kind, unc) = extended.split_once(WINDOWS_SEPARATORS)?;
+        kind.eq_ignore_ascii_case("UNC").then_some(unc)?
+    } else {
+        network?
+    };
+    let (server, rest) = unc.split_once(WINDOWS_SEPARATORS)?;
+    let (share, tail) = rest.split_once(WINDOWS_SEPARATORS).unwrap_or((rest, ""));
+    if matches!(server, "" | "." | ".." | "?") || matches!(share, "" | "." | "..") {
+        return None;
+    }
+    Some((server, share, tail))
+}
+
+fn windows_relative_under<'p>(base: &str, absolute: &'p str) -> Option<&'p str> {
+    let (base_volume, base_share, base_path) = windows_volume(base)?;
+    let (volume, share, mut tail) = windows_volume(absolute)?;
+    if !base_volume.eq_ignore_ascii_case(volume) || !base_share.eq_ignore_ascii_case(share) {
+        return None;
+    }
+    // Keep directory spelling exact for Windows directories with case sensitivity enabled.
+    for expected in base_path.split(WINDOWS_SEPARATORS).filter(|part| !part.is_empty()) {
+        tail = tail.trim_start_matches(WINDOWS_SEPARATORS);
+        let (part, rest) = tail.split_once(WINDOWS_SEPARATORS).unwrap_or((tail, ""));
+        if part != expected {
+            return None;
+        }
+        tail = rest;
+    }
+    Some(tail.trim_start_matches(WINDOWS_SEPARATORS))
 }
 
 /// With the plain secret rule and no stop flag, for tests.

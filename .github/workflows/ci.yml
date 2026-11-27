@@ -178,27 +178,43 @@ jobs:
       # tests on macOS and Windows so case-insensitive env vars, USERPROFILE, Windows managed-settings
       # paths and checkout canonicalisation (`/var` vs `/private/var`, `\\?\` verbatim prefixes) are
       # executed natively in CI rather than only clippy-checked. libtest ORs the filters as
-      # substrings of each test path: `providers::exit` covers both `providers::exit::unit_tests` and
-      # `providers::exit_tests`, and Colab's settings tests live in `cloud::colab::tests`. A filter list
+      # substrings of each test path. The separate Unix exit tests are also run on macOS, and
+      # Colab's settings tests live in `cloud::colab::tests`. A filter list
       # that matched little would still pass, so require at least 200 passed tests on macOS and
-      # Windows and at least one passing test for each checked module, including Connect hard-link
-      # refusal, so a `#[cfg]` or `#[ignore]` slip that drops them on one platform fails here.
-      # Windows must also pass both Job Object cleanup tests by name. Log checks use portable awk.
+      # Windows and at least one passing test for every prefix. Require Connect hard-link refusal
+      # and both Windows Job Object cleanup tests by exact name. Log checks use portable awk.
       - name: Platform Rust unit tests (macOS and Windows)
         if: matrix.target == 'darwin-aarch64' || matrix.target == 'windows-x86_64'
         shell: bash
         run: |
-          extra_filters=()
-          windows_checks=()
+          prefixes=(
+            app_marker::
+            providers::warm::
+            turn_changes::
+            account_config::
+            connections::tests::home_and_config
+            providers::exit::
+            checkout_busy::
+            claude_roots::
+            git_config::
+            path_match::
+            lead_spare::
+            session_launch_tests::
+            cloud::colab::tests::
+            workspace::text_search::
+          )
+          required_tests=(remote::methods::files::tests::hard_linked_files_are_refused_for_reads_and_writes)
           if [ "$RUNNER_OS" = Windows ]; then
-            detached_tool_test=custom_tools::tests::stop_kills_an_immediate_detached_descendant
-            extra_filters=(providers::windows_job::tests:: "$detached_tool_test")
-            windows_checks=(
+            prefixes+=(providers::windows_job::tests::)
+            required_tests+=(
               providers::windows_job::tests::dropping_job_terminates_child_and_immediate_detached_descendant
-              "$detached_tool_test"
+              custom_tools::tests::stop_kills_an_immediate_detached_descendant
+              explore::tests::ordinary_windows_reads_and_globs_work_with_a_canonical_root
             )
+          else
+            prefixes+=(providers::exit_tests::)
           fi
-          cargo test --locked --manifest-path src-tauri/Cargo.toml --lib -- app_marker:: providers::warm:: turn_changes:: account_config:: connections::tests::home_and_config providers::exit checkout_busy:: claude_roots:: git_config:: path_match:: lead_spare:: session_launch_tests:: cloud::colab::tests:: workspace::text_search:: remote::methods::files::tests::hard_linked_files_are_refused_for_reads_and_writes "${extra_filters[@]}" 2>&1 | tee "$RUNNER_TEMP/platform-tests.log"
+          cargo test --locked --manifest-path src-tauri/Cargo.toml --lib -- "${prefixes[@]}" "${required_tests[@]}" 2>&1 | tee "$RUNNER_TEMP/platform-tests.log"
           log="$RUNNER_TEMP/platform-tests.log"
           passed=$(awk '/^test result: ok\. [0-9]+ passed/ { sum += $4 } END { print sum + 0 }' "$log")
           echo "Platform Rust unit tests passed: $passed"
@@ -206,15 +222,15 @@ jobs:
             echo "::error::Only $passed platform Rust unit tests passed (expected at least 200): a filter or #[cfg] dropped tests"
             exit 1
           fi
-          for module in 'app_marker::' 'path_match::' 'lead_spare::' 'checkout_busy::' 'providers::warm::' 'providers::exit::' 'claude_roots::' 'git_config::' 'workspace::text_search::' 'remote::methods::files::'; do
-            if ! awk -v m="test $module" 'index($0, m) == 1 && / \.\.\. ok$/ { found = 1; exit } END { exit !found }' "$log"; then
-              echo "::error::No passing $module tests ran on this platform"
+          for prefix in "${prefixes[@]}"; do
+            if ! awk -v p="test $prefix" 'index($0, p) == 1 && / \.\.\. ok$/ { found = 1; exit } END { exit !found }' "$log"; then
+              echo "::error::No passing test matched $prefix on this platform"
               exit 1
             fi
           done
-          for test_name in "${windows_checks[@]}"; do
+          for test_name in "${required_tests[@]}"; do
             if ! awk -v expected="test $test_name ... ok" '$0 == expected { found = 1; exit } END { exit !found }' "$log"; then
-              echo "::error::No passing $test_name test ran on Windows"
+              echo "::error::No passing $test_name test ran on this platform"
               exit 1
             fi
           done

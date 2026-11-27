@@ -323,8 +323,8 @@ Voice dictation inserts a draft without sending it. Transcribe on your computer 
   (n = 1 per minimal config; macOS RSS omits compressed pages, so this is not a lower figure),
   and long histories, plugins or extra MCP servers, including stdio MCP child processes, use more). Starts
   pause for 5 minutes when spares keep being evicted unused or after 3 launches in a row
-  miss their spare because it went stale, its process exited or its config folder or `git status`
-  could not be read (`not used`; your own Stops do not count, and expiries join the expiry rule), and for 30 minutes after 3 spares in a row expire unused,
+  miss their spare because it went stale, its process exited or its config or `git status`
+  could not be checked (`not used`; your own Stops do not count, and expiries join the expiry rule), and for 30 minutes after 3 spares in a row expire unused,
   doubling to 60, 120 and at most 240 minutes when a single probe spare after each pause also expires unused
   (a team lead's whole renewal chain counts as one expiry, a mid-chain lead spare found expired does not count, and expiries while spares are
   off do not count); pauses are timed on both the monotonic and wall clocks, so a laptop's
@@ -332,8 +332,9 @@ Voice dictation inserts a draft without sending it. Transcribe on your computer 
   starts on a computer with under 6 GiB of RAM, while under 1.5 GiB is free on Linux or Windows, or while macOS reports
   memory pressure; skipped starts appear in Settings → Agents as `N skipped (low memory)`. Both ordinary
   and lead spares record a bounded `git status` digest right before they spawn and check it again
-  when adopted, so uncommitted edits start cold instead of reusing stale status; lead spares still
-  serve only teams whose live workers are all read-only (such as Council reviews). Settings → Agents shows each pool's live state (`idle now`,
+  when adopted. Edits that change the digest start cold. Editing an already-modified file can
+  leave porcelain status unchanged. Lead spares serve only teams whose live workers are all
+  read-only (such as Council reviews). Settings → Agents shows each pool's live state (`idle now`,
   and `paused (N min left)` during a pause, hidden while the switch is off; refreshed every
   30 s while Settings → Agents is open and when it becomes visible again) and this launch's totals (adopted/started, plus
   not used, expired, evicted, replaced, discarded, cold, `N starts paused` and `N skipped (low memory)` when nonzero,
