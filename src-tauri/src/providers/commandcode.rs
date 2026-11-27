@@ -21,6 +21,55 @@ pub(super) fn mode_id(mode: &str) -> &'static str {
 /// Shown when Command Code has neither a saved key nor a CLI login.
 pub(super) const SIGN_IN: &str = "Command Code is not signed in. Run `command-code login` in a terminal, or save an API key in Settings → Agents, then send again.";
 
+/// Command Code's `exit_plan_mode` approval rides on `session/request_permission`,
+/// not on a tool call: the tool call is `kind: "other"`, and both offered options
+/// are `kind: "allow_once"` ("Yes, auto-accept edits" and "Cancel"). That shape is
+/// indistinguishable from a structured question by option kinds alone, so it must
+/// be recognised here or the generic question handling cancels it before the user
+/// ever sees a prompt. The CLI drops its own `exitPlanMode` marker over ACP, so the
+/// question header and the option names are the only signals left on the wire.
+pub(super) fn is_plan_approval(request: &Value) -> bool {
+    let title = request["params"]["toolCall"]["title"]
+        .as_str()
+        .unwrap_or_default();
+    if title.starts_with("Exit Plan:") || title.starts_with("Plan Review:") {
+        return true;
+    }
+    // The CLI accepts these exact prefixes and treats anything else as "cancel".
+    request["params"]["options"]
+        .as_array()
+        .is_some_and(|options| {
+            options.iter().any(|option| {
+                option["name"].as_str().is_some_and(|name| {
+                    name.starts_with("Yes, auto-accept") || name.starts_with("Yes, exit")
+                })
+            })
+        })
+}
+
+/// The answer to a plan-approval request. Both options are `allow_once`, so the
+/// choice is made by name: approving takes the "Yes, …" option and declining takes
+/// "Cancel". Anything unrecognised stays a cancel so a plan is never approved by a
+/// request this code did not understand.
+pub(super) fn plan_decision(request: &Value, approved: bool) -> Value {
+    let options = request["params"]["options"].as_array();
+    let selected = options.and_then(|options| {
+        options.iter().find(|option| {
+            option["name"].as_str().is_some_and(|name| {
+                if approved {
+                    name.starts_with("Yes, ")
+                } else {
+                    name.starts_with("Cancel")
+                }
+            })
+        })
+    });
+    let outcome = selected
+        .map(|option| json!({"outcome":"selected","optionId":option["optionId"]}))
+        .unwrap_or_else(|| json!({"outcome":"cancelled"}));
+    json!({"jsonrpc":"2.0","id":request["id"],"result":{"outcome":outcome}})
+}
+
 /// The key to hand Command Code: a saved key wins, then the app's environment. A
 /// locked or unavailable secure store is not fatal here, because the CLI can use
 /// the account from `command-code login` instead.
@@ -175,6 +224,50 @@ mod tests {
         let (mut p, _) = ready("ask", "default", None);
         let step = permission(&mut p);
         assert!(step.write.is_empty() && step.events.iter().any(|e| e.kind == "approval"));
+    }
+
+    /// Recorded from `command-code acp` 1.87.1 `exit_plan_mode` in plan mode. Both
+    /// options are `allow_once`, so the generic question heuristic used to cancel it
+    /// and the user never saw an approval prompt.
+    fn plan_approval(p: &mut Protocol) -> Step {
+        p.receive(json!({"jsonrpc":"2.0","id":11,"method":"session/request_permission","params":{"sessionId":"cc-1","toolCall":{"toolCallId":"exit_plan_mode","title":"Exit Plan: Rustrak as the self-hosted error tracker","kind":"other","status":"pending","rawInput":{"question":"Exit plan mode and begin implementation?"}},"options":[
+            {"optionId":"option_0","name":"Yes, auto-accept edits: Exit plan mode and implement with accept edits (no permission prompts)","kind":"allow_once"},
+            {"optionId":"option_1","name":"Cancel: Stay in plan mode — run /plans to annotate or edit the plan anytime","kind":"allow_once"}]}})).unwrap()
+    }
+
+    #[test]
+    fn plan_approval_reaches_the_user_instead_of_being_cancelled() {
+        let (mut p, _) = ready("plan", "default", None);
+        let step = plan_approval(&mut p);
+        assert!(step.write.is_empty(), "the request must wait for the user, not be answered: {:?}", step.write);
+        let approval = step.events.iter().find(|e| e.kind == "approval").expect("an approval event");
+        assert!(approval.request_id.is_some());
+    }
+
+    #[test]
+    fn approval_answering_a_plan_exits_plan_mode_and_declining_keeps_it() {
+        let approve = |approved: bool| {
+            let (mut p, _) = ready("plan", "default", None);
+            let id = plan_approval(&mut p)
+                .events
+                .iter()
+                .find(|e| e.kind == "approval")
+                .and_then(|e| e.request_id.clone())
+                .expect("an approval request id");
+            p.approve(&id, approved).expect("a decision")["result"]["outcome"].clone()
+        };
+        assert_eq!(approve(true), json!({"outcome":"selected","optionId":"option_0"}));
+        assert_eq!(approve(false), json!({"outcome":"selected","optionId":"option_1"}));
+    }
+
+    #[test]
+    fn a_plain_question_is_still_not_a_plan_approval() {
+        let (mut p, _) = ready("plan", "default", None);
+        let step = p.receive(json!({"jsonrpc":"2.0","id":12,"method":"session/request_permission","params":{"sessionId":"cc-1","toolCall":{"toolCallId":"question_1","title":"Host + DB: which droplet?","kind":"other"},"options":[
+            {"optionId":"option_0","name":"It's a Plan VPS","kind":"allow_once"},
+            {"optionId":"option_1","name":"A new droplet","kind":"allow_once"}]}})).unwrap();
+        assert!(step.events.iter().all(|e| e.kind != "approval"));
+        assert_eq!(step.write[0]["result"]["outcome"]["outcome"], json!("cancelled"));
     }
 
     #[test]

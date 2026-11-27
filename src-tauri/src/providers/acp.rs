@@ -923,6 +923,14 @@ impl Protocol {
                         .is_some_and(|(number, _)| number.parse::<usize>().is_ok())
                 })
             });
+            // Command Code asks to leave plan mode with two `allow_once` options, which
+            // the question heuristic below would otherwise cancel before it is shown.
+            if self.config.provider == "commandcode"
+                && super::commandcode::is_plan_approval(&value)
+            {
+                self.approval(value, "Implement this plan?".into(), &mut step);
+                return Ok(step);
+            }
             // As for Claude: a registered self-scoped host tool can't touch the checkout.
             if one_allow
                 && !structured_question

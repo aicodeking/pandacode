@@ -2811,6 +2811,11 @@ impl Protocol {
             "devin" => devin::decision(&request, approved),
             "kimi" | "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" | "kilo" | "github-copilot" | "hermes" | "cursor" => {
                 let options = request["params"]["options"].as_array();
+                // Both plan-approval options are `allow_once`, so pick between them by the
+                // name the CLI matches on instead of taking the first allow option.
+                if self.config.provider == "commandcode" && commandcode::is_plan_approval(&request) {
+                    return Some(commandcode::plan_decision(&request, approved));
+                }
                 let kinds = if approved {
                     ["allow_once", "allow_always"]
                 } else {
