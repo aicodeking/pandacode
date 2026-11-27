@@ -876,9 +876,11 @@ Leaving plan mode is a permission request, not a tool call: `exit_plan_mode` ask
 `session/request_permission` with a `kind: "other"` call and offers two options that
 are both `kind: "allow_once"` ("Yes, auto-accept edits" and "Cancel"). That shape is
 indistinguishable from a structured question by option kind alone, so PandaCode
-recognises it from the question header (`Exit Plan:` / `Plan Review:`) or those
-option names and shows it as an approval; approving selects the "Yes" option and
-declining selects "Cancel". A real `ask_user_question` keeps the generic handling.
+requires both signals the CLI sends — a question header of `Exit Plan:` or
+`Plan Review:` *and* that exact Yes/Cancel pair — and shows it as an approval;
+approving selects the "Yes" option and declining selects "Cancel". A real
+`ask_user_question` keeps the generic handling, even if a model titles it
+"Plan Review" or offers a "Yes, …" option.
 
 **Turn data.** Streaming text, tool calls, context usage (`usage_update`), slash
 commands (`available_commands_update`, including installed skills), cancel, resume

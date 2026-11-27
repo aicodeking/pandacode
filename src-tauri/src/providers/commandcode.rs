@@ -28,23 +28,34 @@ pub(super) const SIGN_IN: &str = "Command Code is not signed in. Run `command-co
 /// be recognised here or the generic question handling cancels it before the user
 /// ever sees a prompt. The CLI drops its own `exitPlanMode` marker over ACP, so the
 /// question header and the option names are the only signals left on the wire.
+///
+/// Both must agree: the header alone would catch an ordinary question some model
+/// titled "Plan Review", and one matching option label alone would catch a question
+/// that happens to offer "Yes, …". Requiring the header and the exact Yes/Cancel
+/// pair keeps a real question on the generic path.
 pub(super) fn is_plan_approval(request: &Value) -> bool {
     let title = request["params"]["toolCall"]["title"]
         .as_str()
         .unwrap_or_default();
-    if title.starts_with("Exit Plan:") || title.starts_with("Plan Review:") {
-        return true;
+    let header = title.starts_with("Exit Plan:") || title.starts_with("Plan Review:");
+    if !header {
+        return false;
     }
-    // The CLI accepts these exact prefixes and treats anything else as "cancel".
-    request["params"]["options"]
-        .as_array()
-        .is_some_and(|options| {
-            options.iter().any(|option| {
-                option["name"].as_str().is_some_and(|name| {
-                    name.starts_with("Yes, auto-accept") || name.starts_with("Yes, exit")
+    // The CLI answers "auto-accept" for a "Yes, auto-accept…" label and "default" for
+    // any other "Yes, …", and treats everything else as a cancel.
+    let named = |prefix: &str| {
+        request["params"]["options"]
+            .as_array()
+            .is_some_and(|options| {
+                options.iter().any(|option| {
+                    option["kind"] == "allow_once"
+                        && option["name"]
+                            .as_str()
+                            .is_some_and(|name| name.starts_with(prefix))
                 })
             })
-        })
+    };
+    named("Yes, ") && named("Cancel")
 }
 
 /// The answer to a plan-approval request. Both options are `allow_once`, so the
@@ -226,11 +237,12 @@ mod tests {
         assert!(step.write.is_empty() && step.events.iter().any(|e| e.kind == "approval"));
     }
 
-    /// Recorded from `command-code acp` 1.87.1 `exit_plan_mode` in plan mode. Both
-    /// options are `allow_once`, so the generic question heuristic used to cancel it
-    /// and the user never saw an approval prompt.
+    /// The frame `command-code acp` 1.93.4 builds for `exit_plan_mode` in plan mode:
+    /// `requestQuestion` joins header and question into the title and appends each
+    /// option's description to its name. Both options are `allow_once`, so the generic
+    /// question heuristic used to cancel it and the user never saw an approval prompt.
     fn plan_approval(p: &mut Protocol) -> Step {
-        p.receive(json!({"jsonrpc":"2.0","id":11,"method":"session/request_permission","params":{"sessionId":"cc-1","toolCall":{"toolCallId":"exit_plan_mode","title":"Exit Plan: Rustrak as the self-hosted error tracker","kind":"other","status":"pending","rawInput":{"question":"Exit plan mode and begin implementation?"}},"options":[
+        p.receive(json!({"jsonrpc":"2.0","id":11,"method":"session/request_permission","params":{"sessionId":"cc-1","toolCall":{"toolCallId":"question_1","title":"Exit Plan: Exit plan mode and begin implementation?","kind":"other","status":"pending","rawInput":{"question":"Exit plan mode and begin implementation?","options":["Yes, auto-accept edits","Cancel"]}},"options":[
             {"optionId":"option_0","name":"Yes, auto-accept edits: Exit plan mode and implement with accept edits (no permission prompts)","kind":"allow_once"},
             {"optionId":"option_1","name":"Cancel: Stay in plan mode — run /plans to annotate or edit the plan anytime","kind":"allow_once"}]}})).unwrap()
     }
@@ -267,6 +279,36 @@ mod tests {
             {"optionId":"option_0","name":"It's a Plan VPS","kind":"allow_once"},
             {"optionId":"option_1","name":"A new droplet","kind":"allow_once"}]}})).unwrap();
         assert!(step.events.iter().all(|e| e.kind != "approval"));
+        assert_eq!(step.write[0]["result"]["outcome"]["outcome"], json!("cancelled"));
+    }
+
+    /// A model may title its own question "Plan Review", and may offer a "Yes, …"
+    /// option. Neither alone may turn a real question into plan approval, or the user
+    /// is shown a misleading prompt and loses the "answer in chat" fallback.
+    #[test]
+    fn a_question_with_an_approval_like_header_or_label_is_not_plan_approval() {
+        let question = |title: &str, options: Value| {
+            let (mut p, _) = ready("plan", "default", None);
+            let step = p.receive(json!({"jsonrpc":"2.0","id":13,"method":"session/request_permission","params":{"sessionId":"cc-1","toolCall":{"toolCallId":"question_2","title":title,"kind":"other"},"options":options}})).unwrap();
+            (step.events.iter().any(|e| e.kind == "approval"), step.write[0]["result"]["outcome"]["outcome"].clone())
+        };
+        let header_only = question("Plan Review: which section needs revision?", json!([
+            {"optionId":"option_0","name":"Architecture","kind":"allow_once"},
+            {"optionId":"option_1","name":"Testing","kind":"allow_once"}]));
+        assert_eq!(header_only, (false, json!("cancelled")));
+        let label_only = question("Deploy target: where?", json!([
+            {"optionId":"option_0","name":"Yes, auto-accept edits for this one","kind":"allow_once"},
+            {"optionId":"option_1","name":"Cancel the deploy","kind":"allow_once"}]));
+        assert_eq!(label_only, (false, json!("cancelled")));
+    }
+
+    #[test]
+    fn a_plan_approval_without_a_known_option_cancels_rather_than_guessing() {
+        let (mut p, _) = ready("plan", "default", None);
+        let step = p.receive(json!({"jsonrpc":"2.0","id":14,"method":"session/request_permission","params":{"sessionId":"cc-1","toolCall":{"toolCallId":"exit_plan_mode","title":"Exit Plan: ship it","kind":"other"},"options":[
+            {"optionId":"option_0","name":"Proceed","kind":"allow_once"},
+            {"optionId":"option_1","name":"Back","kind":"allow_once"}]}})).unwrap();
+        assert!(step.events.iter().all(|e| e.kind != "approval"), "not the canonical pair");
         assert_eq!(step.write[0]["result"]["outcome"]["outcome"], json!("cancelled"));
     }
 
