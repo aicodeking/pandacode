@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import {
-  canInstall, CHECKING, markRestarting, normalizeStatus, restartInFlight, RESTARTING, restartWarning, updateLine, updateReady, updateTone, wentOffline,
+  canInstall, CHECKING, markRestarting, normalizeStatus, restartAnnounced, restartInFlight, RESTART_HINT_MS, RESTARTING, restartWarning, updateLine, updateReady, updateTone, wentOffline,
 } from '../src/store/host-update.ts';
 
 const status = (extra: Record<string, unknown> = {}) => normalizeStatus({
@@ -187,13 +187,31 @@ test('another phone learns a restart from the computer’s frame, and stops sayi
   assert.match(client, /message\.name === 'host\.restarting'/);
   assert.match(client, /\.data\?\.version/);
   // Stored per host, so two computers restarting do not read as one.
-  assert.match(client, /restarting: \{ \.\.\.s\.restarting, \[from\]: version \}/);
+  assert.match(client, /const hint = \{ version, at: Date\.now\(\) \};/);
+  assert.match(client, /restarting: \{ \.\.\.s\.restarting, \[from\]: hint \}/);
   // Cleared when presence lists it online again: the restart it describes has finished, so the card
   // reads the version it restarted into rather than saying "Restarting…" forever.
   assert.match(client, /Object\.keys\(state\(\)\.restarting\)\.some\(id => onlineHosts\.has\(id\)\)/);
   assert.match(client, /Object\.entries\(s\.restarting\)\.filter\(\(\[id\]\) => !onlineHosts\.has\(id\)\)/);
   // The card shows it the same way as one this phone asked for.
   const card = readFileSync(new URL('../src/ui/hub/HostUpdate.tsx', import.meta.url), 'utf8');
-  assert.match(card, /const announced = useConnect\(s => s\.restarting\[device\]\)/);
+  assert.match(card, /const announced = !!useConnect\(s => s\.restarting\[device\]\)/);
+  // A hint, not a fact: the host sends it BEFORE installing, so a failed install leaves it online and
+  // never restarts. client.ts expires it, so the card cannot say "Restarting…" forever over the error.
+  assert.match(client, /setTimeout\(\(\) => patch\(s => \(s\.restarting\[from\]\?\.at === hint\.at/);
+  assert.match(client, /RESTART_HINT_MS\)/);
   assert.match(card, /const shown = restarting \|\| announced \? markRestarting\(value \?\? null\) : value \?\? null;/);
+});
+
+test('an announced restart is a hint that expires, so a failed install cannot hide the error', () => {
+  const at = 1_000;
+  // A fresh announcement is believed, and one from the future is not (a clock change).
+  assert.equal(restartAnnounced({ version: '0.3.162', at }, at), true);
+  assert.equal(restartAnnounced({ version: '0.3.162', at }, at + RESTART_HINT_MS - 1), true);
+  // The host sends this BEFORE it installs, so a failed install leaves it online and it never
+  // restarts: past the window the card must fall back to the plain offline line rather than say
+  // "Restarting…" forever and hide the failure's error.
+  assert.equal(restartAnnounced({ version: '0.3.162', at }, at + RESTART_HINT_MS), false);
+  assert.equal(restartAnnounced({ version: '0.3.162', at }, at - 1), false);
+  assert.equal(restartAnnounced(undefined, at), false);
 });

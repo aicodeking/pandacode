@@ -35,7 +35,7 @@ import * as secrets from './secrets.ts';
 import { isLegacyHelloError, legacy as legacyCapabilities, parseHello, supports } from './api/hello.ts';
 import { attachLimits, uploadImages, type ImageChunk, type SendImage } from '../store/attach.ts';
 import { capabilitiesOf, forgetCapabilities, markMissing, refusalMeansStale, setCapabilities } from './api/capabilities.ts';
-import { wentOffline } from '../store/host-update.ts';
+import { RESTART_HINT_MS, wentOffline } from '../store/host-update.ts';
 import { AppState } from 'react-native';
 import { RelaySocket, type ConnectionQuality, type QualityListener } from './socket.ts';
 import { markCurrent, markStartup } from './perf.ts';
@@ -561,7 +561,16 @@ function frame(text: string) {
   // once the computer is listed online again, so it never outlives the restart it describes.
   else if (message?.type === 'event' && message.name === 'host.restarting') {
     const version = typeof message.data?.version === 'string' ? message.data.version.slice(0, 40) : '';
-    if (version) patch(s => ({ restarting: { ...s.restarting, [from]: version } }));
+    if (version) {
+      const hint = { version, at: Date.now() };
+      patch(s => ({ restarting: { ...s.restarting, [from]: hint } }));
+      // A hint, not a fact (RESTART_HINT_MS): the host says this before it installs, so a FAILED
+      // install leaves it online and it never restarts — the card must stop saying "Restarting…"
+      // and go back to showing the failure. Expire it here so reading it stays pure for render.
+      setTimeout(() => patch(s => (s.restarting[from]?.at === hint.at
+        ? { restarting: Object.fromEntries(Object.entries(s.restarting).filter(([id]) => id !== from)) }
+        : {})), RESTART_HINT_MS);
+    }
   }
 }
 
@@ -946,6 +955,8 @@ function schedulePrefetch() {
 function forgetThreads() {
   helloed.clear();
   onlineHosts.clear();
+  // A sign-out leaves nothing of another account behind, including a restart it announced.
+  patch({ restarting: {} });
   forgetCapabilities();
   forgetResends();
   prefetch.replace([]);

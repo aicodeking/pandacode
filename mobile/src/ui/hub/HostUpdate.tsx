@@ -43,9 +43,11 @@ export function HostUpdate({ device, online }: { device: string; online: boolean
   const load = useCallback(() => hostUpdateStatus(device), [device]);
   const { value, error, reload } = useLoad<HostUpdateStatus>(served ? load : null, `${device}:host.update`);
   const [restarting, setRestarting] = useState(false);
-  /** A restart another phone (or the desktop itself) announced: client.ts sets it from the computer's
-   * `host.restarting` frame and clears it once presence lists the computer online again. */
-  const announced = useConnect(s => s.restarting[device]);
+  /** A restart another phone (or the desktop itself) announced. client.ts sets it from the computer's
+   * `host.restarting` frame, clears it when presence lists the computer online again, and expires a
+   * hint that outlives its deadline (a failed install leaves the computer online and never restarts),
+   * so this is simply whether an announcement stands. */
+  const announced = !!useConnect(s => s.restarting[device]);
   const [checking, setChecking] = useState(false);
   const [actionError, setActionError] = useState('');
   /** The read that was on screen when Update and restart was tapped: a later one proves the restart. */

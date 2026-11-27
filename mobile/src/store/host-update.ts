@@ -93,3 +93,18 @@ export function wentOffline(before: ReadonlySet<string>, after: readonly { id: s
   const online = new Set(after.filter(d => d.online).map(d => d.id));
   return [...before].filter(id => !online.has(id));
 }
+
+/** The version a host announced it is restarting into, and when it said so (the `host.restarting`
+ * frame, client.ts). A hint, not a fact: `host.updateStatus`'s own `restarting` is the authority —
+ * host_methods.rs `tell_viewers` says the socket close is the real signal and this "only lets a
+ * client say why". */
+export interface RestartHint { readonly version: string; readonly at: number }
+
+/** How long an announcement is believed. The host sends it BEFORE it installs, so a failed install
+ * leaves it online and it never restarts; believing the hint forever would hide that failure's error
+ * behind "Restarting…". Past this the card falls back to the plain line, which is honest. */
+export const RESTART_HINT_MS = 5 * 60_000;
+
+/** Whether `hint` still describes a restart that is plausibly under way. */
+export const restartAnnounced = (hint: RestartHint | undefined, now: number): boolean =>
+  !!hint && now - hint.at >= 0 && now - hint.at < RESTART_HINT_MS;

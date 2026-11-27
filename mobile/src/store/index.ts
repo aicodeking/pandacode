@@ -44,9 +44,10 @@ export interface ConnectState {
   teams: Record<string, Team | null | 'outdated'>;
   /** Hosts that answered 'Unknown method.' to the pull request, changes or bot methods. */
   outdated: Record<string, boolean>;
-  /** Per host: the version it announced it is restarting into (the `host.restarting` frame), while
-   * it is away. Cleared once presence lists it online again, which is when the restart finished. */
-  restarting: Record<string, string>;
+  /** Per host: the version it announced it is restarting into (the `host.restarting` frame) and when.
+   * Cleared once presence lists it online again, and ignored after `RESTART_HINT_MS`: the host sends
+   * it before installing, so a failed install leaves it online and it must not outlive the attempt. */
+  restarting: Record<string, import('./host-update.ts').RestartHint>;
   /** The last user-facing connection error (sign-out, relay). */
   error: string | null;
   /** Demo mode (src/demo.ts): fake data, no network. */
