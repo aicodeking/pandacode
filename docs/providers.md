@@ -831,6 +831,14 @@ Provider API. With neither, `session/new` fails with ACP `-32000` and the turn s
 with “Command Code is not signed in. Run `command-code login` in a terminal, or save
 an API key in Settings → Agents, then send again.”
 
+**Usage.** With a key saved in Settings → Agents or `COMMAND_CODE_API_KEY`, the Usage
+dialog reads Command Code's own billing endpoints (`/alpha/billing/credits` and
+`/alpha/usage/summary` on `api.commandcode.ai`) and shows the plan's monthly credits,
+then the rolling 5-hour and weekly limits with their reset times. The key is the only
+thing sent, both requests are read-only, and no response text is echoed. A CLI-only
+login (`~/.commandcode/auth.json`) is not read, so that setup asks for a key; the API's
+alpha endpoints may change without notice.
+
 **Models and effort.** `session/new` returns `configOptions` (`model`, and `effort`
 in the `thought_level` category) with display names and descriptions, so discovery
 opens an empty session and never prompts. The adapter applies the mode, then the
