@@ -108,7 +108,7 @@ impl Run for Rename {
     fn run<'a>(self: Box<Self>, ctx: Ctx<'a>) -> Reply<'a> {
         Box::pin(async move {
             local_task(&ctx.state(), &self.session_id).await?;
-            crate::update_session(ctx.app.clone(), ctx.state(), self.session_id.clone(), Some(self.title.clone()), None, None, None, None).await?;
+            crate::update_session_options(ctx.app.clone(), ctx.state(), self.session_id.clone(), crate::SessionUpdate { title: Some(self.title.clone()), ..Default::default() }).await?;
             changed(ctx.app);
             Ok(json!({ "sessionId": self.session_id, "title": self.title }))
         })
@@ -140,7 +140,7 @@ impl Run for Archive {
             let stage = if self.archived { "completed" } else { REOPENED };
             // A legacy archive flag blocks stage changes; reopening clears it, as on the desktop.
             if task.archived && !self.archived {
-                crate::update_session(ctx.app.clone(), ctx.state(), self.session_id.clone(), None, Some(false), None, None, None).await?;
+                crate::update_session_options(ctx.app.clone(), ctx.state(), self.session_id.clone(), crate::SessionUpdate { archived: Some(false), ..Default::default() }).await?;
             }
             let settled = !task.archived || !self.archived;
             let task = if settled && task.task_stage != stage {

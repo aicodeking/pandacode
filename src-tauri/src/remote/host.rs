@@ -1684,10 +1684,10 @@ async fn run_one(app: &tauri::AppHandle, from: &str, call: Call, full_access: bo
                 start::require_installed(provider).await?;
             }
             if let Some(mode) = mode {
-                crate::update_session(app.clone(), state.clone(), session_id.clone(), None, None, None, Some(mode), None).await?;
+                crate::update_session_options(app.clone(), state.clone(), session_id.clone(), crate::SessionUpdate { mode: Some(mode), ..Default::default() }).await?;
             }
             if let Some(auto_writes) = auto_writes {
-                crate::update_session(app.clone(), state.clone(), session_id.clone(), None, None, None, None, Some(auto_writes)).await?;
+                crate::update_session_options(app.clone(), state.clone(), session_id.clone(), crate::SessionUpdate { auto_writes: Some(auto_writes), ..Default::default() }).await?;
             }
             if let Some((provider, model)) = model {
                 crate::configure_session(app.clone(), state.clone(), session_id.clone(), provider, model, None).await?;
@@ -5386,7 +5386,7 @@ mod tests {
         for run in ["impl Run for SetStage", "impl Run for Archive", "impl Run for SetGoal"] {
             let body = after(threads, run, "\n}\n");
             let at = body.find(gate).unwrap_or_else(|| panic!("{run}"));
-            assert!(["set_task_stage(", "update_session(", "update_task_details("].iter().all(|change| body.find(change).is_none_or(|c| at < c)), "{run} checks before it changes");
+            assert!(["set_task_stage(", "update_session_options(", "update_task_details("].iter().all(|change| body.find(change).is_none_or(|c| at < c)), "{run} checks before it changes");
         }
         let git = include_str!("methods/git.rs");
         assert!(after(git, "fn create_task_worktree(", "\n}\n").contains("if !trust.untrusted() {\n            crate::architect::profiles::apply_default("), "worktree.create");

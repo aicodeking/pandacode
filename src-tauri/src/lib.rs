@@ -1443,17 +1443,74 @@ async fn set_reasoning_effort(
         .map_err(|e| e.to_string())?
         .set_reasoning_effort(&session_id, reasoning_effort.as_deref())
 }
-#[tauri::command]
-async fn update_session(
-    app: tauri::AppHandle,
-    state: State<'_, AppState>,
-    session_id: String,
+#[derive(Debug, Default, PartialEq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SessionUpdate {
     title: Option<String>,
     archived: Option<bool>,
     model: Option<String>,
     mode: Option<String>,
     auto_writes: Option<bool>,
+}
+
+#[cfg(test)]
+mod session_update_tests {
+    use super::SessionUpdate;
+
+    #[test]
+    fn auto_writes_update_accepts_the_existing_flat_command_payload() {
+        let update: SessionUpdate = serde_json::from_value(serde_json::json!({
+            "sessionId": "task-1", "title": "Title", "archived": false,
+            "model": "model", "mode": "review", "autoWrites": true,
+        })).unwrap();
+        assert_eq!(update, SessionUpdate {
+            title: Some("Title".into()), archived: Some(false),
+            model: Some("model".into()), mode: Some("review".into()),
+            auto_writes: Some(true),
+        });
+    }
+
+    #[test]
+    fn auto_writes_update_preserves_false_and_absent_fields() {
+        let update: SessionUpdate = serde_json::from_value(serde_json::json!({
+            "sessionId": "task-1", "autoWrites": false,
+        })).unwrap();
+        assert_eq!(update, SessionUpdate {
+            auto_writes: Some(false), ..SessionUpdate::default()
+        });
+        let empty: SessionUpdate = serde_json::from_value(serde_json::json!({
+            "sessionId": "task-1", "autoWrites": null,
+        })).unwrap();
+        assert_eq!(empty, SessionUpdate::default());
+        assert!(serde_json::from_value::<SessionUpdate>(serde_json::json!({
+            "autoWrites": "false",
+        })).is_err());
+    }
+}
+
+#[tauri::command]
+async fn update_session(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    session_id: String,
+    request: tauri::ipc::Request<'_>,
 ) -> Result<()> {
+    // Read the options from the whole payload to keep the existing flat IPC
+    // contract (including autoWrites), rather than requiring a nested object.
+    let tauri::ipc::InvokeBody::Json(body) = request.body() else {
+        return Err("Expected JSON session update options.".into());
+    };
+    let update = serde_json::from_value(body.clone()).map_err(|e| e.to_string())?;
+    update_session_options(app, state, session_id, update).await
+}
+
+async fn update_session_options(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    session_id: String,
+    update: SessionUpdate,
+) -> Result<()> {
+    let SessionUpdate { title, archived, model, mode, auto_writes } = update;
     // A mirror's permissions are its host's; the local row follows below.
     if let Some(mode) = &mode {
         remote::route(&app, &state, &session_id, "task.configure", serde_json::json!({"mode": mode})).await?;
