@@ -41,14 +41,14 @@ html[data-theme="dark"] .agent-team-lead:has(input:checked){color:var(--accent)}
  * write-only add row, mirroring the provider environment cards. */
 .agent-team-env{display:flex;flex-direction:column;gap:6px;padding:8px 10px;border-radius:var(--ds-control-radius);background:var(--ds-card-inset)}
 .agent-team-env[hidden]{display:none}
-.agent-team-env h4{margin:0;font-size:var(--type-meta);font-weight:var(--weight-strong);color:var(--muted)}
-.agent-team-env-note{margin:0;font-size:var(--type-meta);color:var(--muted);line-height:1.5}
+.agent-team-env-title{margin:0;font-size:var(--type-subheading);font-weight:var(--type-subheading-weight);line-height:var(--type-subheading-leading);color:var(--muted)}
+.agent-team-env-note{margin:0;font-size:var(--type-meta);color:var(--muted);line-height:var(--type-meta-leading)}
 .agent-team-env-global{display:flex;align-items:center;gap:.45rem;font-size:var(--type-meta);cursor:pointer}
 .agent-team-env-global input{width:auto;flex:none;accent-color:var(--accent);margin:0}
 .agent-team-env-list{display:flex;flex-wrap:wrap;gap:.35rem}
 .agent-team-env-list:empty{display:none}
 .agent-team-env-var{display:inline-flex;align-items:center;gap:.4rem}
-.agent-team-env-var code{font-size:var(--type-meta);padding:.15rem .4rem;border-radius:var(--ds-control-radius);background:var(--ds-card-inset)}
+.agent-team-env-var code{font-size:var(--code-inline-size);padding:.15rem .4rem;border-radius:var(--ds-control-radius);background:var(--ds-card-inset)}
 .agent-team-env-var .secondary-button{font-size:var(--type-meta);padding:.2rem .5rem}
 .agent-team-env-row{display:flex;gap:.4rem;align-items:center}
 .agent-team-env-row input{flex:1;min-width:0;height:30px;padding:0 10px;border:0;border-radius:var(--ds-control-radius);background:var(--ds-card-inset);color:var(--text);font:inherit;font-size:var(--type-body);font-weight:var(--type-body-weight);line-height:var(--type-body-leading)}

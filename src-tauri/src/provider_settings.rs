@@ -176,16 +176,6 @@ fn valid_environment(
         .collect()
 }
 
-/// The shared global set every harness launch may inherit, for callers that
-/// merge their own variables over it (a team that opted out passes an empty map).
-pub(crate) fn global_environment() -> BTreeMap<String, String> {
-    CONFIG
-        .get()
-        .and_then(|runtime| runtime.lock().ok())
-        .map(|runtime| runtime.settings.global_environment.clone())
-        .unwrap_or_default()
-}
-
 /// Whether the provider's launches still include the shared global set.
 pub(crate) fn includes_global_environment(provider: &str) -> bool {
     CONFIG

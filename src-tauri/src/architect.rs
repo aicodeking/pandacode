@@ -782,7 +782,7 @@ pub(crate) fn emit_snapshot(app: &tauri::AppHandle, team: &TeamSnapshot) {
     let _ = app.emit("architect-event", redact_team(&event_payload(team)));
 }
 fn emit(app: &tauri::AppHandle, team: &TeamSnapshot) {
-    let _ = app.emit("architect-event", &event_payload(team));
+    emit_snapshot(app, team);
     let _ = app.emit("sessions-changed", ());
 }
 /// The webview's view of a team snapshot: environment values stay on this
@@ -1131,19 +1131,19 @@ pub async fn architect_set_council(
     state: State<'_, AppState>,
     session_id: String,
     council: Option<CouncilConfig>,
-) -> Result<Option<TeamSnapshot>> {
+) -> Result<Option<serde_json::Value>> {
     let team = council::set(&state, &session_id, council)?;
     emit(&app, &team);
     wake(app);
-    Ok(Some(team))
+    Ok(Some(redact_team(&team)))
 }
 /// Accepts this cycle's Council scores: the lead may finish now, and Council stays on.
 #[tauri::command]
-pub async fn architect_council_accept(app: tauri::AppHandle, state: State<'_, AppState>, session_id: String) -> Result<TeamSnapshot> {
+pub async fn architect_council_accept(app: tauri::AppHandle, state: State<'_, AppState>, session_id: String) -> Result<serde_json::Value> {
     let team = council::accept(&state, &session_id)?;
     emit(&app, &team);
     wake(app);
-    Ok(team)
+    Ok(redact_team(&team))
 }
 /// A task on another computer runs its team there (docs/remote-access.md): this computer
 /// only shows it, so nothing may configure, start or control a local team for it.

@@ -134,7 +134,9 @@ pub fn discard(session_id: &str) {
 /// Start the next turn's agent for a task. `tools` is the catalog its last turn used; the
 /// placeholder server answers the agent's startup listing and is rebound on adoption.
 pub async fn prewarm(config: RunConfig, tools: Vec<Value>, approval_tools: HashSet<String>, launch: u64) -> Result<(), String> {
-    let result = start(config, tools, approval_tools, launch).await;
+    let values = super::team_secret_values(&config);
+    let result = start(config, tools, approval_tools, launch).await
+        .map_err(|error| super::redact_team_text(&error, &values));
     if let Err(error) = &result {
         eprintln!("Could not prepare a warm Claude agent: {error}");
     }

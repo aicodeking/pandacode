@@ -2,7 +2,7 @@
  * the models it may orchestrate and the one that leads; it appears in the model picker. */
 import './agent-teams.css';
 import type { TeamLibrary, TeamProfile } from './architect-types';
-import { escape, icon } from './dom';
+import { escape, icon, isImeKey } from './dom';
 import { modelChoices } from './model-catalog';
 import { providerLogo } from './provider-logos';
 import { classicTeamSetup, modelKey, namedTeams, namedTeamSetup, setClassicTeamSetup, teamDetail, TEAM_MODELS_MAX, type TeamModel } from './team-mode';
@@ -30,7 +30,7 @@ export function mountAgentTeams(host: HTMLElement, options: AgentTeamsOptions): 
       <div class="agent-team-models" role="group" aria-label="Team models"><p class="agent-team-loading" role="status">Loading models…</p></div>
       <label class="agent-team-field" hidden><span>Lead effort</span><select class="agent-team-lead-effort" aria-label="Lead effort"></select></label>
       <section class="agent-team-env" aria-label="Team environment" hidden>
-        <h4>Environment variables</h4>
+        <h4 class="agent-team-env-title">Environment variables</h4>
         <p class="agent-team-env-note">Added to every harness this team starts, after the provider's own variables. Values are saved on this computer and never shown again.</p>
         <label class="agent-team-env-global"><input type="checkbox" class="agent-team-use-global"> Use global environment variables</label>
         <div class="agent-team-env-list" aria-label="Saved team variables"></div>
@@ -232,7 +232,7 @@ export function mountAgentTeams(host: HTMLElement, options: AgentTeamsOptions): 
     if (event.target instanceof Element && event.target.closest('.agent-team-env-add')) submitEnvironment();
   });
   envSection.addEventListener('keydown', event => {
-    if (event.key === 'Enter' && event.target instanceof Element && (event.target as HTMLElement).matches('.agent-team-env-name,.agent-team-env-value')) { event.preventDefault(); submitEnvironment(); }
+    if (event.key === 'Enter' && !isImeKey(event) && event.target instanceof Element && (event.target as HTMLElement).matches('.agent-team-env-name,.agent-team-env-value')) { event.preventDefault(); submitEnvironment(); }
   });
   editor.addEventListener('keydown', event => {
     // Escape closes the editor, not the Settings dialog around it.

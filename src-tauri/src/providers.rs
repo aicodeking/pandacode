@@ -4293,6 +4293,46 @@ pub async fn run_with_tools(
     run_with_tools_reporting(config, sink, input, host, harness, Default::default()).await
 }
 
+/// Scrub team values before an event is persisted or emitted, or an error is logged.
+fn redact_team_text(text: &str, values: &[String]) -> String {
+    values.iter().fold(text.to_owned(), |text, value| text.replace(value, "[redacted]"))
+}
+
+fn redact_team_value(value: &mut Value, values: &[String]) {
+    match value {
+        Value::String(text) => *text = redact_team_text(text, values),
+        Value::Array(items) => items.iter_mut().for_each(|item| redact_team_value(item, values)),
+        Value::Object(items) => {
+            let old = std::mem::take(items);
+            for (name, mut value) in old {
+                redact_team_value(&mut value, values);
+                items.insert(redact_team_text(&name, values), value);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn redact_team_event(event: &mut AgentEvent, values: &[String]) {
+    event.text = redact_team_text(&event.text, values);
+    if let Some(data) = &mut event.data { redact_team_value(data, values); }
+    if let Some(tool) = &mut event.tool {
+        tool.input = redact_team_text(&tool.input, values);
+        tool.output = redact_team_text(&tool.output, values);
+        tool.name = redact_team_text(&tool.name, values);
+        if let Some(paths) = &mut tool.write_paths {
+            for path in paths { *path = redact_team_text(path, values); }
+        }
+    }
+}
+
+fn team_secret_values(config: &RunConfig) -> Vec<String> {
+    let mut values: Vec<_> = config.team_environment.values().filter(|v| !v.is_empty()).cloned().collect();
+    values.sort_by_key(|value| std::cmp::Reverse(value.len()));
+    values.dedup();
+    values
+}
+
 /// `run_with_tools`, also setting `taken` once the run's loop takes a stop (`stop_taken`).
 pub async fn run_with_tools_reporting(
     config: RunConfig,
@@ -4302,6 +4342,14 @@ pub async fn run_with_tools_reporting(
     harness: Arc<std::sync::atomic::AtomicBool>,
     taken: Arc<std::sync::atomic::AtomicBool>,
 ) -> Result<(), String> {
+    let values = team_secret_values(&config);
+    let sink = if values.is_empty() { sink } else {
+        let values = values.clone();
+        Arc::new(move |mut event: AgentEvent| {
+            redact_team_event(&mut event, &values);
+            sink(event);
+        }) as Sink
+    };
     // Refreshes the task's project for its switches: a SQLite read, kept off the runtime.
     let (session_id, cwd) = (config.session_id.clone(), config.cwd.clone());
     if let Err(error) = crate::blocking(move || {
@@ -4321,6 +4369,7 @@ pub async fn run_with_tools_reporting(
     } else {
         STOP_TAKEN.scope(taken, HARNESS.scope(harness, run_inner(config, sink.clone(), input, host))).await
     };
+    let result = result.map_err(|error| redact_team_text(&error, &values));
     if let Err(error) = &result {
         sink(identity.event("error", error.clone(), None));
     }
@@ -5636,6 +5685,21 @@ mod tests {
         );
     }
     use super::*;
+
+    #[test]
+    fn team_values_are_scrubbed_from_output_nested_events_and_errors() {
+        let mut config = config("claude");
+        config.team_environment.insert("TOKEN".into(), "private-token-value".into());
+        config.team_environment.insert("EMPTY".into(), String::new());
+        let values = team_secret_values(&config);
+        let mut event = Protocol::new(config).event("tool", "private-token-value", Some(&json!({"nested":[{"private-token-value":"private-token-value"}]})));
+        event.tool = Some(ToolActivity { id: "tool-id".into(), name: "shell".into(), status: "done".into(), input: "echo private-token-value".into(), output: "private-token-value".into(), write_paths: None });
+        redact_team_event(&mut event, &values);
+        let text = serde_json::to_string(&event).unwrap();
+        assert!(!text.contains("private-token-value"));
+        assert!(text.contains("[redacted]"));
+        assert_eq!(redact_team_text("failed: private-token-value", &values), "failed: [redacted]");
+    }
 
     #[test]
     fn github_copilot_is_discovered_with_its_direct_cli_executable_and_no_effort_override() {

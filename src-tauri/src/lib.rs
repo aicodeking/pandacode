@@ -2282,14 +2282,15 @@ fn prepare_task_run_in_project(
     let prompt = architect::prompt(&store, &session_id, &prompt, admission.team.as_ref()).map_err(restore)?;
     // The team environment is decided once here and carried on RunConfig, so a
     // warm adoption later needs no new decisions: the team's own values plus the
-    // shared global set (dropped when the team or its provider card opted out).
+    // provider settings (global values keep the provider's overrides; either
+    // opt-out drops shared globals).
     let (team_environment, team_use_global_environment) = admission
         .team
         .as_ref()
         .and_then(|team| architect::load(&store, &team.parent).ok().flatten())
         .map(|team| {
             architect::profiles::team_launch_environment(
-                &crate::provider_settings::global_environment(),
+                &crate::provider_settings::environment(&session.provider).into_iter().collect(),
                 &team.config,
                 crate::provider_settings::includes_global_environment(&session.provider),
             )
