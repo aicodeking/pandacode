@@ -718,9 +718,9 @@ fn links_attach_to_one_task_and_to_a_listing() {
     let (store, task) = empty_session();
     let other = store.create_session(&task.project_id, "claude", "sonnet", "auto").unwrap();
     let link = |number: i64| TaskLink { kind: String::new(), number, url: format!("https://github.com/o/r/pull/{number}"), title: format!("#{number}"), state: "open".into(), checked_at: 0 };
-    store.set_task_link(&task.id, "pull", Some(&link(7))).unwrap();
-    store.set_task_link(&task.id, "issue", Some(&link(3))).unwrap();
-    store.set_task_link(&other.id, "issue", Some(&link(9))).unwrap();
+    store.set_task_link(&task.id, "pull", "", Some(&link(7))).unwrap();
+    store.set_task_link(&task.id, "issue", "", Some(&link(3))).unwrap();
+    store.set_task_link(&other.id, "issue", "", Some(&link(9))).unwrap();
     let one = store.session(&task.id).unwrap();
     assert_eq!((one.pull_request.as_ref().unwrap().number, one.issue.as_ref().unwrap().number), (7, 3));
     let listing = store.sessions().unwrap();
@@ -728,8 +728,8 @@ fn links_attach_to_one_task_and_to_a_listing() {
     assert_eq!(by_id(&task.id).pull_request.as_ref().unwrap().number, 7);
     assert_eq!(by_id(&other.id).issue.as_ref().unwrap().number, 9);
     assert!(by_id(&other.id).pull_request.is_none());
-    assert_eq!(store.set_task_link("missing", "pull", Some(&link(1))).unwrap_err(), "Conversation not found.");
-    store.update_link_states(&task.project_id, &[("pull".into(), 7, "merged".into(), String::new())]).unwrap();
+    assert_eq!(store.set_task_link("missing", "pull", "", Some(&link(1))).unwrap_err(), "Conversation not found.");
+    store.update_link_states(&task.project_id, &[(String::new(), "pull".into(), 7, "merged".into(), String::new())]).unwrap();
     let merged = store.session(&task.id).unwrap().pull_request.unwrap();
     assert_eq!((merged.state.as_str(), merged.title.as_str()), ("merged", "#7"));
 }

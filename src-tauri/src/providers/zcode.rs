@@ -622,6 +622,9 @@ impl Protocol {
         if !servers.is_empty() {
             request["params"]["mcpServers"] = json!(servers);
         }
+        if !self.config.extra_dirs.is_empty() {
+            request["params"]["additionalDirectories"] = json!(self.config.extra_dirs);
+        }
         request
     }
 
@@ -1564,6 +1567,29 @@ mod tests {
         assert_eq!(step.events.len(), 1);
         assert_eq!(step.events[0].kind, "status");
         assert!(step.events[0].text.contains("without its history"), "{}", step.events[0].text);
+    }
+
+    #[test]
+    fn extra_folders_ride_session_create_but_never_resume() {
+        let mut config = super::super::tests::config("zcode");
+        config.extra_dirs = vec![PathBuf::from("/repo/backend"), PathBuf::from("/repo/web")];
+        let request = Protocol::new(config).initial();
+        assert_eq!(request["method"], "session/create");
+        assert_eq!(
+            request["params"]["additionalDirectories"],
+            json!(["/repo/backend", "/repo/web"])
+        );
+        // A single-folder task keeps today's params exactly.
+        let plain = super::super::tests::config("zcode");
+        assert!(Protocol::new(plain).initial()["params"]
+            .get("additionalDirectories")
+            .is_none());
+        let mut resumed = super::super::tests::config("zcode");
+        resumed.extra_dirs = vec![PathBuf::from("/repo/backend")];
+        resumed.resume_id = Some("sess_saved".into());
+        let request = Protocol::new(resumed).initial();
+        assert_eq!(request["method"], "session/resume");
+        assert!(request["params"].get("additionalDirectories").is_none());
     }
 
     #[test]

@@ -2014,6 +2014,8 @@ fn web_blocked_command(command: &str) -> bool {
 /// unreviewed. `every_main_window_command_is_reviewed_for_web` resolves the renames and keeps
 /// the two lists covering every command.
 const WEB_ALLOWED_COMMANDS: &[&str] = &[
+    "project_folders", "add_project_folder", "remove_project_folder", "set_primary_folder",
+    "workspace_folders", "worktree_paths", "linked_pulls",
     "bot_set_capabilities", "bot_assign_task", "bot_task_links",
     "voice_configuration", "voice_save_profile", "voice_select_profile", "voice_delete_profile",
     "voice_local_catalog", "voice_local_download", "voice_local_cancel_download", "voice_local_delete",

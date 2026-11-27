@@ -59,6 +59,8 @@ fn key_with_disabled(
         "namedConnection": connection,
         "provider": config.provider, "model": config.model, "effort": config.reasoning_effort,
         "mode": config.mode, "cwd": config.cwd, "resume": config.resume_id,
+        // A folder added to or removed from the project changes the command line.
+        "extraDirs": config.extra_dirs,
         "instructions": config.instructions, "tools": tools,
         "disabledSkills": disabled,
         // The login a process starts with (API key or subscription) is fixed at spawn.
@@ -149,6 +151,7 @@ async fn start(mut config: RunConfig, tools: Vec<Value>, approval_tools: HashSet
         .or_else(|| executable(&config.provider))
         .ok_or("Claude Code is not installed")?;
     config.cwd = external_path(&config.cwd);
+    config.extra_dirs = config.extra_dirs.iter().map(|dir| external_path(dir)).collect();
     // Switches, settings and the reminder's skill scan are read off the runtime.
     let catalog = tools.clone();
     let (config, key, disabled, stdio) = crate::blocking(move || {
@@ -286,6 +289,7 @@ mod tests {
             changed(|c| c.reasoning_effort = Some("high".into())),
             changed(|c| c.resume_id = Some("another".into())),
             changed(|c| c.instructions = "new".into()),
+            changed(|c| c.extra_dirs = vec![PathBuf::from("/other/repo")]),
             key(&base, &[]),
             key_with(&base, &tools, "work#1"),
         ] {

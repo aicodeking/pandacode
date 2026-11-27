@@ -103,7 +103,7 @@ impl Store {
             // One task (`session`): a primary-key seek instead of reading every link.
             let mut stmt = self
                 .db
-                .prepare_cached("SELECT kind,number,url,title,state,checked_at FROM task_links WHERE session_id=?1")
+                .prepare_cached("SELECT kind,number,url,title,state,checked_at FROM task_links WHERE session_id=?1 AND repo=''")
                 .map_err(|e| e.to_string())?;
             let links = stmt
                 .query_map([&session.id], |r| link(r, 0))
@@ -123,7 +123,7 @@ impl Store {
             }
             let mut stmt = self
                 .db
-                .prepare_cached("SELECT session_id,kind,number,url,title,state,checked_at FROM task_links")
+                .prepare_cached("SELECT session_id,kind,number,url,title,state,checked_at FROM task_links WHERE repo=''")
                 .map_err(|e| e.to_string())?;
             let rows = stmt
                 .query_map([], |r| Ok((r.get::<_, String>(0)?, link(r, 1)?)))
@@ -142,8 +142,9 @@ impl Store {
         }
         Ok(())
     }
-    /// Replace the task's link of one kind; `None` removes it.
-    pub fn set_task_link(&self, sid: &str, kind: &str, link: Option<&TaskLink>) -> Result<Session> {
+    /// Replace the task's link of one kind for one repo; `''` is the primary repo
+    /// whose link the single-link readers serve. `None` removes it.
+    pub fn set_task_link(&self, sid: &str, kind: &str, repo: &str, link: Option<&TaskLink>) -> Result<Session> {
         if !["issue", "pull"].contains(&kind) {
             return Err("Unknown link kind.".into());
         }
@@ -153,31 +154,58 @@ impl Store {
                 if link.number <= 0 || link.url.len() > 2048 || link.title.len() > 1024 || link.state.len() > 32 {
                     return Err("Invalid GitHub link.".into());
                 }
-                self.db.execute("INSERT INTO task_links(session_id,kind,number,url,title,state,checked_at) VALUES(?1,?2,?3,?4,?5,?6,?7) ON CONFLICT(session_id,kind) DO UPDATE SET number=excluded.number,url=excluded.url,title=excluded.title,state=excluded.state,checked_at=excluded.checked_at",
-                    params![sid, kind, link.number, link.url, link.title, link.state, now()]).map_err(|e| e.to_string())?;
+                self.db.execute("INSERT INTO task_links(session_id,kind,repo,number,url,title,state,checked_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8) ON CONFLICT(session_id,kind,repo) DO UPDATE SET number=excluded.number,url=excluded.url,title=excluded.title,state=excluded.state,checked_at=excluded.checked_at",
+                    params![sid, kind, repo, link.number, link.url, link.title, link.state, now()]).map_err(|e| e.to_string())?;
             }
             None => {
                 self.db
-                    .execute("DELETE FROM task_links WHERE session_id=?1 AND kind=?2", params![sid, kind])
+                    .execute("DELETE FROM task_links WHERE session_id=?1 AND kind=?2 AND repo=?3", params![sid, kind, repo])
                     .map_err(|e| e.to_string())?;
             }
         }
         self.session(sid)
     }
-    /// Linked numbers for one project, so states can be refreshed in one batch.
-    pub fn project_links(&self, project_id: &str) -> Result<Vec<(String, TaskLink)>> {
+    /// Every repository's pull link for one task: the primary's '' first, then
+    /// the repositories by key; issue links never appear.
+    pub fn session_pull_links(&self, sid: &str) -> Result<Vec<(String, TaskLink)>> {
+        let mut stmt = self
+            .db
+            .prepare_cached("SELECT repo,number,url,title,state,checked_at FROM task_links WHERE session_id=?1 AND kind='pull' ORDER BY repo")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([sid], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    TaskLink {
+                        kind: "pull".to_string(),
+                        number: r.get(1)?,
+                        url: r.get(2)?,
+                        title: r.get(3)?,
+                        state: r.get(4)?,
+                        checked_at: r.get(5)?,
+                    },
+                ))
+            })
+            .map_err(|e| e.to_string())?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())
+    }
+    /// Linked numbers for one project with each link's repo key, so states can
+    /// be refreshed per repository in one batch.
+    pub fn project_links(&self, project_id: &str) -> Result<Vec<(String, String, TaskLink)>> {
         let mut stmt = self.db.prepare_cached(PROJECT_LINKS_SQL).map_err(|e| e.to_string())?;
         let rows = stmt
             .query_map([project_id], |r| {
                 Ok((
                     r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
                     TaskLink {
-                        kind: r.get(1)?,
-                        number: r.get(2)?,
-                        url: r.get(3)?,
-                        title: r.get(4)?,
-                        state: r.get(5)?,
-                        checked_at: r.get(6)?,
+                        kind: r.get(2)?,
+                        number: r.get(3)?,
+                        url: r.get(4)?,
+                        title: r.get(5)?,
+                        state: r.get(6)?,
+                        checked_at: r.get(7)?,
                     },
                 ))
             })
@@ -186,7 +214,7 @@ impl Store {
             .map_err(|e| e.to_string())
     }
     /// Record refreshed states without touching which task owns which link.
-    pub fn update_link_states(&self, project_id: &str, states: &[(String, i64, String, String)]) -> Result<()> {
+    pub fn update_link_states(&self, project_id: &str, states: &[(String, String, i64, String, String)]) -> Result<()> {
         if states.is_empty() {
             return Ok(());
         }
@@ -194,10 +222,10 @@ impl Store {
         self.in_transaction(|| {
             let mut update = self
                 .db
-                .prepare_cached("UPDATE task_links SET state=?3,title=CASE WHEN ?4='' THEN title ELSE ?4 END,checked_at=?5 WHERE kind=?1 AND number=?2 AND session_id IN (SELECT id FROM sessions WHERE project_id=?6)")
+                .prepare_cached("UPDATE task_links SET state=?4,title=CASE WHEN ?5='' THEN title ELSE ?5 END,checked_at=?6 WHERE repo=?1 AND kind=?2 AND number=?3 AND session_id IN (SELECT id FROM sessions WHERE project_id=?7)")
                 .map_err(|e| e.to_string())?;
-            for (kind, number, state, title) in states {
-                update.execute(params![kind, number, state, title, now(), project_id]).map_err(|e| e.to_string())?;
+            for (repo, kind, number, state, title) in states {
+                update.execute(params![repo, kind, number, state, title, now(), project_id]).map_err(|e| e.to_string())?;
             }
             Ok(())
         })

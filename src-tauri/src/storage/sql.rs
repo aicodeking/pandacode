@@ -52,7 +52,7 @@ pub(super) const IMPORTED_TASK_SQL: &str = "SELECT id FROM sessions WHERE provid
 /// Through the `sessions_draft` partial index.
 pub(super) const DISCARD_EMPTY_DRAFTS_SQL: &str = "DELETE FROM sessions WHERE draft=1 AND NOT EXISTS(SELECT 1 FROM messages WHERE session_id=sessions.id) AND id NOT IN (SELECT session_id FROM architect_workers) AND id NOT IN (SELECT parent_session_id FROM architect_workers)";
 /// A project's links: its tasks through `sessions_project`, then each task's links by primary key.
-pub(super) const PROJECT_LINKS_SQL: &str = "SELECT l.session_id,l.kind,l.number,l.url,l.title,l.state,l.checked_at FROM task_links l JOIN sessions s ON s.id=l.session_id WHERE s.project_id=?1 ORDER BY l.number";
+pub(super) const PROJECT_LINKS_SQL: &str = "SELECT l.session_id,l.repo,l.kind,l.number,l.url,l.title,l.state,l.checked_at FROM task_links l JOIN sessions s ON s.id=l.session_id WHERE s.project_id=?1 ORDER BY l.number";
 /// Through the `messages_session_conversation` partial index (user and assistant rows only, so
 /// tool rows are skipped without a separate index for user rows to maintain). The `IN` term
 /// repeats the index's WHERE clause: SQLite does not infer it from `role='user'`.

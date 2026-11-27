@@ -38,6 +38,12 @@ impl TestDatabase {
             db.execute_batch(&format!("DROP TABLE {table}")).unwrap();
         }
         db.execute_batch("DROP TABLE task_model_runs").unwrap();
+        // Recreate the released schema, not a current schema with only its version changed.
+        db.execute_batch("DROP TABLE session_repos; DROP TABLE project_folders; DROP TABLE task_links;
+            CREATE TABLE task_links(session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+            kind TEXT NOT NULL CHECK(kind IN ('issue','pull')),number INTEGER NOT NULL,url TEXT NOT NULL,
+            title TEXT NOT NULL DEFAULT '',state TEXT NOT NULL DEFAULT '',checked_at INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY(session_id,kind)); CREATE INDEX task_links_number ON task_links(kind,number);").unwrap();
         for index in V38_SCHEMA_INDEXES.into_iter().chain(V38_BOT_INDEXES) {
             db.execute_batch(&format!("DROP INDEX {index}")).unwrap();
         }
@@ -409,6 +415,21 @@ fn v37_0_3_151_upgrade_preserves_every_table_and_passes_integrity_checks() {
             .into_iter().map(str::to_owned).collect(),
         rows: Vec::new(),
     });
+    // Version 38 adds one primary folder per project and qualifies every legacy link.
+    let folders = before["projects"].rows.iter().map(|row| {
+        vec![row[0].clone(), row[2].clone(), 0_i64.into(), 1_i64.into()]
+    }).collect();
+    before.insert("project_folders".into(), TableSnapshot {
+        columns: ["project_id", "path", "position", "is_primary"].into_iter().map(str::to_owned).collect(),
+        rows: folders,
+    });
+    before.insert("session_repos".into(), TableSnapshot {
+        columns: ["session_id", "path", "worktree_path", "worktree_branch"].into_iter().map(str::to_owned).collect(),
+        rows: Vec::new(),
+    });
+    let links = before.get_mut("task_links").unwrap();
+    links.columns.insert(2, "repo".into());
+    for row in &mut links.rows { row.insert(2, String::new().into()); }
     assert_eq!(snapshot(&store.db, false), before);
     let upgraded = snapshot(&store.db, true);
     drop(store);

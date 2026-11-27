@@ -174,7 +174,7 @@ test('push & open pull request refuses a dirty tree, then links the PR to the ta
 
 test('linked issue chips open GitHub and refresh their state on focus', async ({ page }) => {
   await probe(page, `
-    if (command === 'github_refresh_links') return sessions.filter(s => s.projectId === args.projectId).flatMap(s => [s.issue].filter(Boolean).map(link => ({ sessionId: s.id, link: { ...link, state: 'closed', checkedAt: Date.now() } })));
+    if (command === 'github_refresh_links') return sessions.filter(s => s.projectId === args.projectId).flatMap(s => [s.issue].filter(Boolean).map(link => ({ sessionId: s.id, repo: '', link: { ...link, state: 'closed', checkedAt: Date.now() } })));
   `);
   await page.locator('.task-item[data-id="session-3"]').click();
   const chip = page.locator('.composer-context .link-chip');

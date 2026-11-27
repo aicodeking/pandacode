@@ -209,9 +209,9 @@ pub(super) struct Fixture {
 impl Fixture {
     pub(super) fn heavy(&self) -> &str { &self.sessions[HEAVY] }
 
-    pub(super) fn link_states(&self, state: &str) -> Vec<(String, i64, String, String)> {
+    pub(super) fn link_states(&self, state: &str) -> Vec<(String, String, i64, String, String)> {
         self.links_to_refresh.iter().map(|(kind, number, title)| {
-            (kind.clone(), *number, state.to_owned(), format!("{title} ({state})"))
+            (String::new(), kind.clone(), *number, state.to_owned(), format!("{title} ({state})"))
         }).collect()
     }
 

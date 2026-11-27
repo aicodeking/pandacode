@@ -55,7 +55,7 @@ import { mountWallpapers } from './wallpapers';
 import { mountSky } from './sky-window';
 import { mountThreadTiles } from './thread-tiles';
 import { parseSkyTime } from './sky-math';
-import type { AgentEvent, BrowserAttachment, ContextUsage, FileEntry, GitStatus, Message, MessagePage, Mode, Project, Provider, ProviderId, ProviderModel, Session, TaskLink, TaskStage, ToolActivity, TurnChanges, TurnChangeDiff } from './types';
+import type { AgentEvent, BrowserAttachment, ContextUsage, FileEntry, GitStatus, LinkedPull, Message, MessagePage, Mode, Project, ProjectFolder, Provider, ProviderId, ProviderModel, RepoFolderInfo, RepoOutcome, Session, TaskLink, TaskStage, TaskTokenUsage, ToolActivity, TurnChanges, TurnChangeDiff } from './types';
 import type { BrowserPanel } from './browser';
 import { call, chooseFolder, nativeDesktop, preview, subscribe, webMode } from './bridge';
 // Take the access token out of the address bar as early as possible.
@@ -195,9 +195,13 @@ const state = {
   /** Follow-ups typed while an agent works, per task, in delivery order; mirrored from native storage. */
   queues: new Map<string, QueuedMessage[]>(), queueHolds: new Map<string, HoldReason>(), queueEditing: '', queueBusy: new Set<string>(),
   git: null as GitStatus | null, jj: null as JjStatus | null, files: [] as FileEntry[], openFolders: new Set<string>(), folderFiles: new Map<string, FileEntry[]>(), gitError: '', filesError: '', inspectorLoading: false,
+  /** The task's working folders, the primary first; empty until the first refresh answers, so single-folder rendering is unchanged. */
+  taskFolders: [] as RepoFolderInfo[], folderRoots: new Map<string, FileEntry[]>(),
+  /** Every repository's linked pull request ('' = primary) and the PR tab's selected repo key. */
+  linkedPulls: [] as LinkedPull[], selectedPull: '',
   selectedFile: '', selectedContent: '', selectedKind: '' as '' | 'diff', selectedStaged: false, filePreviewLoading: false,
   browserUrl: '',
-  attachments: [] as string[], drafts: new PersistedDrafts(localStorage, Date.now, browserDraftTimer), defaultProvider: (localStorage.getItem('pandacode.defaultProvider') ?? localStorage.getItem('pandacode.provider') ?? 'claude') as ProviderId,
+  attachments: [] as { path: string; folder?: string }[], drafts: new PersistedDrafts(localStorage, Date.now, browserDraftTimer), defaultProvider: (localStorage.getItem('pandacode.defaultProvider') ?? localStorage.getItem('pandacode.provider') ?? 'claude') as ProviderId,
   browserAttachments: new Map<string, BrowserAttachment[]>(),
   moodboardAttachments: new Map<string, { id: string; projectId: string; name: string }[]>(),
   generation: 0, hasOlder: false,
@@ -287,7 +291,7 @@ function chooseInspector(open: boolean): boolean {
   try { localStorage.setItem(INSPECTOR_CHOSEN_KEY, String(open)); } catch (cause) { console.warn('Could not save the inspector choice', cause); }
   return open;
 }
-type ThreadPanel = { workspace: string; tab: typeof state.inspectorTab; folders: string[]; file: string; kind: typeof state.selectedKind; staged: boolean; context?: FileLinkContext; browserUrl: string };
+type ThreadPanel = { workspace: string; tab: typeof state.inspectorTab; folders: string[]; scopes: [string, string][]; file: string; kind: typeof state.selectedKind; staged: boolean; context?: FileLinkContext; browserUrl: string };
 const threadPanels = new Map<string, ThreadPanel>();
 const teams = new Map<string, TeamSnapshot | null>();
 let architectView: ArchitectView | undefined;
@@ -770,6 +774,18 @@ const github = createGithub({
     return { provider: harness.id, model: rememberedModel(harness.id) };
   },
   upsert: saved => { upsertSession(saved); pullView.forget(saved.id); },
+  taskFolders: () => state.taskFolders.map(folder => ({ label: folder.label, isPrimary: folder.isPrimary })),
+  pullCreated: async folder => {
+    const before = new Set(state.linkedPulls.map(([key]) => key));
+    await refreshInspector();
+    // The pull request for `folder` is the per-repo entry that appeared; select and show it.
+    const created = state.linkedPulls.find(([key]) => key && !before.has(key)) ?? state.linkedPulls.find(([key]) => key);
+    state.selectedPull = folder && created ? created[0] : '';
+    const number = created?.[1].number;
+    notify(number ? `Pull request #${number} opened` : 'Pull request opened');
+    if (state.inspectorTab !== 'pull') { state.inspector = true; state.inspectorTab = 'pull'; state.selectedKind = ''; }
+    renderInspector();
+  },
   changed: () => { renderNavigation(); renderHeader(); },
   showPull: task => openPullRequest(task.id),
 });
@@ -805,13 +821,18 @@ const council = createCouncil({
 });
 const searchPanel = createSearchPanel({
   call,
-  context: () => project() ? workspaceContext() : null,
-  open: path => run(openFile(path, 'file')),
+  // One search target per project folder; a single-folder task has one with an empty label.
+  scopes: () => {
+    if (!project()) return [];
+    const context = workspaceContext();
+    return [{ label: '', context }, ...state.taskFolders.filter(folder => !folder.isPrimary).map(folder => ({ label: folder.label, context }))];
+  },
+  open: (path, folder) => run(openFile(path, 'file', false, { ...workspaceContext(), folder })),
 });
 const fileTabs = createFileTabs({
   call,
   canAttach: context => Boolean(state.sessionId) && context.sessionId === state.sessionId,
-  attach: path => attachFile(path),
+  attach: (path, folder) => attachFile(path, folder),
   preview: (path, context) => previewFile(path, context),
   notify: text => notify(text),
   report: error => report(error),
@@ -886,21 +907,55 @@ document.querySelector<HTMLElement>('#inspector-content')!.addEventListener('key
 const pullView = createPullView({
   call,
   openUrl: url => openExternalUrl(url),
-  unlink: async task => {
-    const saved = await call<Session>('set_task_link', { sessionId: task.id, kind: 'pull', link: null });
+  folderFor: repoKey => folderForPull(repoKey),
+  unlink: async (task, folder, number) => {
+    const saved = await call<Session>('set_task_link', { sessionId: task.id, kind: 'pull', ...(folder ? { folder } : {}), link: null });
     upsertSession(saved); pullView.forget(task.id);
-    if (state.inspectorTab === 'pull' && task.id === state.sessionId) state.inspectorTab = 'changes';
+    // The per-repo list may hold further links (another repository's live outside the task row), so it reloads.
+    if (task.id === state.sessionId) await refreshInspector(); else renderHeader();
+    if (state.inspectorTab === 'pull' && task.id === state.sessionId && !pullEntries().length) state.inspectorTab = 'changes';
     renderNavigation(); renderHeader(); renderInspector();
-    notify(`Pull request #${task.pullRequest?.number ?? ''} unlinked`);
+    notify(`Pull request #${number ?? task.pullRequest?.number ?? ''} unlinked`);
   },
   merged: saved => { upsertSession(saved); renderNavigation(); renderHeader(); },
   notify, notifyError,
 });
 function upsertSession(saved: Session): void { const index = state.sessions.findIndex(s => s.id === saved.id); if (index < 0) state.sessions.unshift(saved); else state.sessions[index] = saved; state.drafts.reclaim(saved.id); }
+/** The task's linked pull requests per repository, the primary's single-link field first. */
+function pullEntries(): { repoKey: string; link: TaskLink }[] {
+  const s = session();
+  const entries: { repoKey: string; link: TaskLink }[] = [];
+  for (const [repoKey, link] of state.linkedPulls) {
+    if (!repoKey && s?.pullRequest) entries.push({ repoKey: '', link: s.pullRequest });
+    else entries.push({ repoKey, link });
+  }
+  // A primary link saved after the last refresh still shows.
+  if (s?.pullRequest && !entries.some(entry => !entry.repoKey)) entries.unshift({ repoKey: '', link: s.pullRequest });
+  return entries;
+}
+/** The project folder a repository's pull request is read through: its label, found by
+ *  matching each folder's GitHub identity. Identities resolve against the session's own
+ *  folders, so a repository the project dropped (its checkout rides the task) still
+ *  answers; null marks a repository no folder can serve, never the primary. */
+let pullFolderMap: { key: string; map: Map<string, string | null> } | undefined;
+async function folderForPull(repoKey: string): Promise<string | null | undefined> {
+  if (!repoKey || !state.projectId) return undefined;
+  const key = workspaceKey();
+  if (pullFolderMap?.key !== key) {
+    const context = workspaceContext();
+    const identities = await Promise.all(state.taskFolders.filter(folder => !folder.isPrimary).map(async folder => {
+      const status = await github.status(context.projectId, false, folder.label, context.sessionId).catch(() => null);
+      return [status?.repo?.nameWithOwner ?? '', folder.label] as const;
+    }));
+    pullFolderMap = { key, map: new Map(identities.filter(([name]) => name).map(([name, label]) => [name, label])) };
+  }
+  return pullFolderMap.map.get(repoKey) ?? null;
+}
 /** Show a task's linked pull request in the inspector. */
 async function openPullRequest(sessionId: string): Promise<void> {
   if (sessionId !== state.sessionId) await selectSession(sessionId);
-  if (!session()?.pullRequest) return;
+  if (!session()?.pullRequest && !state.linkedPulls.length) return;
+  state.selectedPull = '';
   inspectorSuppressed = false; state.inspector = chooseInspector(true); state.inspectorTab = 'pull'; state.selectedKind = ''; renderInspector();
 }
 /** After a turn, link the pull request the agent opened, if there is one. */
@@ -911,7 +966,9 @@ async function detectPullRequest(sessionId: string): Promise<void> {
     const saved = await call<Session | null>('github_detect_pull_request', { sessionId });
     if (!saved?.pullRequest) return;
     upsertSession(saved); pullView.forget(sessionId);
-    renderNavigation(); renderHeader(); renderInspector();
+    renderNavigation();
+    // The link may live in another repository, so the per-repo list reloads with the inspector.
+    if (sessionId === state.sessionId) await refreshInspector(); else renderHeader();
     notify(`Linked pull request #${saved.pullRequest.number}${sessionId === state.sessionId ? '' : ` to ${saved.title}`}`);
   } catch { /* Detection is best effort; the branch menu can link it by hand. */ }
 }
@@ -1632,6 +1689,47 @@ function workspaceKey(): string { return `${state.projectId}:${session()?.worktr
 /** PDFs and images open in a file tab like other documents; the tab still offers the browser preview. */
 const OPENS_IN_TAB = /\.(?:pdf|png|jpe?g|gif|webp|avif|bmp|ico|svg)$/i;
 function workspacePath(): string { return session()?.worktreePath ?? project()?.path ?? ''; }
+/** Splits a `label/relative` path into its folder qualifier and folder-relative path when the label names a non-primary folder; labels may carry slashes, so the longest wins. Tree rows, search rows and changes entries carry their folder at the source (`data-folder` or the context), and open tree folders in `folderScopes`; only stored strings (attachments, agent `open_file`, restored tree keys) reach this fallback, and when the first segment also exists in the primary root the string could equally be a primary path — where the backend puts primary files — so the primary wins. */
+function splitFolderPath(qualified: string): { folder: string; path: string } | undefined {
+  const at = qualified.indexOf('/');
+  const first = at > 0 ? qualified.slice(0, at) : '';
+  if (first && state.files.some(entry => entry.name === first)) return undefined;
+  for (const folder of state.taskFolders.filter(f => !f.isPrimary).sort((a, b) => b.label.length - a.label.length)) {
+    const prefix = `${folder.label}/`;
+    if (qualified.startsWith(prefix)) return { folder: folder.label, path: qualified.slice(prefix.length) };
+  }
+  return undefined;
+}
+/** Each open tree folder's source folder: key → its folder label, '' for the primary. Saved with the thread panel, so restored keys keep their folder. */
+const folderScopes = new Map<string, string>();
+/** The call arguments a folder-qualified tree key reads with: the qualifier plus the path within that folder. A tagged folder wins; stored strings fall back to splitFolderPath. */
+function folderArgs(context: { projectId: string; sessionId?: string }, key: string, folder?: string): { projectId: string; sessionId?: string; folder?: string; path: string } {
+  if (folder) return { ...context, folder, path: key.slice(folder.length + 1) };
+  const split = splitFolderPath(key);
+  return { ...context, ...(split ? { folder: split.folder } : {}), path: split ? split.path : key };
+}
+/** Prefixes a non-primary folder's listing with its label, so tree keys never collide across repositories. */
+function qualifyFiles(files: FileEntry[], label: string): FileEntry[] {
+  return files.map(file => ({ ...file, path: `${label}/${file.path}` }));
+}
+/** File-name search across the task's folders for the @ mention pickers: the primary first, non-primary hits `label/relative` (the form the folders note and turn changes use). */
+async function searchProjectFiles(projectId: string, sessionId: string | undefined, query: string, limit = 40): Promise<MentionEntry[]> {
+  const context = { projectId, ...(sessionId ? { sessionId } : {}) };
+  const folders = await call<RepoFolderInfo[]>('workspace_folders', context).catch(() => [] as RepoFolderInfo[]);
+  const extras = (Array.isArray(folders) ? folders : []).filter(folder => !folder.isPrimary);
+  const scopes: (string | undefined)[] = [undefined, ...extras.map(folder => folder.label)];
+  const results = await Promise.allSettled(scopes.map(folder =>
+    call<MentionEntry[]>('search_files', { ...context, query, limit, ...(folder ? { folder } : {}) })));
+  const merged: MentionEntry[] = [];
+  for (const [index, result] of results.entries()) {
+    if (result.status !== 'fulfilled') continue;
+    for (const file of result.value) {
+      merged.push(scopes[index] ? { ...file, path: `${scopes[index]}/${file.path}` } : file);
+      if (merged.length >= limit) return merged;
+    }
+  }
+  return merged;
+}
 configureFileLinks({
   context: () => state.projectId ? workspaceContext() : undefined,
   resolve: (context, paths) => call<ResolvedFile[]>('resolve_workspace_files', { ...context, paths }),
@@ -1644,7 +1742,7 @@ configureFileLinks({
 });
 function saveThreadPanel(): void {
   if (!state.sessionId || deletedSessions.has(state.sessionId)) return;
-  threadPanels.set(state.sessionId, { workspace: workspaceKey(), tab: state.inspectorTab, folders: [...state.openFolders], file: state.selectedFile, kind: state.selectedKind, staged: state.selectedStaged, context: selectedFileContext && { ...selectedFileContext }, browserUrl: state.browserUrl });
+  threadPanels.set(state.sessionId, { workspace: workspaceKey(), tab: state.inspectorTab, folders: [...state.openFolders], scopes: [...folderScopes], file: state.selectedFile, kind: state.selectedKind, staged: state.selectedStaged, context: selectedFileContext && { ...selectedFileContext }, browserUrl: state.browserUrl });
 }
 function restoreThreadPanel(task?: Session): void {
   clearWorkspaceInspector(false);
@@ -1654,6 +1752,8 @@ function restoreThreadPanel(task?: Session): void {
   // while each task restores its own tab, folders, selected diff, and browser URL.
   state.inspector = inspectorChosen && state.view === 'conversation' && !matchMedia('(max-width: 920px)').matches;
   state.inspectorTab = saved?.tab && inspectorTabs.open.includes(saved.tab) ? saved.tab : threadDefault(inspectorTabs); state.openFolders = new Set(sameWorkspace ? saved?.folders : []);
+  folderScopes.clear();
+  if (sameWorkspace) for (const [key, folder] of saved?.scopes ?? []) if (state.openFolders.has(key)) folderScopes.set(key, folder);
   state.selectedFile = sameWorkspace ? saved?.file ?? '' : ''; state.selectedKind = sameWorkspace ? saved?.kind ?? '' : ''; state.selectedStaged = saved?.staged ?? false;
   state.browserUrl = sameWorkspace ? saved?.browserUrl ?? '' : ''; selectedFileContext = sameWorkspace && saved?.context ? { ...saved.context } : undefined;
   fileTabs.show(state.sessionId, workspaceKey());
@@ -1676,8 +1776,9 @@ async function restoreSelectedFile(): Promise<void> {
 }
 function clearWorkspaceInspector(render = true): void {
   ++inspectorRequest; ++fileRequest;
-  state.git = null; noteChangedPaths([]); state.files = []; state.gitError = ''; state.filesError = ''; state.inspectorLoading = Boolean(state.projectId);
-  state.openFolders = new Set(); state.folderFiles = new Map(); state.selectedFile = ''; state.selectedContent = ''; state.selectedKind = ''; state.filePreviewLoading = false;
+  state.git = null; noteChangedPaths([]); state.files = []; state.taskFolders = []; state.folderRoots = new Map(); state.gitError = ''; state.filesError = ''; state.inspectorLoading = Boolean(state.projectId);
+  state.linkedPulls = []; state.selectedPull = '';
+  state.openFolders = new Set(); state.folderFiles = new Map(); folderScopes.clear(); state.selectedFile = ''; state.selectedContent = ''; state.selectedKind = ''; state.filePreviewLoading = false;
   state.browserUrl = '';
   selectedFileContext = undefined;
   if (render) renderInspector();
@@ -4096,7 +4197,7 @@ function updateWorkTimer(): void {
 // keeps the prompt's focus and caret when something is pasted or dropped mid-sentence.
 function attachmentBar(s: Session): string {
   const boardItems = (state.moodboardAttachments.get(s.id) ?? []).filter(item => item.projectId === s.projectId);
-  return state.attachments.map(path => `<span>${icon('file')}${escape(path.split('/').pop())}<button type="button" data-action="detach" data-path="${escape(path)}" aria-label="Remove ${escape(path)}">${icon('close')}</button></span>`).join('')
+  return state.attachments.map(item => `<span>${icon('file')}${escape(item.path.split('/').pop())}<button type="button" data-action="detach" data-path="${escape(item.path)}" aria-label="Remove ${escape(item.path)}">${icon('close')}</button></span>`).join('')
     + boardItems.map(item => `<span>${icon('images')}${escape(item.name)}<button type="button" data-action="detach-moodboard" data-id="${escape(item.id)}" aria-label="Remove moodboard ${escape(item.name)}">${icon('close')}</button></span>`).join('')
     + attachments.chips(s.id);
 }
@@ -5539,10 +5640,10 @@ function setQueueHold(sessionId: string, reason?: HoldReason): void {
 function composerPayload(s: Session): { text: string; items: QueuedMessage['attachments'] } {
   const text = document.querySelector<HTMLTextAreaElement>('#prompt')?.value.trim() ?? '';
   // A restored attachment whose file is gone is shown, but never travels with a message.
-  return { text, items: [...attachments.list(s.id).filter(item => !item.missing), ...state.attachments.map(path => ({ kind: 'path' as const, path }))] as QueuedMessage['attachments'] };
+  return { text, items: [...attachments.list(s.id).filter(item => !item.missing), ...state.attachments.map(item => ({ kind: 'path' as const, path: item.path }))] as QueuedMessage['attachments'] };
 }
-async function botMessageFromComposer(s: Session, bot: import('./bots').Bot, text: string, promptItems: ReturnType<typeof attachments.list>, paths: string[], browserItems: BrowserAttachment[], moodboardItems: { id: string; projectId: string; name: string }[], forceQueue = false): Promise<void> {
-  const contexts = await Promise.all(paths.map(path => fileContext(s, path)));
+async function botMessageFromComposer(s: Session, bot: import('./bots').Bot, text: string, promptItems: ReturnType<typeof attachments.list>, paths: { path: string; folder?: string }[], browserItems: BrowserAttachment[], moodboardItems: { id: string; projectId: string; name: string }[], forceQueue = false): Promise<void> {
+  const contexts = await Promise.all(paths.map(item => fileContext(s, item.path, item.folder)));
   const imageIds = [...browserItems.filter(item => item.kind === 'screenshot').map(item => item.id), ...attachments.imageIds(promptItems)];
   const content = text + contexts.join('') + browserContextText(browserItems) + attachments.contextFor(promptItems) + await github.contextFor(s.projectId, s.id, text) + tokenSaver.contextFor(s.id)
     || (imageIds.length || moodboardItems.length ? 'Please review the attached material.' : '');
@@ -5657,7 +5758,7 @@ function restoreComposerDraft(s: Session, text: string): void {
   if (shown) { applyRestoredDraft(prompt, current, restored.text, restored.at); resizePrompt(); }
 }
 /** Restores an unsent message and its attachments alongside any newer draft. */
-function restoreComposer(s: Session, text: string, promptItems: ReturnType<typeof attachments.list>, paths: string[]): void {
+function restoreComposer(s: Session, text: string, promptItems: ReturnType<typeof attachments.list>, paths: { path: string; folder?: string }[]): void {
   restoreComposerDraft(s, text);
   if (promptItems.length) attachments.restore(s.id, promptItems);
   if (paths.length && s.id === state.sessionId) state.attachments = [...new Set([...paths, ...state.attachments])];
@@ -6003,13 +6104,13 @@ async function limitAction(action: string, element: HTMLElement): Promise<void> 
 }
 /** A project file's text as it is here. A task on another computer has no checkout here, so its
  * files are read from this computer's copy of the project, which the host cloned the same repo of. */
-async function projectFileText(s: Session, path: string): Promise<string> {
-  if (!s.remoteDevice) return call<string>('read_file', { ...workspaceContext(s), path });
+async function projectFileText(s: Session, path: string, folder?: string): Promise<string> {
+  if (!s.remoteDevice) return call<string>('read_file', folderArgs(workspaceContext(s), path, folder));
   try { return await call<string>('read_file', { projectId: s.projectId, path }); }
   catch { throw new Error(`${path} can’t be read on this computer, so it can’t go to ${s.remoteDevice.name}. Remove it, or paste the part you need.`); }
 }
-async function fileContext(s: Session, path: string): Promise<string> {
-  const content = await projectFileText(s, path);
+async function fileContext(s: Session, path: string, folder?: string): Promise<string> {
+  const content = await projectFileText(s, path, folder);
   return `\n\nFile context: ${path}\n\`\`\`\n${content.slice(0, 32768)}${content.length > 32768 ? '\n[Context truncated at 32 KiB]' : ''}\n\`\`\``;
 }
 /** `/wake` is handled here for every harness, so it works whether or not the CLI knows it. */
@@ -6208,7 +6309,7 @@ async function sendDraft(): Promise<void> {
   let browserItemsConsumed = false, moodboardItemsConsumed = false, promptItemsConsumed = false, sent: Message | undefined;
   const isCurrent = () => state.sessionId === s.id;
   try {
-    const contexts = await Promise.all(filePaths.map(path => fileContext(s, path)));
+    const contexts = await Promise.all(filePaths.map(item => fileContext(s, item.path, item.folder)));
     // Mentioned issues and pull requests travel with the message, so every harness can read them.
     const rawContent = text + contexts.join('') + browserContextText(browserItems) + attachments.contextFor(promptItems) + await github.contextFor(s.projectId, s.id, text) + await botTaskBrief(s) + tokenSaver.contextFor(s.id);
     const content = rawContent || (bot ? 'Please review the attached material.' : rawContent);
@@ -6865,18 +6966,33 @@ async function refreshInspectorIfStale(): Promise<void> {
 async function refreshInspector(): Promise<void> {
   void projectRunner.refresh();
   const request = ++inspectorRequest;
-  const p = project(); if (!p) { state.git = null; state.jj = null; state.files = []; state.gitError = ''; state.filesError = ''; state.inspectorLoading = false; renderInspector(); return; }
+  const p = project(); if (!p) { state.git = null; state.jj = null; state.files = []; state.taskFolders = []; state.folderRoots = new Map(); state.gitError = ''; state.filesError = ''; state.inspectorLoading = false; state.linkedPulls = []; state.selectedPull = ''; renderInspector(); return; }
   state.inspectorLoading = true; renderInspector();
   const id = p.id, folders = [...state.openFolders], context = workspaceContext(), key = workspaceKey();
-  const [results, children] = await Promise.all([
+  const [results, children, folderList, pulls] = await Promise.all([
     Promise.allSettled([call<GitStatus>('git_status', context), call<FileEntry[]>('list_files', { ...context, path: '' }), call<JjStatus>('jj_status', context)]),
-    Promise.allSettled(folders.map(path => call<FileEntry[]>('list_files', { ...context, path }))),
+    Promise.allSettled(folders.map(path => call<FileEntry[]>('list_files', folderArgs(context, path, folderScopes.get(path))))),
+    call<RepoFolderInfo[]>('workspace_folders', context).catch(() => [] as RepoFolderInfo[]),
+    // Every repository's linked pull request; feeds the PR tab's per-repo entries.
+    context.sessionId && githubEnabled() ? call<LinkedPull[]>('linked_pulls', { sessionId: context.sessionId }).catch(() => [] as LinkedPull[]) : Promise.resolve([] as LinkedPull[]),
   ]);
   if (request !== inspectorRequest || id !== state.projectId || key !== workspaceKey()) return;
+  state.linkedPulls = Array.isArray(pulls) ? pulls : [];
+  state.taskFolders = Array.isArray(folderList) ? folderList : [];
+  // A multi-folder task lists every folder's own root; single-folder tasks keep the one unqualified listing.
+  const extras = state.taskFolders.filter(folder => !folder.isPrimary);
+  if (extras.length) {
+    const roots = await Promise.allSettled(extras.map(folder => call<FileEntry[]>('list_files', { ...context, folder: folder.label, path: '' })));
+    if (request !== inspectorRequest || id !== state.projectId || key !== workspaceKey()) return;
+    state.folderRoots = new Map(extras.map((folder, index) => [folder.label, roots[index].status === 'fulfilled' ? qualifyFiles(roots[index].value, folder.label) : []]));
+  } else state.folderRoots = new Map();
   // Only folders still open take the new listing; a failed read keeps the last one rather than collapsing the folder.
+  state.files = results[1].status === 'fulfilled' ? results[1].value : [];
   children.forEach((result, index) => {
     const path = folders[index];
-    if (result.status === 'fulfilled' && state.openFolders.has(path)) state.folderFiles.set(path, result.value);
+    if (result.status !== 'fulfilled' || !state.openFolders.has(path)) return;
+    const folder = folderScopes.get(path) ?? splitFolderPath(path)?.folder;
+    state.folderFiles.set(path, folder ? qualifyFiles(result.value, folder) : result.value);
   });
   state.inspectorLoading = false;
   // An unchanged status keeps its object, so the Changes view does not refetch every loaded diff for nothing.
@@ -6886,7 +7002,6 @@ async function refreshInspector(): Promise<void> {
   // Also what the idle diff preload asks: a project with nothing changed never starts the engine at idle.
   noteChangedPaths(state.git?.files.map(file => file.path) ?? []);
   state.gitError = results[0].status === 'rejected' ? errorText(results[0].reason) || 'Git status could not be loaded.' : '';
-  state.files = results[1].status === 'fulfilled' ? results[1].value : [];
   state.jj = results[2].status === 'fulfilled' ? results[2].value : null;
   state.filesError = results[1].status === 'rejected' ? errorText(results[1].reason) || 'The folder could not be read.' : '';
   renderInspector(); renderHeader(); fileTabs.reload();
@@ -7124,7 +7239,7 @@ function closeInspectorTab(view: PanelView): void {
   if (wasSelected) document.querySelector<HTMLElement>(`.inspector-tab[data-view="${state.inspectorTab}"] .inspector-tab-button`)?.focus();
 }
 async function showInspectorViews(anchor: HTMLElement): Promise<void> {
-  const pullLinked = Boolean(githubEnabled() && session()?.pullRequest);
+  const pullLinked = Boolean(githubEnabled() && (session()?.pullRequest || state.linkedPulls.length));
   const views = closedViews(inspectorTabs, INSPECTOR_AVAILABLE.filter(view => view !== 'pull' || pullLinked));
   await showChoices(anchor, { title: 'Open view', width: 240, actions: true, items: views.map(view => ({ id: view, label: INSPECTOR_TITLES[view], icon: INSPECTOR_ICONS[view] })), onSelect: id => { closeChoiceMenu(); openInspectorView(id as InspectorView); } });
 }
@@ -7138,10 +7253,10 @@ function showChangesView(target: HTMLElement, key: string): void {
     target.replaceChildren(host);
     const context = workspaceContext();
     changesView = mountChangesView(host, {
-      loadDiff: (path, staged) => call<string>('git_diff', { ...context, path, staged }),
-      stage: (paths, staged) => stage(paths, staged),
-      commit: async message => { const result = await call<string>('git_commit', { ...context, message }); await refreshInspector(); notify(result || 'Changes committed'); },
-      openFile: path => { state.inspectorTab = 'files'; run(openFile(path, 'file')); },
+      loadDiff: (path, staged, folder) => call<string>('git_diff', { ...context, path, staged, ...(folder ? { folder } : {}) }),
+      stage: (paths, staged, folder) => stage(paths, staged, folder),
+      commit: async (message, folder) => { const result = await call<string>('git_commit', { ...context, message, ...(folder ? { folder } : {}) }); await refreshInspector(); notify(result || 'Changes committed'); },
+      openFile: (path, folder) => { state.inspectorTab = 'files'; run(openFile(path, 'file', false, { ...context, folder })); },
       refresh: () => run(refreshInspector()),
       notify, notifyError,
       choose: (anchor, title, items, onSelect) => void showChoices(anchor, { title, width: 260, actions: !items.some(item => item.selected !== undefined), items, onSelect: id => { closeChoiceMenu(); onSelect(id); } }),
@@ -7151,30 +7266,32 @@ function showChangesView(target: HTMLElement, key: string): void {
   }
   changesView.update(state.git, undefined);
 }
-/** Files tab rows, VS Code style: open folders list their children inline, indented by depth. */
-function fileTree(files: FileEntry[], depth: number): string {
+/** Files tab rows, VS Code style: open folders list their children inline, indented by depth. Each row carries `data-folder` (its listing's folder label), so clicks read through that folder without re-deriving it from the path string. */
+function fileTree(files: FileEntry[], depth: number, folder = ''): string {
   return files.map(file => {
-    const open = file.isDir && state.openFolders.has(file.path), path = escape(file.path);
-    const row = `<div class="file-row" data-id="file:${path}" style="--depth:${depth}"><button data-action="${file.isDir ? 'toggle-file-folder' : 'open-file'}" data-path="${path}"${file.isDir ? ` aria-expanded="${open}"` : ''}>${file.isDir ? icon('chevron', 'file-twisty') : '<span class="file-twisty"></span>'}${fileIcon(file.name, file.isDir)}<span>${escape(file.name)}</span></button>${!file.isDir && /\.svg$/i.test(file.path) ? button('view-source', 'View source of ' + file.name, 'file', 'file-attach', `data-path="${path}"`) : ''}${!file.isDir ? button('attach-file', 'Attach ' + file.name, 'plus', 'file-attach', `data-path="${path}"`) : ''}${button('file-menu', 'Actions for ' + file.name, 'more', 'file-attach', `data-path="${path}" data-directory="${file.isDir}" aria-haspopup="menu"`)}</div>`;
-    return row + (open ? fileTree(state.folderFiles.get(file.path) ?? [], depth + 1) : '');
+    const open = file.isDir && state.openFolders.has(file.path), path = escape(file.path), scope = folder ? ` data-folder="${escape(folder)}"` : '';
+    const row = `<div class="file-row" style="--depth:${depth}"><button data-action="${file.isDir ? 'toggle-file-folder' : isPreviewableFile(file.path) && !OPENS_IN_TAB.test(file.path) ? 'preview-file' : 'open-file'}" data-path="${path}"${scope}${file.isDir ? ` aria-expanded="${open}"` : ''}>${file.isDir ? icon('chevron', 'file-twisty') : '<span class="file-twisty"></span>'}${fileIcon(file.name, file.isDir)}<span>${escape(file.name)}</span></button>${!file.isDir && /\.(html?|svg)$/i.test(file.path) ? button('view-source', 'View source of ' + file.name, 'file', 'file-attach', `data-path="${path}"${scope}`) : ''}${!file.isDir ? button('attach-file', 'Attach ' + file.name, 'plus', 'file-attach', `data-path="${path}"${scope}`) : ''}${button('file-menu', 'Actions for ' + file.name, 'more', 'file-attach', `data-path="${path}" data-directory="${file.isDir}" aria-haspopup="menu"`)}</div>`;
+    return row + (open ? fileTree(state.folderFiles.get(file.path) ?? [], depth + 1, folder) : '');
   }).join('');
 }
-async function toggleFolder(path: string): Promise<void> {
+async function toggleFolder(path: string, folder?: string): Promise<void> {
   // The tree redraws from scratch, so keyboard focus returns to the folder row it was on.
   const render = () => {
     const focused = (document.activeElement as HTMLElement | null)?.dataset.path === path;
     renderInspector();
     if (focused) document.querySelector<HTMLElement>(`#inspector-content [data-action="toggle-file-folder"][data-path="${CSS.escape(path)}"]`)?.focus();
   };
-  if (state.openFolders.delete(path)) { state.folderFiles.delete(path); render(); return; }
-  state.openFolders.add(path); render();
+  if (state.openFolders.delete(path)) { state.folderFiles.delete(path); folderScopes.delete(path); render(); return; }
+  state.openFolders.add(path); folderScopes.set(path, folder ?? ''); render();
   const key = workspaceKey();
   try {
-    const files = await call<FileEntry[]>('list_files', { ...workspaceContext(), path });
-    if (key === workspaceKey() && state.openFolders.has(path)) state.folderFiles.set(path, files);
+    const files = await call<FileEntry[]>('list_files', folderArgs(workspaceContext(), path, folder));
+    if (key === workspaceKey() && state.openFolders.has(path)) {
+      state.folderFiles.set(path, folder ? qualifyFiles(files, folder) : files);
+    }
   } catch (error) {
     if (key !== workspaceKey()) return;
-    state.openFolders.delete(path); report(error);
+    state.openFolders.delete(path); folderScopes.delete(path); report(error);
   }
   render();
 }
@@ -7218,11 +7335,15 @@ function drawInspector(): void {
   $('#files-toggle').classList.toggle('active', filesOpen);
   $('#files-toggle').setAttribute('aria-pressed', String(filesOpen));
   $('#files-toggle').hidden = !project() || Boolean(state.sharedChannelId);
-  const pullTask = githubEnabled() && session()?.pullRequest ? session() : undefined;
+  const pullTask = githubEnabled() && (session()?.pullRequest || state.linkedPulls.length) ? session() : undefined;
   if (state.inspectorTab === 'pull' && !pullTask) { const shown = inspectorTabs.open.filter(view => view !== 'pull'); state.inspectorTab = shown.includes('changes') || !shown.length ? 'changes' : shown[0]; }
   renderInspectorTabs(Boolean(pullTask));
   const pullTab = $('.inspector-tabs').querySelector<HTMLButtonElement>('[data-action="tab-pull"]')!;
-  if (pullTask) { pullTab.title = `Pull request #${pullTask.pullRequest!.number}`; pullTab.setAttribute('aria-label', `Pull request #${pullTask.pullRequest!.number}`); }
+  if (pullTask) {
+    // A task whose only pull request lives in another repository has no primary link to number.
+    const label = pullTask.pullRequest ? `Pull request #${pullTask.pullRequest.number}` : 'Pull requests';
+    pullTab.title = label; pullTab.setAttribute('aria-label', label);
+  }
   const changeCount = state.git?.files.length ?? 0;
   $('.inspector-tabs [data-action="tab-changes"]').setAttribute('aria-label', changeCount ? `Changes, ${changeCount} changed ${changeCount === 1 ? 'file' : 'files'}` : 'Changes');
   $('#inspector-title').textContent = INSPECTOR_TITLES[state.inspectorTab];
@@ -7236,7 +7357,15 @@ function drawInspector(): void {
   syncDesignPanel();
   if (state.inspectorTab === 'browser' || state.inspectorTab === 'simulator' || state.inspectorTab === 'vm' || state.inspectorTab === 'design') { pullView.dispose(); return; }
   const target = $('#inspector-content');
-  if (state.inspectorTab === 'pull' && pullTask && visible) { pullView.show(target, pullTask); return; }
+  if (state.inspectorTab === 'pull' && pullTask && visible) {
+    const entries = pullEntries();
+    if (entries.length > 1) {
+      const selected = entries.some(entry => entry.repoKey === state.selectedPull) ? state.selectedPull : entries[0].repoKey;
+      state.selectedPull = selected;
+      pullView.show(target, pullTask, { entries, selected, onSelect: key => { state.selectedPull = key; renderInspector(); } });
+    } else pullView.show(target, pullTask);
+    return;
+  }
   pullView.dispose();
   if (state.inspectorTab === 'btw' && visible) { btwPanel.show(target); return; }
   btwPanel.dispose();
@@ -7272,7 +7401,12 @@ function drawInspector(): void {
   }
   if (state.inspectorTab === 'files') {
     // Morphed once the tree is up, so a folder's chevron survives to turn.
-    const tree = `<section class="file-explorer" aria-label="File explorer"><div class="file-folder-path"><span title="${escape(workspacePath())}">${escape(project()?.name)}</span><div class="file-explorer-tools">${button('new-workspace-file', 'New file', 'file')}${button('new-workspace-folder', 'New folder', 'folder')}${button('file-menu', 'File actions', 'more', '', 'data-path="" data-directory="true" aria-haspopup="menu"')}${state.openFolders.size ? button('collapse-folders', 'Collapse folders', 'minimize') : ''}</div></div><div class="file-list">${fileTree(state.files, 0) || '<div class="inspector-empty">This folder is empty.</div>'}</div></section>`;
+    const sections = state.taskFolders.length > 1 ? state.taskFolders.map(folder => {
+      const files = folder.isPrimary ? state.files : state.folderRoots.get(folder.label) ?? [];
+      return `<h3 class="file-folder-heading">${escape(folder.label)}</h3><div class="file-list">${fileTree(files, 0, folder.isPrimary ? '' : folder.label) || '<div class="inspector-empty">This folder is empty.</div>'}</div>`;
+    }).join('')
+      : `<div class="file-list">${fileTree(state.files, 0) || '<div class="inspector-empty">This folder is empty.</div>'}</div>`;
+    const tree = `<section class="file-explorer" aria-label="File explorer"><div class="file-folder-path"><span title="${escape(workspacePath())}">${escape(project()?.name)}</span><div class="file-explorer-tools">${button('new-workspace-file', 'New file', 'file')}${button('new-workspace-folder', 'New folder', 'folder')}${button('file-menu', 'File actions', 'more', '', 'data-path="" data-directory="true" aria-haspopup="menu"')}${state.openFolders.size ? button('collapse-folders', 'Collapse folders', 'minimize') : ''}</div></div>${sections}</section>`;
     if (target.querySelector(':scope>.file-explorer')) morph(target, tree, 6); else target.innerHTML = tree;
     return;
   }
@@ -7294,7 +7428,7 @@ async function openRunPreview(url: string, context: { projectId: string; session
   if (!current() || !browserPanel) return;
   await browserPanel.navigate(url);
 }
-async function previewFile(path: string, context = workspaceContext(), active?: () => Promise<void>, userInitiated = true): Promise<void> {
+async function previewFile(path: string, context: { projectId: string; sessionId?: string; folder?: string } = workspaceContext(), active?: () => Promise<void>, userInitiated = true): Promise<void> {
   if (!context.projectId) return;
   const request = ++fileRequest, generation = state.generation;
   const file = await call<{ url: string; path: string; name: string }>('prepare_file_preview', { ...context, path });
@@ -7308,9 +7442,11 @@ async function previewFile(path: string, context = workspaceContext(), active?: 
   if (!browserPanel) throw new Error('Browser could not be opened.');
   await browserPanel.navigate(file.url);
 }
-async function openFile(path: string, kind: 'file' | 'diff', staged = false, context = workspaceContext(), source = false, userInitiated = true): Promise<void> {
+async function openFile(path: string, kind: 'file' | 'diff', staged = false, context: { projectId: string; sessionId?: string; folder?: string } = workspaceContext(), source = false, userInitiated = true): Promise<void> {
   const p = project(); if (!p) return;
   if (kind === 'file') {
+    // A tagged entry (tree row, search row, changes entry) names its folder in the context; a stored `label/relative` string falls back to the primary-first split.
+    const split = context.folder ? { folder: context.folder, path: path.slice(context.folder.length + 1) } : splitFolderPath(path);
     if (context.sessionId && context.sessionId !== state.sessionId) await selectSession(context.sessionId);
     if (context.sessionId && context.sessionId !== state.sessionId) return;
     if (state.view !== 'conversation' && !state.boardPanel) setWorkspaceView('conversation');
@@ -7321,16 +7457,16 @@ async function openFile(path: string, kind: 'file' | 'diff', staged = false, con
   selectedFileContext = { ...context };
   state.selectedFile = path; state.selectedContent = content; state.selectedKind = kind; state.selectedStaged = staged; state.filePreviewLoading = false; inspectorSuppressed = false; state.inspector = userInitiated ? chooseInspector(true) : true; renderInspector();
 }
-function attachFile(path: string): void {
+function attachFile(path: string, folder?: string): void {
   if (!session()) { notify('Start a task before attaching files.'); return; }
-  if (state.attachments.includes(path)) { notify('File already attached.'); return; }
+  if (state.attachments.some(item => item.path === path)) { notify('File already attached.'); return; }
   if (state.attachments.length >= 5) { notify('Attach up to 5 files per message.'); return; }
-  state.attachments.push(path); renderComposer(); notify('Attached ' + path.split('/').pop());
+  state.attachments.push({ path, ...(folder ? { folder } : {}) }); renderComposer(); notify('Attached ' + path.split('/').pop());
 }
-async function stage(paths: string[], staged: boolean): Promise<void> {
+async function stage(paths: string[], staged: boolean, folder?: string): Promise<void> {
   if (!project() || !paths.length) return;
   const generation = state.generation;
-  await call('git_stage', { ...workspaceContext(), paths, staged });
+  await call('git_stage', { ...workspaceContext(), paths, staged, ...(folder ? { folder } : {}) });
   if (generation !== state.generation) return;
   state.selectedKind = ''; await refreshInspector();
 }
@@ -8204,7 +8340,7 @@ async function showSettings(section?: import('./settings').SettingsSection, inte
       providers: state.providers, defaultProvider: state.defaultProvider, defaultModel: defaultModelLabel(), activityExpanded: activityExpanded(),
       compact: document.body.classList.contains('compact'), wallpapers: wallpapers.preferences.enabled,
       theme: currentTheme(), preview, section, discover: discoverSettingsProviders, versionPending: providerVersionPending, listPending: providerListPending,
-      projects: { list: userProjects, remove: removeProject },
+      projects: { list: userProjects, remove: removeProject, notify, projectsChanged: async () => { state.projects = await call<Project[]>('list_projects'); renderNavigation(); } },
       turnChecks: turnChecksEnabled(),
       github: target => github.mountSettings(target, project()?.id ?? state.projects[0]?.id ?? ''),
       teams: { loadModels, call },
@@ -8741,7 +8877,7 @@ async function sendCloud(s: Session, target: CloudTarget, draft: string, text: s
   let accepted = false;
   configuringSessions.add(s.id);
   try {
-    const contexts = await Promise.all(filePaths.map(path => fileContext(s, path)));
+    const contexts = await Promise.all(filePaths.map(item => fileContext(s, item.path, item.folder)));
     const content = text + contexts.join('') + attachments.contextFor(promptItems) + await github.contextFor(s.projectId, s.id, text) + tokenSaver.contextFor(s.id);
     const started = await call<Session>('cloud_agent_start', {
       // The empty New task draft becomes the cloud task, so no stray draft is left behind.
@@ -8749,7 +8885,7 @@ async function sendCloud(s: Session, target: CloudTarget, draft: string, text: s
     });
     accepted = true;
     attachments.consume(s.id, promptItems);
-    state.attachments = state.attachments.filter(path => !filePaths.includes(path));
+    state.attachments = state.attachments.filter(item => !filePaths.includes(item));
     remoteChoice = LOCAL;
     await reloadSessions();
     state.query = ''; await selectSession(started.id, true);
@@ -8807,7 +8943,7 @@ async function sendRemote(s: Session, target: RemoteTarget, draft: string, text:
     const check = await call<RemoteRepoCheck>('remote_repo_check', { projectId: s.projectId });
     if (!check.repo) throw new Error(`${project()?.name ?? 'This project'} has no GitHub remote, so it can’t run on another computer.`);
     if (behindText(check) && !await confirmBehind(target.name, check)) return;
-    const contexts = await Promise.all(filePaths.map(path => fileContext(s, path)));
+    const contexts = await Promise.all(filePaths.map(item => fileContext(s, item.path, item.folder)));
     const content = text + contexts.join('') + browserContextText(browserItems) + attachments.contextFor(promptItems) + await github.contextFor(s.projectId, s.id, text) + tokenSaver.contextFor(s.id);
     remoteChecks.delete(s.id);
     // Shown at once, like send(): the prompt, and a turn below it that reports the start's
@@ -8859,7 +8995,7 @@ async function sendRemote(s: Session, target: RemoteTarget, draft: string, text:
     attachments.consume(s.id, promptItems);
     const sentIds = new Set(browserItems.map(item => item.id)), remaining = (state.browserAttachments.get(s.id) ?? []).filter(item => !sentIds.has(item.id));
     if (remaining.length) state.browserAttachments.set(s.id, remaining); else state.browserAttachments.delete(s.id);
-    state.attachments = state.attachments.filter(path => !filePaths.includes(path));
+    state.attachments = state.attachments.filter(item => !filePaths.includes(item));
     await reloadSessions();
     state.query = ''; await selectSession(sessionId, true);
     // A busy or dirty checkout on the host gave way to a worktree: say so once, under the prompt.
@@ -9388,19 +9524,19 @@ async function action(name: string, element: HTMLElement): Promise<void> {
     case 'locate-project-folder': await locateProjectFolder(); break;
     case 'file-menu': fileExplorer.menu(element, workspaceContext(), element.dataset.path!, element.dataset.directory === 'true'); break;
     case 'new-workspace-file': case 'new-workspace-folder': fileExplorer.edit(workspaceContext(), name === 'new-workspace-file' ? 'new-file' : 'new-folder', '', true); break;
-    case 'toggle-file-folder': await toggleFolder(element.dataset.path!); break;
-    case 'collapse-folders': state.openFolders = new Set(); state.folderFiles = new Map(); renderInspector(); document.querySelector<HTMLElement>('#inspector-content .file-row button')?.focus(); break;
+    case 'toggle-file-folder': await toggleFolder(element.dataset.path!, element.dataset.folder || undefined); break;
+    case 'collapse-folders': state.openFolders = new Set(); state.folderFiles = new Map(); folderScopes.clear(); state.folderRoots = new Map(); renderInspector(); document.querySelector<HTMLElement>('#inspector-content .file-row button')?.focus(); break;
     case 'run-project': if (!element.dataset.sessionId || element.dataset.sessionId === state.sessionId) await projectRunner.run(); break;
-    case 'preview-file': await previewFile(element.dataset.path!); break;
+    case 'preview-file': await previewFile(element.dataset.path!, { ...workspaceContext(), folder: element.dataset.folder || undefined }); break;
     case 'preview-selected-file': await previewFile(state.selectedFile, selectedFileContext); break;
-    case 'open-file': await openFile(element.dataset.path!, 'file'); break;
+    case 'open-file': await openFile(element.dataset.path!, 'file', false, { ...workspaceContext(), folder: element.dataset.folder || undefined }); break;
     case 'open-message-attachment': await openMessageAttachment(element); break;
-    case 'view-source': await openFile(element.dataset.path!, 'file', false, workspaceContext(), true); break;
+    case 'view-source': await openFile(element.dataset.path!, 'file', false, { ...workspaceContext(), folder: element.dataset.folder || undefined }, true); break;
     case 'open-diff': await openFile(element.dataset.path!, 'diff', element.dataset.staged === 'true'); break;
     case 'back-inspector': state.selectedKind = ''; renderInspector(); break;
     case 'attach': await attachments.openMenu(element); break;
-    case 'attach-file': attachFile(element.dataset.path!); break;
-    case 'detach': state.attachments = state.attachments.filter(p => p !== element.dataset.path); renderComposer(); break;
+    case 'attach-file': attachFile(element.dataset.path!, element.dataset.folder || undefined); break;
+    case 'detach': state.attachments = state.attachments.filter(item => item.path !== element.dataset.path); renderComposer(); break;
     case 'detach-prompt': attachments.remove(state.sessionId, element.dataset.id!); break;
     case 'edit-sketch': { const image = attachments.find(state.sessionId, element.dataset.id!); if (image?.kind === 'image') await openSketch(state.sessionId, image); break; }
     case 'detach-browser': state.browserAttachments.set(state.sessionId, (state.browserAttachments.get(state.sessionId) ?? []).filter(a => a.id !== element.dataset.id)); renderBrowserAttachments(); break;

@@ -106,7 +106,12 @@ impl ReleasedReader {
 }
 
 fn assert_release_reads(fixture: &TestDatabase, prompt_count: u64) {
-    let reader = ReleasedReader::open_read_only(&fixture.path()).unwrap();
+    // The versioned folder migration is intentionally refused by the released reader.
+    assert!(ReleasedReader::open_read_only(&fixture.path()).err().unwrap().contains("differs from expected 37"));
+    // Still exercise the released queries against the migrated rows without changing its version.
+    let reader = ReleasedReader { db: Connection::open_with_flags(
+        fixture.path(), rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    ).unwrap() };
     assert_eq!(reader.prompt_activity(0).unwrap(), [(0, "codex".to_owned(), prompt_count)]);
     assert!(reader.prompt_activity(313).unwrap().is_empty());
 
@@ -119,7 +124,7 @@ fn assert_release_reads(fixture: &TestDatabase, prompt_count: u64) {
 }
 
 #[test]
-fn rollback_to_0_3_151_and_reupgrade_preserves_all_data() {
+fn released_sql_and_reupgrade_preserve_all_data_after_versioned_migration() {
     let (fixture, db) = TestDatabase::v37();
     batch(&db, CORE_ROWS);
     let project_path = fixture.0.join("project");
@@ -138,7 +143,7 @@ fn rollback_to_0_3_151_and_reupgrade_preserves_all_data() {
 
     let old = Connection::open(fixture.path()).unwrap();
     batch(&old, "PRAGMA foreign_keys=ON");
-    assert_eq!(version(&old), 37, "v0.3.151 requires schema 37 for read-only lookups");
+    assert_eq!(version(&old), SCHEMA_VERSION, "released SQL must not relabel the migrated schema");
     install_legacy_team_status(&old);
     let saved_status = "SELECT status FROM architect_team_status WHERE session_id='lead'";
     assert_eq!(scalar::<String>(&old, saved_status), "idle");
@@ -341,10 +346,10 @@ fn json5_running_snapshots_are_tracked_and_recovered() {
 #[test]
 fn read_only_store_accepts_supported_and_future_versions() {
     let (fixture, db) = TestDatabase::v37();
-    for schema in [36, 37, 38] {
+    for schema in [37, SCHEMA_VERSION, SCHEMA_VERSION + 1] {
         db.pragma_update(None, "user_version", schema).unwrap();
         let current = Store::open_read_only(&fixture.path());
-        if schema < 37 {
+        if schema < SCHEMA_VERSION {
             assert!(current.err().unwrap().contains("open PandaCode to migrate"));
         } else {
             let reader = current.unwrap();

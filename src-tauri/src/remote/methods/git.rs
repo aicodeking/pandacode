@@ -364,7 +364,7 @@ impl Run for Stage {
                 return Ok(json!({"count": count, "skipped": skipped}));
             };
             let count = paths.len();
-            crate::stage_files(&ctx.state(), &task.project_id, Some(&self.session_id), paths, !self.unstage, trust_of(&ctx)).await?;
+            crate::stage_files(&ctx.state(), &task.project_id, Some(&self.session_id), paths, !self.unstage, None, trust_of(&ctx)).await?;
             Ok(json!({"count": count}))
         })
     }
@@ -587,7 +587,7 @@ impl Run for SwitchBranch {
             refuse_running_here(&ctx, &root).await?;
             // A checkout runs the repository's smudge filters.
             refuse_config_programs(&ctx, &self.session_id, "switch branches").await?;
-            let list = crate::switch_branch(&ctx.state(), &task.project_id, Some(&self.session_id), self.branch, trust_of(&ctx)).await?;
+            let list = crate::switch_branch(&ctx.state(), &task.project_id, Some(&self.session_id), self.branch, None, trust_of(&ctx)).await?;
             changed(&ctx);
             branches_reply(list, task.worktree_path.is_some(), false)
         })
@@ -855,7 +855,7 @@ async fn open_pull(ctx: Ctx<'_>, this: PullCreate) -> Result<Value> {
     let store = ctx.state().store.clone();
     let session_id = this.session_id;
     let saved = link.clone();
-    crate::blocking(move || store.lock().map_err(|e| e.to_string())?.set_task_link(&session_id, "pull", Some(&saved)).map(|_| ())).await?;
+    crate::blocking(move || store.lock().map_err(|e| e.to_string())?.set_task_link(&session_id, "pull", "", Some(&saved)).map(|_| ())).await?;
     changed(&ctx);
     Ok(json!({"pull": link_json(&link), "note": null}))
 }
