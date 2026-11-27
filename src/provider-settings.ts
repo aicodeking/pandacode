@@ -1,6 +1,6 @@
 import './provider-settings.css';
 import { call, nativeDesktop, preview } from './bridge';
-import { escape, icon } from './dom';
+import { escape, icon, isImeKey } from './dom';
 import { providerLogo } from './provider-logos';
 import { infoMark } from './tooltip';
 import type { ConnectionSnapshot } from './connections';
@@ -12,13 +12,19 @@ interface ClaudeStatus { mode: ClaudeMode; source: string; environmentVariables:
 const howProvidersWork = 'Each sign-in, key or plan here is used only by the agent it belongs to — the global environment variables are the one thing every harness gets. GLM Coding Plan, MiMo Token Plan and Alibaba Token Plan run through your installed Claude Code, and you pick them in the model selector. Named connections are extra setups of one agent. PandaCode needs no provider of its own: titles come from the agent running the task, project checks run your own test command, and Jev uses its own keys. Codex, when installed, also lists integrations and imports Codex conversations.';
 const claudeHelp = 'Use current environment preserves your existing Claude setup. Prefer saved Claude login removes inherited API credentials, endpoints, and model routing overrides from new Claude processes in PandaCode. Claude settings, credential helpers, profiles, and organization policies can still affect authentication. Check /status in Claude to confirm.';
 const refreshHelp = 'On by default. When PandaCode can’t read Claude usage — an expired login, a login it can’t read, a network error, or a rate limit once the server’s wait is over — it runs your own Claude Code at most once every 15 minutes (claude -p /usage, a local command: no model call, nothing billed). This lets Claude Code refresh and save its own login if it needs to, as when you open it, and PandaCode shows the usage it prints. PandaCode never writes Claude Code credentials. Off: an expired login shows the last saved usage until you open Claude Code.';
-const globalEnvHelp = 'These variables are added to every agent harness PandaCode starts — for example HTTP_PROXY, HTTPS_PROXY and NO_PROXY behind a proxy. Each provider can leave the global set out in its own card, and provider sign-in and endpoint settings always win. Values are saved on this computer and never shown again.';
-const envHelp = 'These variables are added whenever PandaCode starts this harness — for example HTTP_PROXY, HTTPS_PROXY and NO_PROXY behind a proxy. Provider sign-in and endpoint settings always win, and a named connection adds its own environment on top. Values are saved on this computer and never shown again.';
+const globalEnvHelp = 'These variables are added to every agent harness PandaCode starts — for example HTTP_PROXY, HTTPS_PROXY and NO_PROXY behind a proxy. Each provider can leave the global set out in its own card, and provider sign-in and endpoint settings always win. Values are saved on this computer: plain values are shown here and can be replaced, and secrets are kept in secure storage and never shown again.';
+const envHelp = 'These variables are added whenever PandaCode starts this harness — for example HTTP_PROXY, HTTPS_PROXY and NO_PROXY behind a proxy. Provider sign-in and endpoint settings always win, and a named connection adds its own environment on top; values are saved on this computer, where plain values are shown and can be replaced, while secrets are kept in secure storage and never shown again.';
+/** Shown on the Secret tickbox when the platform has no secure store (the browser preview, or a build without one). */
+const secretUnavailable = 'Secrets need the desktop app’s secure storage. Plain variables still work here.';
+
+/** One saved environment variable. A plain variable carries `value`; a secret one has no `value` at all. */
+interface EnvEntry { name: string; secret: boolean; value?: string }
+
 
 interface Configuration {
   executablePaths: Record<string, string>;
-  globalEnvironment?: string[];
-  environment?: Record<string, string[]>;
+  globalEnvironment?: EnvEntry[];
+  environment?: Record<string, EnvEntry[]>;
   useGlobalEnvironment?: Record<string, boolean>;
   providers?: [string, string][];
   glmKeySaved: boolean;
@@ -53,7 +59,14 @@ type KeyedProvider = keyof typeof keyed;
 /** The saved-variable list and add form for one provider, or `*` for the global set. */
 function envEditor(key: string): string {
   return `<div class="connection-env-list" data-env-list="${key}"></div>
-    <form data-env-provider="${key}"><div class="connection-input-row"><input class="connection-env-name" aria-label="Variable name" placeholder="NAME" maxlength="128" autocomplete="off" spellcheck="false"><input class="connection-env-value" aria-label="Variable value" placeholder="value" maxlength="4096" autocomplete="off" spellcheck="false"><button class="secondary-button" type="submit">Add</button></div></form>`;
+    <form data-env-provider="${key}"><div class="connection-input-row"><input class="connection-env-name" aria-label="Variable name" placeholder="NAME" maxlength="128" autocomplete="off" spellcheck="false"><input class="connection-env-value" aria-label="Variable value" placeholder="value" maxlength="4096" autocomplete="off" spellcheck="false"><label class="connection-secret"><input type="checkbox" data-env-secret> Secret</label><button class="secondary-button" type="submit">Add</button></div></form>`;
+}
+
+/** A saved variable's value area: its plain value, or a mask for a secret. Never the real secret. */
+function envValueArea(entry: EnvEntry): string {
+  return entry.secret
+    ? '<span class="connection-env-masked" title="Hidden value"><span aria-hidden="true">••••••••</span><span class="sr-only">Hidden value</span></span>'
+    : `<code class="connection-env-value">${escape(entry.value ?? '')}</code>`;
 }
 
 /** Per-provider collapsed environment section with the global-set toggle. */
@@ -146,6 +159,9 @@ export function mountProviderSettings(host: HTMLElement, saved: () => Promise<un
   const claudeSource = host.querySelector<HTMLElement>('.claude-auth-source')!;
   const claudeCheck = host.querySelector<HTMLButtonElement>('[data-check-claude]')!;
   let claudeEdited = false, claudeRevision = 0;
+  let latest: Configuration | null = null;
+  let replacingEnv: { key: string; name: string; draft: string } | null = null;
+  let focusEnv: { key: string; name: string; edit: boolean } | null = null;
   async function checkClaude(): Promise<void> {
     const ticket = ++claudeRevision;
     claudeSource.textContent = 'Checking Claude login…'; claudeCheck.disabled = true;
@@ -201,19 +217,48 @@ export function mountProviderSettings(host: HTMLElement, saved: () => Promise<un
     }
     const globals = config.globalEnvironment?.length ?? 0;
     cardState(host.querySelector('#global-environment summary')!, globals ? `${globals} variable${globals === 1 ? '' : 's'}` : 'None');
-    const envNames = (key: string) => key === '*' ? config.globalEnvironment ?? [] : config.environment?.[key] ?? [];
+    const envEntries = (key: string): EnvEntry[] => key === '*' ? config.globalEnvironment ?? [] : config.environment?.[key] ?? [];
+    const edit = replacingEnv;
     for (const list of host.querySelectorAll<HTMLElement>('[data-env-list]')) {
       const key = list.dataset.envList!;
-      list.replaceChildren(...envNames(key).map(name => {
+      list.replaceChildren(...envEntries(key).map(entry => {
         const row = document.createElement('span');
         row.className = 'connection-env-var';
-        row.innerHTML = `<code>${escape(name)}</code><button type="button" class="secondary-button" data-remove-env="${key}" data-env-name="${escape(name)}" aria-label="Remove ${escape(name)}">Remove</button>`;
+        row.dataset.envRowName = entry.name;
+        // Replace opens an empty input; the old value is never pre-filled, plain or secret. Only a
+        // draft typed into an already-open input (before a re-render) is carried across.
+        const editing = edit?.key === key && edit.name === entry.name;
+        const valueArea = editing
+          ? `<span class="connection-env-replace"><input type="${entry.secret ? 'password' : 'text'}" aria-label="New value for ${escape(entry.name)}" placeholder="New value" maxlength="4096" autocomplete="off" spellcheck="false" value="${escape(edit.draft)}"><button type="button" class="secondary-button" data-save-env="${key}" data-env-name="${escape(entry.name)}" data-env-row-secret="${entry.secret ? 'true' : 'false'}">Save</button><button type="button" class="secondary-button" data-cancel-env>Cancel</button></span>`
+          : `${envValueArea(entry)}<button type="button" class="secondary-button" data-replace-env="${key}" data-env-name="${escape(entry.name)}" aria-label="Replace ${escape(entry.name)}">Replace</button>`;
+        row.innerHTML = `<code>${escape(entry.name)}</code>${valueArea}<button type="button" class="secondary-button" data-remove-env="${key}" data-env-name="${escape(entry.name)}" aria-label="Remove ${escape(entry.name)}">Remove</button>`;
         return row;
       }));
+    }
+    // Focus lands inside the row the change came from: its input when Replace opens, else its Replace button.
+    const target = focusEnv;
+    focusEnv = null;
+    if (target) {
+      const rows = host.querySelectorAll<HTMLElement>(`[data-env-list="${CSS.escape(target.key)}"] .connection-env-var`);
+      const row = [...rows].find(candidate => candidate.dataset.envRowName === target.name);
+      (target.edit ? row?.querySelector<HTMLInputElement>('.connection-env-replace input') : row?.querySelector<HTMLButtonElement>('[data-replace-env]'))?.focus();
+    }
+    // Secrets need a secure store: without one the tickbox is off and explained, and plain still works.
+    for (const box of host.querySelectorAll<HTMLInputElement>('input[type=checkbox][data-env-secret]')) {
+      box.disabled = !config.secureStorageAvailable;
+      const label = box.closest<HTMLElement>('.connection-secret');
+      if (!config.secureStorageAvailable) label?.setAttribute('title', secretUnavailable);
+      else label?.removeAttribute('title');
+      if (!config.secureStorageAvailable && box.checked) {
+        box.checked = false;
+        const value = box.closest('form')?.querySelector<HTMLInputElement>('.connection-env-value');
+        if (value) value.type = 'text';
+      }
     }
     for (const toggle of host.querySelectorAll<HTMLInputElement>('[data-use-global]')) {
       toggle.checked = config.useGlobalEnvironment?.[toggle.dataset.useGlobal!] ?? true;
     }
+    latest = config;
     for (const provider of Object.keys(keyed) as KeyedProvider[]) {
       const spec = keyed[provider];
       const status = host.querySelector(`#${provider}-key-status`)!;
@@ -269,14 +314,20 @@ export function mountProviderSettings(host: HTMLElement, saved: () => Promise<un
     if (envKey !== undefined) {
       const name = form.querySelector<HTMLInputElement>('.connection-env-name')!;
       const value = form.querySelector<HTMLInputElement>('.connection-env-value')!;
+      const secretBox = form.querySelector<HTMLInputElement>('input[type=checkbox][data-env-secret]')!;
       const variable = name.value.trim();
       if (!variable) { name.focus(); return; }
-      const saved = () => { name.value = ''; value.value = ''; name.focus(); };
+      // A platform without a secure store cannot take a secret; the tickbox is disabled there too.
+      const secret = secretBox.checked && (latest?.secureStorageAvailable ?? false);
+      const reset = () => {
+        name.value = ''; value.value = ''; name.focus();
+        secretBox.checked = false; value.type = 'text';
+      };
       const operation = envKey === '*'
-        ? () => call<Configuration>('provider_set_global_environment_variable', { name: variable, value: value.value })
-        : () => call<Configuration>('provider_set_environment_variable', { provider: envKey, name: variable, value: value.value });
+        ? () => call<Configuration>('provider_set_global_environment_variable', { name: variable, value: value.value, secret })
+        : () => call<Configuration>('provider_set_environment_variable', { provider: envKey, name: variable, value: value.value, secret });
       // The entered variable survives a refused save (validation, storage budget).
-      void perform(operation, envKey === '*' ? 'Global environment variable saved.' : 'Environment variable saved.').then(ok => { if (ok) saved(); });
+      void perform(operation, envKey === '*' ? 'Global environment variable saved.' : 'Environment variable saved.').then(ok => { if (ok) reset(); });
       return;
     }
     const keyedProvider = form.dataset.keyProvider as KeyedProvider | undefined;
@@ -293,13 +344,59 @@ export function mountProviderSettings(host: HTMLElement, saved: () => Promise<un
     }
   };
   const click = async (event: MouseEvent) => {
-    const target = (event.target as HTMLElement).closest<HTMLElement>('button'); if (!target) return;
+    const target = (event.target as HTMLElement).closest<HTMLButtonElement>('button'); if (!target) return;
     if (target.hasAttribute('data-check-claude')) { void checkClaude(); return; }
+    const replacing = target.dataset.replaceEnv;
+    if (replacing !== undefined && target.dataset.envName) {
+      // Replace never reveals the saved value: it opens an empty input, plain or secret.
+      replacingEnv = { key: replacing, name: target.dataset.envName, draft: '' };
+      focusEnv = { key: replacing, name: target.dataset.envName, edit: true };
+      if (latest) render(latest);
+      return;
+    }
+    if (target.hasAttribute('data-cancel-env')) {
+      // Cancel puts the saved row back and returns focus to its Replace button.
+      const row = target.closest<HTMLElement>('[data-env-row-name]');
+      const key = target.closest<HTMLElement>('[data-env-list]')?.dataset.envList;
+      if (key && row?.dataset.envRowName) focusEnv = { key, name: row.dataset.envRowName, edit: false };
+      replacingEnv = null;
+      if (latest) render(latest);
+      return;
+    }
+    const savingEnv = target.dataset.saveEnv;
+    if (savingEnv !== undefined && target.dataset.envName) {
+      const row = target.closest<HTMLElement>('.connection-env-var');
+      const input = row?.querySelector<HTMLInputElement>('.connection-env-replace input');
+      const name = target.dataset.envName;
+      // A row keeps the secret flag it was saved with, so replacing a secret stays a secret.
+      const secret = target.dataset.envRowSecret === 'true';
+      const value = input?.value ?? '';
+      if (!value) { input?.focus(); return; }
+      if (pending) return;
+      const operation = savingEnv === '*'
+        ? () => call<Configuration>('provider_set_global_environment_variable', { name, value, secret })
+        : () => call<Configuration>('provider_set_environment_variable', { provider: savingEnv, name, value, secret });
+      // Close the inline input before the save, so a successful render shows the saved row; a refused
+      // save reopens it with the typed value. Focus goes back to the row once perform() is done.
+      replacingEnv = null;
+      const focusRow = (edit: boolean) => {
+        const rows = host.querySelectorAll<HTMLElement>(`[data-env-list="${CSS.escape(savingEnv)}"] .connection-env-var`);
+        const match = [...rows].find(candidate => candidate.dataset.envRowName === name);
+        (edit ? match?.querySelector<HTMLInputElement>('.connection-env-replace input') : match?.querySelector<HTMLButtonElement>('[data-replace-env]'))?.focus();
+      };
+      void perform(operation, 'Environment variable replaced.').then(ok => {
+        if (disposed) return;
+        if (!ok) { replacingEnv = { key: savingEnv, name, draft: value }; if (latest) render(latest); }
+        focusRow(!ok);
+      });
+      return;
+    }
     const removingEnv = target.dataset.removeEnv;
     // Only the provider env lists use valued data-remove-env buttons; the named
     // connection editor's row Remove carries no value and must not match.
     if (removingEnv !== undefined && target.dataset.envName && target.closest('[data-env-list]')) {
       const name = target.dataset.envName!;
+      if (replacingEnv?.key === removingEnv && replacingEnv.name === name) replacingEnv = null;
       const operation = removingEnv === '*'
         ? () => call<Configuration>('provider_remove_global_environment_variable', { name })
         : () => call<Configuration>('provider_remove_environment_variable', { provider: removingEnv, name });
@@ -328,10 +425,32 @@ export function mountProviderSettings(host: HTMLElement, saved: () => Promise<un
   };
   const input = (event: Event) => {
     const target = event.target;
-    if (target instanceof HTMLInputElement && target.dataset.executable) editedPaths.add(target);
+    if (!(target instanceof HTMLInputElement)) return;
+    if (target.dataset.executable) editedPaths.add(target);
+    // Track what has been typed into an open Replace, so a re-render keeps it and a failed save restores it.
+    if (replacingEnv && target.closest('.connection-env-replace')) replacingEnv = { ...replacingEnv, draft: target.value };
+  };
+  const keydown = (event: KeyboardEvent) => {
+    if (isImeKey(event)) return;
+    const target = event.target;
+    if (!(target instanceof HTMLInputElement) || !target.closest('.connection-env-replace')) return;
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      target.closest<HTMLElement>('.connection-env-replace')?.querySelector<HTMLButtonElement>('[data-save-env]')?.click();
+    } else if (event.key === 'Escape') {
+      event.preventDefault();
+      target.closest<HTMLElement>('.connection-env-replace')?.querySelector<HTMLButtonElement>('[data-cancel-env]')?.click();
+    }
   };
   const change = (event: Event) => {
     const target = event.target as HTMLElement;
+    // A saving secret is typed into a password field so it is not shoulder-surfed, mirroring connections.
+    if (target instanceof HTMLInputElement && target.matches('input[type=checkbox][data-env-secret]')) {
+      const form = target.closest('form');
+      const value = form?.querySelector<HTMLInputElement>('.connection-env-value');
+      if (value) value.type = target.checked ? 'password' : 'text';
+      return;
+    }
     if (target instanceof HTMLInputElement && target.matches('[data-use-global]')) {
       if (pending) { target.checked = !target.checked; return; }
       const provider = target.dataset.useGlobal!;
@@ -370,11 +489,11 @@ export function mountProviderSettings(host: HTMLElement, saved: () => Promise<un
     const chosen = endpoint.value;
     void perform(() => call('provider_set_mimo_endpoint', { endpoint: chosen }), 'MiMo endpoint saved.').finally(() => { endpointEdited = false; });
   };
-  host.addEventListener('submit', submit); host.addEventListener('click', click); host.addEventListener('input', input); host.addEventListener('change', change);
+  host.addEventListener('submit', submit); host.addEventListener('click', click); host.addEventListener('input', input); host.addEventListener('keydown', keydown); host.addEventListener('change', change);
   void call<Configuration>('provider_configuration').then(config => { if (!disposed && configurationRevision === 0) render(config); }).catch(error => { if (!disposed && configurationRevision === 0) message(errorText(error), true); });
   void checkClaude();
   if (named) void import('./connections').then(({ mountConnections }) => { if (!disposed) unmountNamed = mountConnections(host.querySelector<HTMLElement>('#named-connections')!, named.harnesses, named.saved); });
-  return () => { disposed = true; unmountNamed?.(); for (const input of keyInputs) input.value = ''; editedPaths.clear(); host.removeEventListener('submit', submit); host.removeEventListener('click', click); host.removeEventListener('input', input); host.removeEventListener('change', change); };
+  return () => { disposed = true; unmountNamed?.(); for (const input of keyInputs) input.value = ''; editedPaths.clear(); host.removeEventListener('submit', submit); host.removeEventListener('click', click); host.removeEventListener('input', input); host.removeEventListener('keydown', keydown); host.removeEventListener('change', change); };
 }
 
 function pathForm(provider: string, label: string, placeholder: string): string {

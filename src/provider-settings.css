@@ -32,12 +32,12 @@
 .connection-path,.connection-env{margin:0 calc(var(--ds-card-pad) - var(--ds-row-pad-x))}
 .connection-card>:is(a,.connection-links)+:is(.connection-path,.connection-env),.connection-card>p+:is(.connection-path,.connection-env){margin-top:6px}
 .connection-env summary,.connection-path summary{display:flex;align-items:center;justify-content:space-between;min-height:36px;padding:0 calc(var(--ds-row-pad-x) - var(--ds-card-pad));border-radius:var(--ds-control-radius);list-style:none;font-size:var(--type-meta);color:var(--muted);cursor:pointer;transition:background-color var(--ds-ease-out) ease-out,color var(--ds-ease-out) ease-out}
-.connection-env summary:hover,.connection-path summary:hover{background:var(--ds-row-hover);color:var(--text);transition-duration:var(--ds-ease-in)}
+.connection-env summary:hover,.connection-path summary:hover:hover{background:var(--ds-row-hover);color:var(--text);transition-duration:var(--ds-ease-in)}
 .connection-env[open],.connection-path[open]{padding-bottom:8px}
-.connection-env[open]>:not(summary),.connection-path[open]>:not(summary){margin-left:calc(var(--ds-row-pad-x) - var(--ds-card-pad));margin-right:calc(var(--ds-row-pad-x) - var(--ds-card-pad))}
-.connection-env summary::-webkit-details-marker,.connection-path summary::-webkit-details-marker{display:none}
-.connection-env summary>.icon,.connection-path summary>.icon{width:var(--icon-sm);height:var(--icon-sm);transition:rotate var(--ds-ease-out) ease-out}
-.connection-env[open] summary>.icon,.connection-path[open] summary>.icon{rotate:90deg}
+.connection-env[open]>:not(summary),.connection-path[open]>:not(summary)>:not(summary){margin-left:calc(var(--ds-row-pad-x) - var(--ds-card-pad));margin-right:calc(var(--ds-row-pad-x) - var(--ds-card-pad))}
+.connection-env summary::-webkit-details-marker,.connection-path summary::-webkit-details-marker::-webkit-details-marker{display:none}
+.connection-env summary>.icon,.connection-path summary>.icon>.icon{width:var(--icon-sm);height:var(--icon-sm);transition:rotate var(--ds-ease-out) ease-out}
+.connection-env[open] summary>.icon,.connection-path[open] summary>.icon summary>.icon{rotate:90deg}
 .connection-env small{display:block;font-size:var(--type-meta);color:var(--muted);margin-top:4px;line-height:var(--type-meta-leading)}
 .connection-card .connection-env-global,.connection-card .connection-secret{display:flex;align-items:center;gap:8px;margin:0;font-size:var(--type-meta);font-weight:var(--type-meta-weight);line-height:var(--type-meta-leading);color:var(--muted)}
 .connection-card .connection-env-global{margin:8px 0 4px}
@@ -45,8 +45,17 @@
 .connection-env-global input[type=checkbox],.connection-secret input[type=checkbox]{flex:none;width:auto;height:auto;min-height:0;padding:0}
 .connection-env-list{display:flex;flex-direction:column;gap:.35rem;margin:.6rem 0}
 .connection-env-list:empty{display:none}
-.connection-env-var{display:flex;align-items:center;justify-content:space-between;gap:8px;min-height:36px;font-size:var(--type-meta);padding:0 6px 0 12px;border-radius:var(--ds-control-radius);background:var(--ds-card-inset)}
+.connection-env-var{display:flex;align-items:center;gap:8px;min-height:36px;font-size:var(--type-meta);padding:0 6px 0 12px;border-radius:var(--ds-control-radius);background:var(--ds-card-inset)}
+.connection-env-var>code:first-child{flex:none}
 .connection-env-var code{font-family:var(--mono);font-size:var(--code-inline-size);line-height:inherit;overflow-wrap:anywhere}
+/* A saved plain value is visible and wraps rather than being clipped; a secret shows a fixed mask. */
+.connection-env-var .connection-env-value{flex:1;min-width:0;color:var(--muted)}
+.connection-env-var .connection-env-masked{flex:none;font-family:var(--mono);font-size:var(--type-meta);line-height:var(--type-meta-leading);color:var(--muted);white-space:nowrap}
+/* The inline Replace input and its Save/Cancel keep the row's height and push the actions right. */
+.connection-env-var .connection-env-replace{display:flex;align-items:center;gap:6px;flex:1;min-width:0}
+.connection-env-var .connection-env-replace input{flex:1;min-width:0;height:var(--control);font-size:var(--type-meta);line-height:var(--type-meta-leading);padding:0 8px;border:0;border-radius:var(--ds-control-radius);background:var(--ds-card);color:var(--text)}
+.connection-env-var>[data-replace-env],.connection-env-var>.connection-env-replace{margin-left:auto}
+.connection-env-var>button{flex:none}
 .connection-env-var button,html[data-theme] .connection-env-var button{font-size:var(--type-body);min-height:26px;padding:0 8px;border-radius:var(--radius-chip)}
 /* An environment row is a stepped control (6px); its inset action keeps a smaller corner (b). */
 html[data-theme] .provider-connections-dialog .connection-card .connection-env-var button{border-radius:var(--radius-hair)}
@@ -60,7 +69,7 @@ html[data-theme] .provider-connections-dialog .connection-card .connection-env-v
 #claude-connection .claude-auth-endpoint{font-family:var(--mono);font-size:var(--type-caption);line-height:var(--type-caption-leading);overflow-wrap:anywhere}
 #claude-connection .claude-auth-conflict{color:var(--ds-warn)}
 @media(max-width:500px){.connection-card{padding:calc(var(--connection-head) + 8px) 14px 12px}.connection-input-row{flex-wrap:wrap}.connection-input-row input:not([type=checkbox]){flex-basis:100%}.connection-key-status{align-items:flex-start;flex-direction:column}.connection-card h3{flex-wrap:wrap}}
-@media(prefers-reduced-motion:reduce){.connection-card a,.connection-env summary,.connection-path summary,.connection-env summary>.icon,.connection-path summary>.icon{transition:none}}
+@media(prefers-reduced-motion:reduce){.connection-card a,.connection-env summary,.connection-path summary,.connection-env summary>.icon,.connection-path summary>.icon>.icon{transition:none}}
 @media(prefers-contrast:more){.connection-card,.connection-card::before{border-color:var(--border);box-shadow:none}}
 .connection-card>h3:first-child+:is(label,div,p,form,.connection-auth-label){margin-top:0}
 /* A harness card folds to one row: logo, name, state, chevron. Open, it is the same outer + inner card. */
