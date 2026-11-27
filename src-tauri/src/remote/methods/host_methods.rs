@@ -280,7 +280,11 @@ mod tests {
         assert_eq!(restart_plan(true, true, Some("0.3.162".into())), Plan::AlreadyRestarting);
     }
 
+    /// The update state is process-global and `test_lock` serialises the tests that touch it. Its
+    /// guard is deliberately held across the awaits below: that is the point of the lock (no other
+    /// test may read or reset the state mid-check), and these tests run on their own runtime.
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
     async fn a_check_records_its_answer_and_a_failure_leaves_no_pending_update() {
         let _tests = app_updates::test_lock();
         let found = run_check("0.3.161", || Box::pin(async { Ok(Some("0.3.162".to_owned())) })).await.unwrap();
@@ -301,6 +305,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
     async fn one_check_at_a_time_even_when_two_calls_overlap() {
         let _tests = app_updates::test_lock();
         let runs = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
