@@ -78,26 +78,25 @@ pub(crate) fn apply(store: &Store, root: &Path, doc: &Value, now: i64) -> Report
 }
 
 fn process(store: &Store, root: &Path, doc: &Value, now: i64, dry_run: bool) -> Report {
-    let mut report = Report::default();
+    let mut run = Run { root, now, dry_run, inventory: std::collections::HashMap::new(), report: Report::default() };
     let Some(entries) = doc.get("bots").and_then(Value::as_array) else {
-        report.failed = 1;
-        report.lines.push("The import file needs a \"bots\" array.".into());
-        return report;
+        run.report.failed = 1;
+        run.report.lines.push("The import file needs a \"bots\" array.".into());
+        return run.report;
     };
-    let mut inventory = std::collections::HashMap::new();
     for entry in entries {
         let name = entry.get("name").and_then(Value::as_str).unwrap_or("").to_owned();
         let mut diff = BotDiff { name, status: Status::Unchanged, changes: Vec::new(), error: None };
-        if let Err(error) = process_bot(store, root, entry, now, dry_run, &mut inventory, &mut report, &mut diff) {
-            inventory.retain(|_, saved: &mut Inventory| !saved.profile.is_null());
-            report.failed += 1;
-            report.lines.push(format!("bot \"{}\": {error}", diff.name));
+        if let Err(error) = process_bot(store, &mut run, entry, &mut diff) {
+            run.inventory.retain(|_, saved: &mut Inventory| !saved.profile.is_null());
+            run.report.failed += 1;
+            run.report.lines.push(format!("bot \"{}\": {error}", diff.name));
             diff.status = Status::Failed;
             diff.error = Some(error);
         }
-        report.bots.push(diff);
+        run.report.bots.push(diff);
     }
-    report
+    run.report
 }
 
 fn change(diff: &mut BotDiff, kind: &str, name: &str, status: Status) {
@@ -105,17 +104,27 @@ fn change(diff: &mut BotDiff, kind: &str, name: &str, status: Status) {
     diff.changes.push(Change { kind: kind.into(), name: name.into(), status });
 }
 
-fn process_bot(store: &Store, root: &Path, entry: &Value, now: i64, dry_run: bool,
-    inventory: &mut std::collections::HashMap<String, Inventory>, report: &mut Report, diff: &mut BotDiff) -> crate::Result<()> {
+/// One import run: the shared inventory a document's entries match against, the report being
+/// built, and whether this is a preview. Bundled so the per-bot step does not take eight
+/// arguments.
+struct Run<'a> {
+    root: &'a Path,
+    now: i64,
+    dry_run: bool,
+    inventory: std::collections::HashMap<String, Inventory>,
+    report: Report,
+}
+
+fn process_bot(store: &Store, run: &mut Run, entry: &Value, diff: &mut BotDiff) -> crate::Result<()> {
     let input: bots::BotInput = serde_json::from_value(entry.clone()).map_err(|error| format!("unreadable bot entry: {error}"))?;
     let input = bots::validate(&input)?;
     let canonical = input.name.clone();
-    if !inventory.contains_key(&canonical) {
+    if !run.inventory.contains_key(&canonical) {
         if let Some(bot) = bots::list(store)?.into_iter().find(|bot| bot.name == canonical) {
             let mut profile = serde_json::to_value(&bot).map_err(|e| e.to_string())?;
             let fields = profile_value(&input);
             profile.as_object_mut().unwrap().retain(|field, _| fields.get(field).is_some());
-            inventory.insert(canonical.clone(), Inventory {
+            run.inventory.insert(canonical.clone(), Inventory {
                 id: bot.id.clone(), profile, skills: bot.skills, mcp: bot.mcp,
                 channels: channels::list(store, &bot.id)?.into_iter().map(|c| (c.kind, c.label)).collect(),
                 schedules: schedule::list(store, &bot.id)?.into_iter().map(|s| (s.title, s.prompt, s.kind)).collect(),
@@ -123,26 +132,26 @@ fn process_bot(store: &Store, root: &Path, entry: &Value, now: i64, dry_run: boo
             });
         }
     }
-    let existed = inventory.contains_key(&canonical);
-    let saved = inventory.entry(canonical.clone()).or_default();
+    let existed = run.inventory.contains_key(&canonical);
+    let saved = run.inventory.entry(canonical.clone()).or_default();
     let profile = profile_value(&input);
     let status = if !existed { Status::Created } else if saved.profile == profile { Status::Unchanged } else { Status::Updated };
-    if !dry_run {
-        let bot = if existed { bots::update(store, &saved.id, &input)? } else { bots::create(store, &input, root)? };
+    if !run.dry_run {
+        let bot = if existed { bots::update(store, &saved.id, &input)? } else { bots::create(store, &input, run.root)? };
         saved.id = bot.id;
     }
     saved.profile = profile;
     diff.name = canonical.clone();
     diff.status = status;
     change(diff, "profile", &canonical, status);
-    report.lines.push(format!("\"{canonical}\" {}", if existed { "updated" } else { "imported" }));
+    run.report.lines.push(format!("\"{canonical}\" {}", if existed { "updated" } else { "imported" }));
     if entry.get("skills").is_some() || entry.get("mcp").is_some() {
         let skills = canonical_capabilities(entry.get("skills"))?;
         let mcp = canonical_capabilities(entry.get("mcp"))?;
         let unchanged = existed && same_list(&skills, &saved.skills) && same_list(&mcp, &saved.mcp);
         if !unchanged {
-            if !dry_run { bots::set_capabilities(store, &saved.id, &skills, &mcp)?; }
-            report.lines.push(format!("  capabilities: {} skill(s), {} MCP server(s)", skills.len(), mcp.len()));
+            if !run.dry_run { bots::set_capabilities(store, &saved.id, &skills, &mcp)?; }
+            run.report.lines.push(format!("  capabilities: {} skill(s), {} MCP server(s)", skills.len(), mcp.len()));
         }
         change(diff, "capabilities", &canonical, if unchanged { Status::Unchanged } else if existed { Status::Updated } else { Status::Created });
         saved.skills = skills; saved.mcp = mcp;
@@ -154,7 +163,7 @@ fn process_bot(store: &Store, root: &Path, entry: &Value, now: i64, dry_run: boo
             let pair = (input.kind.clone(), label.clone());
             if saved.channels.contains(&pair) {
                 change(diff, "channel", &format!("{}:{label}", input.kind), Status::Unchanged);
-                report.lines.push(format!("  channel {} \"{label}\" already configured", input.kind));
+                run.report.lines.push(format!("  channel {} \"{label}\" already configured", input.kind));
                 continue;
             }
             for (name, value) in &mut input.secrets {
@@ -162,10 +171,10 @@ fn process_bot(store: &Store, root: &Path, entry: &Value, now: i64, dry_run: boo
             }
             channels::check_format(&input)?;
             validate_channel(&input)?;
-            let id = if dry_run { String::new() } else { channels::add(store, &saved.id, &input)?.id };
-            report.added_channels.push(AddedChannel { id, bot: canonical.clone(), kind: input.kind.clone(), label: label.clone() });
+            let id = if run.dry_run { String::new() } else { channels::add(store, &saved.id, &input)?.id };
+            run.report.added_channels.push(AddedChannel { id, bot: canonical.clone(), kind: input.kind.clone(), label: label.clone() });
             change(diff, "channel", &format!("{}:{label}", input.kind), Status::Created);
-            report.lines.push(format!("  channel {} \"{label}\" added", input.kind));
+            run.report.lines.push(format!("  channel {} \"{label}\" added", input.kind));
             saved.channels.push(pair);
         }
     }
@@ -178,14 +187,14 @@ fn process_bot(store: &Store, root: &Path, entry: &Value, now: i64, dry_run: boo
             let display = if title.is_empty() { &input.prompt } else { &title };
             if exists {
                 change(diff, "schedule", display, Status::Unchanged);
-                report.lines.push(format!("  schedule \"{display}\" already configured"));
+                run.report.lines.push(format!("  schedule \"{display}\" already configured"));
                 continue;
             }
-            validate_schedule(&input, saved.schedules.len(), now)?;
-            if !dry_run { schedule::create(store, &saved.id, &input, "user", now)?; }
+            validate_schedule(&input, saved.schedules.len(), run.now)?;
+            if !run.dry_run { schedule::create(store, &saved.id, &input, "user", run.now)?; }
             let title = if title.is_empty() { prompt.chars().take(60).collect() } else { title };
             change(diff, "schedule", &title, Status::Created);
-            report.lines.push(format!("  schedule \"{title}\" added"));
+            run.report.lines.push(format!("  schedule \"{title}\" added"));
             saved.schedules.push((title, prompt, input.kind));
         }
     }
@@ -198,14 +207,14 @@ fn process_bot(store: &Store, root: &Path, entry: &Value, now: i64, dry_run: boo
             if !matches!(decision, "allow" | "ask" | "deny") { return Err("A rule allows, asks or denies.".into()); }
             let replaced = saved.rules.iter().any(|r| r.0 == pattern && r.1 != decision);
             let exists = saved.rules.iter().any(|r| r.0 == pattern && r.1 == decision);
-            if !dry_run {
+            if !run.dry_run {
                 for rule in guard::rules(store, &saved.id)?.iter().filter(|r| r.pattern == pattern && r.decision != decision) {
                     guard::delete_rule(store, &saved.id, &rule.id)?;
                 }
                 if !exists { guard::add_rule(store, &saved.id, &pattern, decision)?; }
             }
             change(diff, "rule", &pattern, if replaced { Status::Updated } else if exists { Status::Unchanged } else { Status::Created });
-            report.lines.push(format!("  rule \"{pattern}\" {}", if exists && !replaced { "already configured" } else { decision }));
+            run.report.lines.push(format!("  rule \"{pattern}\" {}", if exists && !replaced { "already configured" } else { decision }));
             saved.rules.retain(|r| r.0 != pattern);
             saved.rules.push((pattern, decision.into()));
         }
