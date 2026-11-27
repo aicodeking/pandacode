@@ -719,9 +719,10 @@ fn stalled_error_bodies_hitting_deadline_preserve_status_without_retrying() {
     let client_412 = colab(&base_412, &sessions());
     let client_500 = colab(&base_500, &sessions());
 
-    // Run both concurrently so the MIN_POST_BUDGET deadline expires in ~5.2s total.
+    // Run both concurrently with headroom for the initial GET and client setup under parallel test load
+    // while still hitting the post deadline (~6.5s) well before the mock server's 10s socket timeout.
     let (err_412, err_500) = block(async {
-        let deadline = tokio::time::Instant::now() + RECONCILE_RESERVE + MIN_POST_BUDGET + Duration::from_millis(250);
+        let deadline = tokio::time::Instant::now() + RECONCILE_RESERVE + MIN_POST_BUDGET + Duration::from_millis(1500);
         let (r412, r500) = tokio::join!(
             client_412.assign_until("T4", false, deadline),
             client_500.assign_until("T4", false, deadline),
