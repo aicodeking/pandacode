@@ -1690,8 +1690,8 @@ mod tests {
         let here = &source[source.find("async fn refuse_running_here").unwrap()..];
         assert!(here[..here.find("\n}\n").unwrap()].contains("super::files::running_in_state(state, root)"), "the files.write check");
         let files = include_str!("files.rs").replace("\r\n", "\n");
-        let refuse = &files[files.find("async fn refuse_running_in").unwrap()..];
-        assert!(refuse[..refuse.find("\n}\n").unwrap()].contains("running_in(ctx, root)"), "one check for both");
+        let reserve = &files[files.find("async fn reserve_current_target_checkout").unwrap()..];
+        assert!(reserve[..reserve.find("\n}\n").unwrap()].contains("running_in_state(state, &root)"), "one check for both");
     }
 
     /// Round 21: `git.stage`, `git.switchBranch`, `git.commit`, `git.push` and `pull.create`

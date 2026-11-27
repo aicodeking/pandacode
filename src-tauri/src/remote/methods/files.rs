@@ -830,11 +830,6 @@ where
     Err("This task's checkout changed while saving. Try again.".into())
 }
 
-/// Whether an agent runs or is still exiting in `root`, literally or canonically (`git.discard` asks too).
-pub(super) async fn running_in(ctx: &Ctx<'_>, root: &Path) -> Result<bool> {
-    running_in_state(&ctx.state(), root).await
-}
-
 pub(super) async fn running_in_state(state: &AppState, root: &Path) -> Result<bool> {
     running_in_state_excluding(state, root, None).await
 }
