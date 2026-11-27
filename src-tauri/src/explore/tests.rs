@@ -731,7 +731,19 @@ fn non_windows_paths_keep_path_strip_prefix_semantics() {
 #[cfg(windows)]
 #[test]
 fn ordinary_windows_reads_and_globs_work_with_a_canonical_root() {
-    let repo = Repo::new();
+    // Windows temp_dir() lives under %USERPROFILE%\AppData\Local\Temp, which explore refuses as
+    // app-data; place the fixture in a non-AppData directory (RUNNER_TEMP or Cargo's target dir).
+    let base = std::env::var_os("RUNNER_TEMP")
+        .map(PathBuf::from)
+        .filter(|path| {
+            path.canonicalize()
+                .ok()
+                .is_some_and(|real| crate::workspace::root_refusal(&real, home_folder().as_deref(), false).is_none())
+        })
+        .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("target"));
+    let dir = base.join(format!("pandacode-explore-{}", uuid::Uuid::new_v4().simple()));
+    fs::create_dir_all(dir.join(".git")).unwrap();
+    let repo = Repo(dir.canonicalize().unwrap());
     repo.write("src/a.rs", "needle\n");
     repo.write("other.rs", "needle\n");
     let root = crate::path_match::ordinary_windows_path(repo.0.to_str().unwrap()).unwrap();
