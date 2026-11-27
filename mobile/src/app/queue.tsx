@@ -1,21 +1,25 @@
 // The host's message queue for one task (queue.list): messages typed while the agent works, sent in
-// order once the run finishes. Edit a message's text, move it up or down, remove it from the row's menu or
-// with a swipe (removed on the computer at once, with Undo in a toast: `queue.restore` puts the exact
-// entry back; older hosts re-add it with task.send, see connect/api/queue.ts). Attachments
-// stay as the desktop queued them. Pushed from the composer's queue chip with ?device=&session=.
+// order once the run finishes. Send one now (queue.take): on an idle task the head starts that turn at
+// once; on a running one the tapped message is steered into the turn. The host will not stop a run to
+// send a queued message — a team task or one with attachments refuses — so stopping is offered here as
+// a separate confirm. Edit a message's text, move it up or down, remove it from the row's menu or with a
+// swipe (removed on the computer at once, with Undo in a toast: `queue.restore` puts the exact entry
+// back; older hosts re-add it with task.send, see connect/api/queue.ts). Attachments stay as the desktop
+// queued them. Pushed from the composer's queue chip with ?device=&session=.
 import { Stack, useLocalSearchParams } from 'expo-router';
 import { useCallback, useEffect, useState } from 'react';
 import * as Clipboard from 'expo-clipboard';
 import { AccessibilityInfo, Alert, RefreshControl, StyleSheet, Text, TextInput, View } from 'react-native';
 import Swipeable from 'react-native-gesture-handler/ReanimatedSwipeable';
 import Animated from 'react-native-reanimated';
-import { loadQueue, removeQueued, reorderQueue, restoreRemoved, updateQueued, useHostQueues } from '../connect/api/composer.ts';
+import { connect } from '../connect/client.ts';
+import { loadQueue, removeQueued, reorderQueue, restoreRemoved, takeQueued, updateQueued, useHostQueues } from '../connect/api/composer.ts';
 import { useHostAllows, useHostCapabilities, useHostSupports } from '../connect/api/capabilities.ts';
 import { AccessNote } from '../ui/AccessNote.tsx';
 import { outdated, promptMaybeRan } from '../connect/rpc.ts';
 import { taskKey, useConnect } from '../store/index.ts';
 import { moved, type QueuedEntry } from '../store/slash.ts';
-import { editorState, removalUndo, sendAllowed } from '../store/queue-order.ts';
+import { canSendNow, editorState, removalUndo, sendAllowed, takeRefusal } from '../store/queue-order.ts';
 import { isActive } from '../ui/status.tsx';
 import { restoreQueued } from '../connect/api/queue.ts';
 import { Banner, Button, Card, EmptyState, geometry, haptic, InnerCard, PressScale, showToast, Skeleton, type as textStyle, useMotion, useStagger } from '../ui/ds/index.ts';
@@ -28,10 +32,13 @@ import { useDiscardGuard } from '../ui/useDiscardGuard.ts';
 import { useReloadOnReconnect } from '../ui/useReloadOnReconnect.ts';
 
 const POLL_MS = 5_000;
+/** After a Stop, how long the run gets to end before the queued entry is sent. */
+const SEND_AFTER_STOP_MS = 900;
 const EMPTY_ICON = { ios: 'tray', android: 'inbox' } as const;
 const ERROR_ICON = { ios: 'exclamationmark.triangle', android: 'warning' } as const;
 const SWIPE_WIDTH = 88;
 const REMOVED_ICON = { ios: 'trash', android: 'delete' } as const;
+const SEND_NOW_ICON = { ios: 'paperplane', android: 'send' } as const;
 
 function Move({ label, up, disabled, onPress }: { label: string; up: boolean; disabled: boolean; onPress: () => void }) {
   const colors = useColors();
@@ -53,23 +60,26 @@ function Remove({ onPress }: { onPress: () => void }) {
 }
 
 /** What this phone may change in the queue there: each is its own method (grant, Full access switch). */
-interface QueueRights { edit: boolean; remove: boolean; reorder: boolean }
+interface QueueRights { edit: boolean; remove: boolean; reorder: boolean; take: boolean }
 
-/** The row's menu: Edit (when the phone can edit it) and Remove (when it may remove). */
-function rowMenu(entry: QueuedEntry, busy: boolean, rights: QueueRights, onEdit: () => void, onRemove: () => void): MenuItem[] {
+/** The row's menu: Send now (when the host will send it), Edit and Remove. */
+function rowMenu(entry: QueuedEntry, index: number, running: boolean, busy: boolean, rights: QueueRights, onSend: () => void, onEdit: () => void, onRemove: () => void): MenuItem[] {
   return [
+    ...(canSendNow(rights, running, index) && !busy ? [{ label: 'Send now', ios: 'paperplane', android: 'send', onPress: onSend } as const] : []),
     ...(!rights.edit || busy || entry.truncated ? [] : [{ label: 'Edit', ios: 'pencil', android: 'edit', onPress: onEdit } as const]),
     ...(rights.remove ? [{ label: 'Remove', ios: 'trash', android: 'delete', destructive: true, onPress: onRemove } as const] : []),
   ];
 }
 
-function Entry({ entry, index, count, busy, rights, onMove, onEdit, onRemove }: {
-  entry: QueuedEntry; index: number; count: number; busy: boolean; rights: QueueRights;
-  onMove: (by: number) => void; onEdit: () => void; onRemove: () => void;
+function Entry({ entry, index, count, busy, rights, running, onMove, onSend, onEdit, onRemove }: {
+  entry: QueuedEntry; index: number; count: number; busy: boolean; rights: QueueRights; running: boolean;
+  onMove: (by: number) => void; onSend: () => void; onEdit: () => void; onRemove: () => void;
 }) {
   const colors = useColors();
   const editable = rights.edit && !busy && !entry.truncated;
-  const menu = rowMenu(entry, busy, rights, onEdit, onRemove);
+  const menu = rowMenu(entry, index, running, busy, rights, onSend, onEdit, onRemove);
+  // Send now belongs beside the text on the row the host would send from, so it is one tap.
+  const sendNow = canSendNow(rights, running, index) && !busy;
   const actions = [
     ...(rights.remove ? [{ name: 'delete', label: 'Remove' }] : []),
     ...(rights.reorder && index > 0 ? [{ name: 'increment', label: 'Move up' }] : []),
@@ -81,11 +91,14 @@ function Entry({ entry, index, count, busy, rights, onMove, onEdit, onRemove }: 
     <Swipeable enabled={rights.remove && !busy} renderRightActions={() => <Remove onPress={onRemove} />} rightThreshold={SWIPE_WIDTH / 2} friction={1} childrenContainerStyle={{ backgroundColor: colors.cardInner }}>
       <View style={styles.entry}>
         <PressScale onPress={onEdit} disabled={!editable} style={styles.entryText} accessibilityLabel={`${meta}. ${entry.text}`} accessibilityHint={editable ? 'Edits this message' : undefined}
-          accessibilityActions={actions}
-          onAccessibilityAction={e => (e.nativeEvent.actionName === 'delete' ? onRemove() : e.nativeEvent.actionName === 'increment' ? onMove(-1) : onMove(1))}>
+          accessibilityActions={[...(sendNow ? [{ name: 'send', label: 'Send now' }] : []), ...actions]}
+          onAccessibilityAction={e => (e.nativeEvent.actionName === 'send' ? onSend() : e.nativeEvent.actionName === 'delete' ? onRemove() : e.nativeEvent.actionName === 'increment' ? onMove(-1) : onMove(1))}>
           <Text numberOfLines={4} style={[textStyle.subhead, { color: colors.text }]}>{entry.text}</Text>
           <Text numberOfLines={1} style={[textStyle.footnote, { color: colors.muted }]}>{meta}</Text>
         </PressScale>
+        {sendNow && <PressScale onPress={onSend} accessibilityLabel="Send now" hitSlop={6} style={styles.sendNow}>
+          <Icon {...SEND_NOW_ICON} size={18} color={colors.muted} />
+        </PressScale>}
         {rights.reorder && <View style={styles.moves}>
           <Move label="Move up" up disabled={busy || index === 0} onPress={() => onMove(-1)} />
           <Move label="Move down" up={false} disabled={busy || index === count - 1} onPress={() => onMove(1)} />
@@ -148,9 +161,11 @@ export default function QueueScreen() {
   const caps = useHostCapabilities(device);
   const mode = useConnect(s => s.tasks[device]?.tasks.find(t => t.sessionId === session)?.mode);
   const undoHost = { restore: hostRestores, sendAllowed: sendAllowed(mode, caps?.kind === 'hello' ? caps.remoteFullAccess : undefined) };
-  const rights: QueueRights = { edit: canEdit, remove: canRemove, reorder: canReorder };
+  const canTake = useHostAllows(device, 'queue.take');
+  const canStop = useHostAllows(device, 'task.stop');
+  const rights: QueueRights = { edit: canEdit, remove: canRemove, reorder: canReorder, take: canTake };
   /** The methods this phone may not call there, for the access note. */
-  const blocked = ([['queue.update', canEdit], ['queue.remove', canRemove], ['queue.reorder', canReorder]] as const).filter(([, ok]) => !ok).map(([m]) => m);
+  const blocked = ([['queue.update', canEdit], ['queue.remove', canRemove], ['queue.reorder', canReorder], ['queue.take', canTake]] as const).filter(([, ok]) => !ok).map(([m]) => m);
   const computer = useConnect(s => s.devices.find(d => d.id === device)?.name ?? 'your computer');
   const running = useConnect(s => s.live[taskKey(device, session)]?.status === 'running');
   /** Running or waiting on you: either way the agent can take messages from the queue (as changes.tsx). */
@@ -228,6 +243,40 @@ export default function QueueScreen() {
   const list = (entries ?? []).filter(e => !removing.has(e.id));
   const move = (index: number, by: number) => run(() => reorderQueue(device, session, moved(list.map(e => e.id), index, by)));
   const save = (entry: QueuedEntry, text: string) => run(async () => { await updateQueued(device, session, entry.id, text); setEditing(null); });
+
+  // Send now: the host takes one entry and sends it ahead of its place. It answers with the queue, so
+  // the screen re-renders from that rather than guessing what left. Two refusals mean "not while the
+  // run is going" — a team, or an entry with attachments this phone cannot steer — and the host
+  // deliberately does not stop the agent to get its way, so that is a second, explicit step here.
+  const sendOne = async (entry: QueuedEntry) => {
+    try {
+      await takeQueued(device, session, entry.id);
+      haptic('success');
+      AccessibilityInfo.announceForAccessibility('Sending now');
+    } catch (e) {
+      const why = takeRefusal(e);
+      // Another client took it: that is the outcome asked for, so refresh instead of failing.
+      if (why === 'gone') { haptic('success'); void load(); return; }
+      if (why === 'stop' && canStop) return stopThenSend(entry);
+      haptic('error');
+      Alert.alert('Couldn’t send it now', (e as Error).message);
+      void load();
+    }
+  };
+  /** The explicit second step: stop the run, then take the entry once it is no longer running. */
+  const stopThenSend = (entry: QueuedEntry) => Alert.alert('Stop the run and send this?',
+    `The agent stops what it is doing on ${computer}, and this message goes next. Anything it was working on stays as it is.`,
+    [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Stop and send', style: 'destructive', onPress: () => void run(async () => {
+        await connect.stopTask(device, session);
+        // The turn ends asynchronously: give it a moment, then send. A refusal here is shown plainly
+        // rather than retried, so a queue tap can never leave the phone retrying against a dead run.
+        await new Promise(resolve => setTimeout(resolve, SEND_AFTER_STOP_MS));
+        await takeQueued(device, session, entry.id);
+      }, 'warning') },
+    ]);
+  const send = (entry: QueuedEntry) => void sendOne(entry);
   const refresh = async () => { setRefreshing(true); await load(); setRefreshing(false); };
   const editor = editorState(editing?.id ?? null, entries);
   /** The open message: the queue's current copy, or the snapshot once it was sent. */
@@ -251,8 +300,8 @@ export default function QueueScreen() {
               {list.map((entry, index) => (
                 <View key={entry.id}>
                   {index > 0 && <View style={[styles.separator, { backgroundColor: colors.separator }]} />}
-                  <Entry entry={entry} index={index} count={list.length} busy={busy} rights={rights}
-                    onMove={by => void move(index, by)} onEdit={() => setEditing(entry)} onRemove={() => void remove(entry)} />
+                  <Entry entry={entry} index={index} count={list.length} busy={busy} rights={rights} running={running}
+                    onMove={by => void move(index, by)} onSend={() => send(entry)} onEdit={() => setEditing(entry)} onRemove={() => void remove(entry)} />
                 </View>
               ))}
             </InnerCard>
@@ -271,6 +320,7 @@ const styles = StyleSheet.create({
   list: { paddingVertical: 0, overflow: 'hidden' },
   entry: { flexDirection: 'row', alignItems: 'center', gap: geometry.cardPadding, paddingLeft: geometry.rowInset, paddingRight: geometry.cardPadding / 2, paddingVertical: geometry.sectionGap },
   entryText: { flex: 1, gap: geometry.cardPadding / 2 },
+  sendNow: { alignItems: 'center', justifyContent: 'center', minWidth: 32, minHeight: 32 },
   moves: { gap: geometry.cardPadding / 3 },
   more: { width: 36, height: geometry.rowHeight, alignItems: 'center', justifyContent: 'center' },
   move: { width: 36, height: 30, alignItems: 'center', justifyContent: 'center' },

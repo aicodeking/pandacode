@@ -890,6 +890,18 @@ Round 21:
   (`remote::methods::schedules::tests::a_bots_thread_needs_a_full_device_to_be_scheduled`; the
   source scan `phone_methods_that_drive_a_task_refuse_bot_threads_below_full` covers
   `schedules.rs`).
+- **Send now from a phone.** `queue.take` sends one entry without waiting for the run to end. It
+  sends on the host rather than asking the desktop window to, because what it needs is a decision the
+  host already owns: only the host knows whether the task is running, which entry is first, and
+  whether that device may drive it at all — and a browser tab's `dispatchQueue` returns early
+  (`webMode`). The desktop window is not left behind: `on_queue` emits the Tauri `queue-changed`
+  event on the app handle, `main.ts` subscribes to it, reloads the queue and dispatches. The idle
+  path reuses the headless drain's own delivery (`headless::send_queued`: attachments folded in, the
+  entry put back and the queue held when a launch fails), and the running path is `task.steer`
+  followed by `message_queue::remove_delivered`, so a stale Undo is refused exactly as after a
+  desktop steer.
+  A running task is never stopped to send a queued message — the desktop's Send now does that, which
+  is reasonable from a window the user is looking at and not from a list on a phone.
 - **Headless queue drain.** A phone's `queue.update`, `queue.remove`, `queue.restore` or
   `queue.reorder` drains a headless host's idle task (`headless::queue_changed`) only when that
   device could send to it: the bot-thread guard and the task's mode (`composer::may_drain`).
@@ -1191,6 +1203,7 @@ paged replies take `offset` and answer `next`.
 | `btw.ask` | control | B | `sessionId, text, sideId?, seenId?` → `{ sideId, title, seenId, created }`. Reuses `sideId` only if this host linked it to the task, it is in the same project and not archived; otherwise makes a new side thread (a fork at the last message for a worktree task, else a new task with the task's provider, model and mode, which must pass the Full-access rule, and never the saved default team). Refused for bot conversations and while the side thread is still answering; a side thread made by a failed ask is deleted. |
 | `queue.list` | view | RO | `sessionId` |
 | `queue.update` / `queue.remove` / `queue.reorder` | control | O | `sessionId, id, text` / `sessionId, id` / `sessionId, ids`. `queue.update` on a team lead needs Full access for remote tasks. |
+| `queue.take` | control | O | `sessionId, id` → the same `{ entries }` `queue.update` answers. Takes one queued message and sends it now: on an idle task it starts that turn immediately (only when the entry is first in the queue, else it refuses and asks the user to move it up), and on a running task it steers the entry's text into the running turn and drops it as delivered. Refuses an archived or usage-limited task, a held queue, an entry with attachments while running, and a task that leads a team — a queue button never stops the user's run, unlike the desktop's Send now, so the phone offers Stop as its own explicit step. Team leads need Full access for remote tasks. |
 | `queue.restore` | control | O | `sessionId, id`. Puts back the exact entry (text, attachments) a `queue.remove` took out in the last 60 s, at its old index; at most 8 held per task. Idempotent; no mode check (it only restores what was queued). Refused once the task has a newer user message or the hold expired: `This message can no longer be put back.` Delivery is checked before the idempotency check, so an entry that was restored and later sent reports that it can't be put back. The demo host does the same. |
 | `usage.get` | view | RO | `sessionId?, refresh?` (token ledger) |
 | `usage.limits` | view | RO | `provider, refresh?`; `refresh` (asks the provider) needs control |

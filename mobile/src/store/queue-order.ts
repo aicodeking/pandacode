@@ -48,3 +48,31 @@ export function editorState(editingId: string | null, entries: readonly { id: st
   if (!entries) return 'open';
   return entries.some(entry => entry.id === editingId) ? 'open' : 'sent';
 }
+
+// ---- Send now (queue.take) ----
+
+/** The message the host sends for an entry another client already took: the send happened, so it
+ * reads as success on this phone (`message_queue::withdraw`'s own sentence). */
+const ALREADY_GONE = /already sent or removed/i;
+
+/** Why `queue.take` refused, as far as the phone acts on it: `gone` (treat as success and refresh),
+ * `stop` (the run must stop first, so offer that as its own step) or `other` (just show it). */
+export type TakeRefusal = 'gone' | 'stop' | 'other';
+
+/** How to read a failed `queue.take`. The host refuses a running task it cannot steer with a
+ * sentence naming the run, and a message another client sent is not a failure at all. Matching on
+ * the sentence is deliberate: the method takes no error codes, and the two it distinguishes here
+ * lead to different UI, so a wording change must show up as `other` rather than a wrong action. */
+export function takeRefusal(error: unknown): TakeRefusal {
+  const message = error instanceof Error ? error.message : String(error ?? '');
+  if (ALREADY_GONE.test(message)) return 'gone';
+  // Both refuse with "stop the run first": attachments while running, and a task that leads a team.
+  if (/stop the run first/i.test(message)) return 'stop';
+  return 'other';
+}
+
+/** Whether Send now is worth offering: the phone may take it out of the queue, and the row is the
+ * one the host will send from an idle task (from a running one it steers whatever row was tapped). */
+export function canSendNow(rights: { take: boolean }, running: boolean, index: number): boolean {
+  return rights.take && (running || index === 0);
+}

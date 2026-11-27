@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
-import { canRestore, editorState, placedAt, readdedId, removalUndo, sendAllowed } from '../src/store/queue-order.ts';
+import { canRestore, canSendNow, editorState, placedAt, readdedId, removalUndo, sendAllowed, takeRefusal } from '../src/store/queue-order.ts';
 
 test('Undo is offered only for a removal the phone knows in full', () => {
   assert.equal(canRestore({ truncated: false, attachments: 0 }), true);
@@ -107,4 +107,52 @@ test('a queue.remove whose reply was lost reloads the queue and still offers Und
   assert.match(landed, /!entries\.some\(e => e\.id === id\)/);
   // A landed removal falls through to the Undo toast; any other error still throws to run()'s alert.
   assert.match(screen, /catch \(e\) \{\n\s+if \(!\(await removalLanded\(device, session, entry\.id, e\)\)\) throw e;/);
+});
+
+// ---- Send now (queue.take) ----
+
+test('a refusal reads as gone, stop-the-run, or something to show', () => {
+  // The host's own sentence for an entry another client took: the send happened, so this is success.
+  assert.equal(takeRefusal(new Error('This queued message was already sent or removed.')), 'gone');
+  // The two refusals the host gives a running task it will not steer, which lead to the Stop step.
+  assert.equal(takeRefusal(new Error('Messages with attachments are sent after the run; stop the run first to send this one now.')), 'stop');
+  assert.equal(takeRefusal(new Error('This task leads a team; stop the run first to send this one now.')), 'stop');
+  // Everything else is only worth showing: a usage limit, a held queue, an archived task, a
+  // message that must move up first, or a plain failure.
+  for (const message of [
+    'Move this message up first; the task sends its queue in order.',
+    'This task is at its usage limit; it sends its queue once the limit resets.',
+    "This task's queue is held; resume it first.",
+    'This task is archived.',
+    'That computer is offline.',
+  ]) assert.equal(takeRefusal(new Error(message)), 'other', message);
+  // Not an Error at all still reads as something to show, never as success.
+  assert.equal(takeRefusal('boom'), 'other');
+  assert.equal(takeRefusal(undefined), 'other');
+});
+
+test('Send now is offered where the host will take it', () => {
+  // Idle: only the head, because the host refuses to send ahead of earlier entries.
+  assert.equal(canSendNow({ take: true }, false, 0), true);
+  assert.equal(canSendNow({ take: true }, false, 1), false);
+  // Running: any row, because a running task steers the one that was tapped.
+  assert.equal(canSendNow({ take: true }, true, 0), true);
+  assert.equal(canSendNow({ take: true }, true, 3), true);
+  // Without the grant there is no button at all.
+  assert.equal(canSendNow({ take: false }, true, 0), false);
+  assert.equal(canSendNow({ take: false }, false, 0), false);
+});
+
+test('the screen offers Send now and the two-step stop, and never stops a run on its own', () => {
+  const screen = readFileSync(new URL('../src/app/queue.tsx', import.meta.url), 'utf8');
+  // Offered on the row and in the menu, gated by the host's grant.
+  assert.match(screen, /canSendNow\(rights, running, index\)/);
+  assert.match(screen, /const canTake = useHostAllows\(device, 'queue\.take'\)/);
+  assert.match(screen, /'queue\.take', canTake/);
+  // The stop is always a confirm the user chooses, and only after the host says the run must stop.
+  assert.match(screen, /if \(why === 'stop' && canStop\) return stopThenSend\(entry\);/);
+  assert.match(screen, /Alert\.alert\('Stop the run and send this\?'/);
+  assert.match(screen, /const canStop = useHostAllows\(device, 'task\.stop'\)/);
+  // A message another client already sent counts as success, not as a failure to report.
+  assert.match(screen, /if \(why === 'gone'\) \{ haptic\('success'\); void load\(\); return; \}/);
 });
