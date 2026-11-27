@@ -1,4 +1,4 @@
-dialog.agent-usage-dialog{width:min(720px,calc(100vw - 32px));max-height:88dvh}
+dialog.agent-usage-dialog{width:min(var(--composer-width),calc(100vw - 32px));max-height:88dvh}
 /* One fixed color per agent (validated categorical order), so a filter or range never repaints an agent. */
 .agent-usage{--agent-codex:#2a78d6;--agent-claude:#eb6834;--agent-opencode:#1baf7a;--agent-kimi:#eda100;--agent-antigravity:#e87ba4;--agent-glm:#008300;--agent-grok:#4a3aa7;--agent-mimo:#e34948;--usage-line:color-mix(in srgb,var(--border) 62%,transparent)}
 html[data-theme=dark] .agent-usage{--agent-codex:#3987e5;--agent-claude:#d95926;--agent-opencode:#199e70;--agent-kimi:#c98500;--agent-antigravity:#d55181;--agent-glm:#008300;--agent-grok:#9085e9;--agent-mimo:#e66767}
