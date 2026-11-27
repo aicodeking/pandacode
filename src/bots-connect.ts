@@ -7,16 +7,23 @@ import type { PanelContext } from './bots-panels';
 export interface Identity { name: string; link: string | null; invite: string | null; warnings: string[] }
 interface Field { name: string; label: string; secret: boolean; placeholder: string; config?: boolean }
 interface Step { title: string; body: string; field?: Field }
-interface Kind { id: ChannelKind; label: string; blurb: string; minutes: string }
-
-export const KINDS: Kind[] = [
-  { id: 'web', label: 'Web chat', blurb: 'A private chat page on this computer', minutes: 'Instant' },
-  { id: 'telegram', label: 'Telegram', blurb: 'Message it from your phone', minutes: '2 min' },
-  { id: 'slack', label: 'Slack', blurb: 'DM it or @mention it in channels', minutes: '4 min' },
-  { id: 'discord', label: 'Discord', blurb: 'DM it or @mention it in a server', minutes: '4 min' },
-  { id: 'whatsapp', label: 'WhatsApp', blurb: 'Via Meta’s Cloud API and a tunnel', minutes: '15 min' },
-];
-export const kindLabel = (kind: string | undefined) => KINDS.find(item => item.id === kind)?.label ?? 'Channel';
+/** Everything that differs between channel kinds, in one place.
+ *
+ * The ids here are the only source of the `ChannelKind` union, so a kind cannot exist in
+ * one list and not another. To add a kind: add its entry here, then write its transport
+ * on the Rust side (see `KINDS` in src-tauri/src/bots/channels/mod.rs). */
+export interface ChannelSpec {
+  id: string;
+  label: string;
+  blurb: string;
+  minutes: string;
+  /** Secret field names this kind cannot be connected without. */
+  secrets: string[];
+  /** True when the setup can point at a public address (a tunnel), not just this computer. */
+  acceptsPublicUrl: boolean;
+  /** The numbered setup guide for this kind. */
+  steps(botName: string): Step[];
+}
 
 const PORT_DEFAULT = 47321;
 const link = (url: string, label: string, primary = false) => `<button type="button" class="${primary ? 'primary-button' : 'secondary-button'} bots-step-button" data-open-url="${escape(url)}">${escape(label)}${icon('forward')}</button>`;
@@ -35,33 +42,49 @@ export function slackManifest(botName: string): Record<string, unknown> {
 }
 export const slackCreateUrl = (botName: string) => `https://api.slack.com/apps?new_app=1&manifest_json=${encodeURIComponent(JSON.stringify(slackManifest(botName)))}`;
 
-function steps(kind: ChannelKind, botName: string): Step[] {
-  switch (kind) {
-    case 'telegram': return [
+export const KINDS: ChannelSpec[] = [
+  { id: 'web', label: 'Web chat', blurb: 'A private chat page on this computer', minutes: 'Instant', secrets: [], acceptsPublicUrl: true, steps: () => [] },
+  {
+    id: 'telegram', label: 'Telegram', blurb: 'Message it from your phone', minutes: '2 min', secrets: ['token'], acceptsPublicUrl: false,
+    steps: botName => [
       { title: 'Open BotFather in Telegram', body: `BotFather is Telegram’s official bot for creating bots. ${link('https://t.me/BotFather', 'Open BotFather', true)}` },
       { title: 'Create the bot', body: `Send this to BotFather, then answer its two questions: a display name (for example “${escape(botName)}”) and a username ending in “bot”.${copy('/newbot', 'Copy', 'Send')}${copy(`${handle(botName)}_pandacode_bot`, 'Copy', 'Username idea')}` },
       { title: 'Paste the token BotFather sends back', body: 'It looks like <code>123456789:AAE…</code>. Anyone with it can control the bot, so keep it private.', field: { name: 'token', label: 'Bot token', secret: true, placeholder: '123456789:AAE…' } },
-    ];
-    case 'slack': return [
+    ],
+  },
+  {
+    id: 'slack', label: 'Slack', blurb: 'DM it or @mention it in channels', minutes: '4 min', secrets: ['token', 'app_token'], acceptsPublicUrl: false,
+    steps: botName => [
       { title: 'Create the Slack app in one click', body: `This opens Slack with the name, permissions, events and Socket Mode filled in. Pick your workspace, review, then press <b>Create</b>. ${link(slackCreateUrl(botName), 'Create Slack app', true)} <button type="button" class="bots-text-button" data-copy="${escape(JSON.stringify(slackManifest(botName), null, 2))}">Copy manifest instead</button>` },
       { title: 'Install it and copy the bot token', body: 'In the app’s page, open <b>Install App</b> → <b>Install to Workspace</b> → <b>Allow</b>. Copy the <b>Bot User OAuth Token</b>.', field: { name: 'token', label: 'Bot token', secret: true, placeholder: 'xoxb-…' } },
       { title: 'Create an app-level token', body: 'Open <b>Basic Information</b> → <b>App-Level Tokens</b> → <b>Generate Token and Scopes</b>. Name it anything, add the scope <code>connections:write</code>, generate, and copy it.', field: { name: 'app_token', label: 'App-level token', secret: true, placeholder: 'xapp-…' } },
-    ];
-    case 'discord': return [
+    ],
+  },
+  {
+    id: 'discord', label: 'Discord', blurb: 'DM it or @mention it in a server', minutes: '4 min', secrets: ['token'], acceptsPublicUrl: false,
+    steps: botName => [
       { title: 'Create an application', body: `Press <b>New Application</b>, name it “${escape(botName)}”, and accept the terms. ${link('https://discord.com/developers/applications', 'Open Developer Portal', true)}` },
       { title: 'Let it read messages', body: 'Open the <b>Bot</b> tab, turn on <b>Message Content Intent</b> under Privileged Gateway Intents, and press <b>Save Changes</b>.' },
       { title: 'Copy the bot token', body: 'Still on the Bot tab, press <b>Reset Token</b>, confirm, and copy it. (The Client Secret and Public Key are different values.)', field: { name: 'token', label: 'Bot token', secret: true, placeholder: 'MTA…' } },
       { title: 'Add it to your server', body: 'After you connect, an <b>Add to server</b> button appears here with the right permissions already chosen.' },
-    ];
-    case 'whatsapp': return [
+    ],
+  },
+  {
+    id: 'whatsapp', label: 'WhatsApp', blurb: 'Via Meta’s Cloud API and a tunnel', minutes: '15 min', secrets: ['access_token', 'signing_secret'], acceptsPublicUrl: true,
+    steps: () => [
       { title: 'Create a Meta app with WhatsApp', body: `Choose <b>Other</b> → <b>Business</b>, then add the <b>WhatsApp</b> product. Meta gives you a free test number. ${link('https://developers.facebook.com/apps/creation/', 'Open Meta for Developers', true)}` },
       { title: 'Copy the phone number ID', body: 'In <b>WhatsApp</b> → <b>API Setup</b>, copy the <b>Phone number ID</b> (a long number, not the phone number itself). Add your own phone under <b>To</b> so the test number may message you.', field: { name: 'phoneNumberId', label: 'Phone number ID', secret: false, placeholder: '123456789012345', config: true } },
       { title: 'Copy an access token', body: `The temporary token on API Setup works for 24 hours. For one that lasts, create a system user with WhatsApp permissions and generate its token. ${link('https://business.facebook.com/settings/system-users', 'System users')}`, field: { name: 'access_token', label: 'Access token', secret: true, placeholder: 'EAAG…' } },
       { title: 'Copy the app secret', body: 'Open <b>App settings</b> → <b>Basic</b> → <b>App secret</b> → <b>Show</b>. PandaCode uses it to check that messages really come from Meta.', field: { name: 'signing_secret', label: 'App secret', secret: true, placeholder: '32 characters' } },
       { title: 'Connect, then point Meta at this computer', body: 'After you connect, the steps for the webhook (with everything to copy) appear on the channel.' },
-    ];
-    default: return [];
-  }
+    ],
+  },
+];
+export const kindLabel = (kind: string | undefined) => KINDS.find(item => item.id === kind)?.label ?? 'Channel';
+const spec = (kind: string): ChannelSpec | undefined => KINDS.find(item => item.id === kind);
+
+function steps(kind: ChannelKind, botName: string): Step[] {
+  return spec(kind)?.steps(botName) ?? [];
 }
 
 // Typed values survive re-renders (bots-changed refreshes the panel while you paste).

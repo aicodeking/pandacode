@@ -1,6 +1,7 @@
 /** Browser preview for bots: in-memory sample data, no network, no channels. Native builds use src-tauri/src/bots. */
 import type { Activity, Bot, BotDetail, BotInput, Channel, FailoverAsk, Memory, Pairing, Rule, Schedule, Thread } from './bots';
 import type { Project, Session } from './types';
+import { KINDS } from './bots-connect';
 import type { SharedChannelDetail, SharedChannelMessage, SharedChannelSummary } from './bot-shared-channels';
 
 export interface PreviewBotsHost {
@@ -339,8 +340,9 @@ export async function invokeBots<T>(command: string, args: Record<string, any>, 
     case 'bot_channel_add': {
       const entry = store(args.botId); const input = args.input ?? {};
       const identity = previewIdentity(input);
-      if (!['web', 'telegram', 'slack', 'discord', 'whatsapp'].includes(input.kind)) throw new Error('Choose web, Telegram, Slack, Discord or WhatsApp.');
-      const required: Record<string, string[]> = { telegram: ['token'], discord: ['token'], slack: ['token', 'app_token'], whatsapp: ['access_token', 'signing_secret'], web: [] };
+      if (!KINDS.some(item => item.id === input.kind)) throw new Error('Choose web, Telegram, Slack, Discord or WhatsApp.');
+      // The same registry the setup guides use, so the mock asks for exactly what the UI does.
+      const required: Record<string, string[]> = Object.fromEntries(KINDS.map(item => [item.id, item.secrets]));
       if (input.kind === 'whatsapp' && !/^\d+$/.test(String(input.config?.phoneNumberId ?? ''))) throw new Error("Enter the WhatsApp phone number ID from Meta's API setup page.");
       for (const name of required[input.kind]) if (!String(input.secrets?.[name] ?? '').trim()) throw new Error(`Enter the ${name.replace('_', ' ')} for this channel.`);
       const config = { ...(input.config ?? {}), identity, ...(input.kind === 'whatsapp' ? { verifyToken: 'pandacode-preview0123456789' } : {}) };
