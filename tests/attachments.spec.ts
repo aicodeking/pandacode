@@ -344,3 +344,58 @@ test('attachments stay with their task while you switch tasks', async ({ page })
   await expect(chips(page)).toHaveCount(1);
   await expect(chips(page).first()).toContainText('orbit-design/');
 });
+
+// A draft's attachments are kept with its text (issue #413), so a restart brings them back whole.
+const storedDraft = (page: Page, key: string) => page.evaluate(name => localStorage.getItem(name), key);
+const seedDraft = (page: Page, record: unknown) => page.addInitScript(value => {
+  if (sessionStorage.getItem('seeded-draft')) return;
+  sessionStorage.setItem('seeded-draft', '1');
+  localStorage.setItem('pandacode.draft:session-1', JSON.stringify(value));
+}, record);
+const image = (extra: Record<string, unknown> = {}) => ({ kind: 'image', id: '11111111-1111-4111-8111-111111111111', name: 'screenshot.png', width: 640, height: 400, thumbnail: 'data:image/jpeg;base64,/9j/4AAQSkZJRg==', source: 'paste', ...extra });
+
+test('an image and a document attached to a draft are written beside its text', async ({ page }) => {
+  await probe(page);
+  await prompt(page).focus();
+  await page.keyboard.type('not sent yet');
+  await pasteImage(page, 'kept.png');
+  await expect(chips(page)).toHaveCount(1);
+  await expect.poll(async () => JSON.parse(await storedDraft(page, 'pandacode.draft:session-1') ?? '{}')).toMatchObject({ text: 'not sent yet' });
+  const record = JSON.parse((await storedDraft(page, 'pandacode.draft:session-1'))!);
+  expect(record.a).toHaveLength(1);
+  expect(record.a[0]).toMatchObject({ kind: 'image', name: 'kept.png', source: 'paste' });
+  expect(record.a[0]).not.toHaveProperty('missing');
+  // Sending removes the record at once, so a restart cannot bring the sent image back.
+  await prompt(page).press('Enter');
+  await expect.poll(() => storedDraft(page, 'pandacode.draft:session-1')).toBeNull();
+});
+
+test('a restart restores a draft’s image with its chip, in order, and a pruned capture shows File missing', async ({ page }) => {
+  await probe(page);
+  await seedDraft(page, { t: Date.now(), text: 'still here', a: [image()] });
+  await page.goto('/');
+  await expect(page.locator('.task-item.selected')).toHaveAttribute('data-id', 'session-1');
+  await expect(prompt(page)).toHaveValue('still here');
+  await expect(chips(page)).toHaveCount(1);
+  await expect(chips(page).first()).toContainText('screenshot.png');
+  await expect(chips(page).first()).not.toHaveAttribute('data-missing', 'true');
+  // The restored chip shows the stored thumbnail without asking the registry again.
+  await expect(chips(page).first().locator('img')).toHaveAttribute('src', /^data:image\/jpeg;base64,/);
+});
+
+test('a restored image whose capture was pruned stays as a File missing chip that is never sent', async ({ page }) => {
+  // The preview answers prompt_image only for well-formed ids the registry still has; a probe hook can answer null.
+  await probe(page, `if (command === 'prompt_image') return null;`);
+  await seedDraft(page, { t: Date.now(), text: '', a: [image()] });
+  await page.goto('/');
+  await expect(page.locator('.task-item.selected')).toHaveAttribute('data-id', 'session-1');
+  const missing = page.locator('#attachments .prompt-chip[data-missing="true"]');
+  await expect(missing).toHaveCount(1);
+  await expect(missing).toContainText('File missing');
+  await expect(missing.locator('img')).toHaveCount(0);
+  await prompt(page).fill('what changed?');
+  await prompt(page).press('Enter');
+  const sent = await calls(page, 'send_message');
+  expect(sent.at(-1)?.args.text ?? sent.at(-1)?.args.prompt ?? '').not.toContain('Attached image');
+  expect(sent.at(-1)?.args.imageIds ?? []).toEqual([]);
+});

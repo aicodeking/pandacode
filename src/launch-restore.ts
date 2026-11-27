@@ -1,10 +1,13 @@
 /* What a launch restores after any exit, clean or abrupt (a crash restart included): composer
  * drafts per task and the thread that was open. Local storage only.
  *
- * Drafts: one key per task (`pandacode.draft:<id>` → `{"t":savedAt,"text":…}`), so a keystroke
- * rewrites only its own draft. A New task (a native draft session, discarded at the next launch
- * while it has no messages) keeps its text under one key per project instead
- * (`pandacode.draft:new:<project id>`), which the next New task in that project takes over. A shared
+ * Drafts: one key per task (`pandacode.draft:<id>` → `{"t":savedAt,"text":…,"a":[…]}`), so a keystroke
+ * rewrites only its own draft. The `a` array keeps the draft's prompt attachments beside the text:
+ * their references and chip thumbnails, never a file's bytes, sharing the text's age, size budget,
+ * Keep unsent drafts switch, Clear saved drafts, New-task key moves and deletion rules. A New task
+ * (a native draft session, discarded at the next launch while it has no messages) keeps its text
+ * under one key per project instead (`pandacode.draft:new:<project id>`), which the next New task
+ * in that project takes over. A shared
  * bot channel's composer text is kept the same way under `pandacode.draft:channel:<channel id>`.
  * Without a write timer every change is written at once. The app passes one (`DraftWriteTimer`): the
  * first change of a burst is written at once, later ones at most every DRAFT_WRITE_DELAY (a draft
@@ -32,6 +35,9 @@
  * WINDOW_STABLE_AFTER or closes in an orderly way. A boot that finds the note (the window died
  * again: another reload, or the launch after the native dialog's Restart PandaCode) opens no
  * thread by itself and names the noted one. */
+
+import { attachmentsBytes, fromStored, toStored } from './draft-attachments.ts';
+import type { PromptAttachment } from './attachments.ts';
 
 export type Store = Pick<Storage, 'getItem' | 'setItem' | 'removeItem' | 'key'> & { readonly length: number };
 type Schedule = (run: () => void, ms: number) => unknown;
@@ -78,7 +84,8 @@ export interface DraftWriteTimer { wait: Schedule; cancel: (handle: unknown) => 
 export const browserDraftTimer: DraftWriteTimer = { wait: (run, ms) => setTimeout(run, ms), cancel: handle => clearTimeout(handle as ReturnType<typeof setTimeout>) };
 
 const bytes = (text: string) => text.length * 2;
-const keep = (text: string) => Boolean(text.trim()) && text.length <= MAX_DRAFT_CHARS;
+/** A draft is kept when it is within the size cap and has text or at least one attachment. */
+const keepsDraft = (text: string, attachments: number) => text.length <= MAX_DRAFT_CHARS && (Boolean(text.trim()) || attachments > 0);
 
 function safeRead(store: Pick<Store, 'getItem'>, key: string): string | null {
   try { return store.getItem(key); } catch { return null; }
@@ -102,11 +109,23 @@ export function decodeDraft(raw: string | null): { t: number; text: string } | n
   } catch { return null; }
 }
 
+/** A draft's stored attachments, validated; empty when the record or its `a` array is malformed. */
+export function decodeDraftAttachments(raw: string | null): PromptAttachment[] {
+  if (!raw) return [];
+  try {
+    const value: unknown = JSON.parse(raw);
+    if (!value || typeof value !== 'object') return [];
+    return fromStored((value as Record<string, unknown>).a);
+  } catch { return []; }
+}
+
 /** The drafts map, written through to storage (see the file comment). `newTaskKey` names the
  * project key (`new:<project id>`) of a task that is a New task, undefined for any other task. */
 export class PersistedDrafts extends Map<string, string> {
   newTaskKey: (id: string) => string | undefined = () => undefined;
   private readonly savedAt = new Map<string, number>();
+  /** The prompt attachments kept beside each draft's text. */
+  private readonly attached = new Map<string, PromptAttachment[]>();
   /** Bytes of each draft as stored; absent when it is not in storage. */
   private readonly stored = new Map<string, number>();
   /** A New task's id → the project key it is stored under (the latest one typed in owns the key). */
@@ -128,9 +147,13 @@ export class PersistedDrafts extends Map<string, string> {
     this.keeping = safeRead(store, KEEP_DRAFTS_KEY) !== 'off';
     for (const key of storedKeys(store)) {
       if (!this.keeping) { safeRemove(store, key); continue; }
-      const draft = decodeDraft(safeRead(store, key)), id = key.slice(DRAFT_PREFIX.length);
-      if (!id || id === NEW_TASK_DRAFT || id === CHANNEL_DRAFT || !draft || this.expired(draft.t) || !keep(draft.text)) { safeRemove(store, key); continue; }
-      super.set(id, draft.text); this.savedAt.set(id, draft.t); this.stored.set(id, bytes(draft.text));
+      const raw = safeRead(store, key), draft = decodeDraft(raw), id = key.slice(DRAFT_PREFIX.length);
+      if (!id || id === NEW_TASK_DRAFT || id === CHANNEL_DRAFT || !draft || this.expired(draft.t)) { safeRemove(store, key); continue; }
+      const attachments = decodeDraftAttachments(raw);
+      if (!keepsDraft(draft.text, attachments.length)) { safeRemove(store, key); continue; }
+      super.set(id, draft.text); this.savedAt.set(id, draft.t);
+      if (attachments.length) this.attached.set(id, attachments);
+      this.stored.set(id, bytes(draft.text) + attachmentsBytes(attachments));
     }
     this.loaded = true;
   }
@@ -144,8 +167,46 @@ export class PersistedDrafts extends Map<string, string> {
     if (super.get(id) === text) return this;
     super.set(id, text);
     this.savedAt.set(id, this.now());
-    if (!keep(text)) { this.pending.delete(id); this.unstore(id); }
+    if (!keepsDraft(text, this.attached.get(id)?.length ?? 0)) { this.pending.delete(id); this.unstore(id); }
     else if (this.timer && this.window !== undefined) this.pending.add(id);
+    else { this.write(id); this.openWindow(); }
+    return this;
+  }
+
+  /** The prompt attachments kept beside the task's draft text; empty when there are none. */
+  attachments(id: string): PromptAttachment[] {
+    if (this.loaded && !super.has(id)) this.adopt(id);
+    return this.attached.get(id) ?? [];
+  }
+
+  /** Replaces a draft's attachments. Written like `set`, at once or within the open write window;
+   * a draft left with no text and no attachments is removed from storage. */
+  setAttachments(id: string, items: readonly PromptAttachment[]): this {
+    if (!this.loaded) {
+      if (items.length) this.attached.set(id, [...items]); else this.attached.delete(id);
+      return this;
+    }
+    // Nothing left to keep (a send or a discard cleared the last chip): never resurrect a draft here.
+    if (!super.has(id) && !items.length) {
+      this.pending.delete(id);
+      this.unstore(id);
+      this.savedAt.delete(id);
+      return this;
+    }
+    // A New task that has not read its project's kept draft yet takes it over with the attachments.
+    if (!super.has(id)) this.adopt(id);
+    this.claim(id);
+    if (items.length) this.attached.set(id, [...items]); else this.attached.delete(id);
+    const had = super.has(id), text = super.get(id) ?? '';
+    this.savedAt.set(id, this.now());
+    if (!keepsDraft(text, items.length)) {
+      this.pending.delete(id);
+      this.unstore(id);
+      if (!had) this.savedAt.delete(id);
+      return this;
+    }
+    if (!had) super.set(id, '');
+    if (this.timer && this.window !== undefined) this.pending.add(id);
     else { this.write(id); this.openWindow(); }
     return this;
   }
@@ -176,6 +237,7 @@ export class PersistedDrafts extends Map<string, string> {
   override delete(id: string): boolean {
     this.pending.delete(id);
     this.savedAt.delete(id);
+    this.attached.delete(id);
     this.unstore(id);
     this.claimed.delete(id);
     return super.delete(id);
@@ -183,13 +245,14 @@ export class PersistedDrafts extends Map<string, string> {
   override clear(): void { for (const id of [...this.keys()]) this.delete(id); }
 
   /** Settings' Clear saved drafts: removes every stored draft (thread, New task and channel text,
-   * also any this launch never loaded) and drops them from memory, except `keep`'s: the text shown
-   * in an open composer stays on screen, unstored until its next change. */
+   * attachments included, also any this launch never loaded) and drops them from memory, except
+   * `keep`'s: the text and attachments shown in an open composer stay on screen, unstored until
+   * their next change. */
   clearStored(keep: (id: string) => boolean = () => false): void {
     this.pending.clear();
     for (const key of storedKeys(this.store)) safeRemove(this.store, key);
     this.stored.clear(); this.claimed.clear();
-    for (const id of [...this.keys()]) if (!keep(id)) { super.delete(id); this.savedAt.delete(id); }
+    for (const id of [...this.keys()]) if (!keep(id)) { super.delete(id); this.savedAt.delete(id); this.attached.delete(id); }
   }
 
   /** Whether drafts are written to storage (Settings' Keep unsent drafts). */
@@ -216,13 +279,15 @@ export class PersistedDrafts extends Map<string, string> {
 
   private keyOf(id: string): string { return DRAFT_PREFIX + (this.claimed.get(id) ?? id); }
 
-  /** Moves the project's kept text (loaded, not yet taken) to this New task. */
+  /** Moves the project's kept text and attachments (loaded, not yet taken) to this New task. */
   private adopt(id: string): string | undefined {
     const key = this.newTaskKey(id), text = key === undefined ? undefined : super.get(key);
     if (key === undefined || text === undefined) return undefined;
     super.set(id, text); this.savedAt.set(id, this.savedAt.get(key) ?? this.now());
     const size = this.stored.get(key);
     if (size !== undefined) this.stored.set(id, size);
+    const attachments = this.attached.get(key);
+    if (attachments) { this.attached.set(id, attachments); this.attached.delete(key); }
     super.delete(key); this.savedAt.delete(key); this.stored.delete(key);
     this.claimed.set(id, key);
     return text;
@@ -266,12 +331,14 @@ export class PersistedDrafts extends Map<string, string> {
     // Its New task state may have changed since the change was typed.
     this.claim(id, false);
     if (!this.keeping) return;
-    const text = super.get(id);
-    if (text === undefined || !keep(text)) { this.unstore(id); return; }
-    const size = bytes(text);
+    const text = super.get(id), storedAttachments = toStored(this.attached.get(id) ?? []);
+    if (text === undefined || !keepsDraft(text, storedAttachments?.length ?? 0)) { this.unstore(id); return; }
+    const attachments = storedAttachments ?? [], size = bytes(text) + attachmentsBytes(attachments);
     this.stored.delete(id);
     this.evictOldest(DRAFTS_BYTE_BUDGET - size);
-    const value = JSON.stringify({ t: this.savedAt.get(id) ?? this.now(), text }), key = this.keyOf(id);
+    const record: { t: number; text: string; a?: PromptAttachment[] } = { t: this.savedAt.get(id) ?? this.now(), text };
+    if (attachments.length) record.a = attachments;
+    const value = JSON.stringify(record), key = this.keyOf(id);
     try { this.store.setItem(key, value); }
     catch {
       // Full: make room by dropping the older half of what is stored, then try once more.
