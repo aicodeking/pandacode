@@ -26,6 +26,7 @@ export const HUB_ENTRIES: readonly HubEntry[] = [
   { key: 'board', title: 'Board', subtitle: 'Tasks by stage', section: 'work', icon: { ios: 'rectangle.split.3x1', android: 'view_kanban' }, needs: 'thread.setStage', pathname: '/board' },
   { key: 'schedules', title: 'Schedules', subtitle: 'Recurring tasks', section: 'work', icon: { ios: 'calendar.badge.clock', android: 'schedule' }, needs: 'schedules.list', pathname: '/schedules' },
   { key: 'github', title: 'GitHub', subtitle: 'Issues, pull requests and runs', section: 'work', icon: { ios: 'arrow.triangle.pull', android: 'merge' }, needs: 'github.repos', pathname: '/github' },
+  { key: 'rooms', title: 'Rooms', subtitle: 'Shared bot channels', section: 'work', icon: { ios: 'bubble.left.and.bubble.right', android: 'forum' }, needs: 'rooms.list', pathname: '/rooms' },
   { key: 'files', title: 'Files', subtitle: 'Browse the project', section: 'project', icon: { ios: 'folder', android: 'folder' }, needs: 'files.list', project: true, pathname: '/files' },
   { key: 'search', title: 'Search', subtitle: 'File names and text', section: 'project', icon: { ios: 'magnifyingglass', android: 'search' }, needs: 'files.search', project: true, pathname: '/search' },
   { key: 'recipes', title: 'Recipes', subtitle: 'Saved multi-step workflows', section: 'project', icon: { ios: 'list.bullet.rectangle', android: 'checklist' }, needs: 'recipes.list', project: true, pathname: '/recipes' },
@@ -74,7 +75,9 @@ export function botRows(bots: readonly Bot[] | undefined): { id: string; title: 
     .map(bot => ({ id: bot.id, title: bot.name || 'Bot', subtitle: bot.paused ? 'Paused' : bot.state === 'working' ? 'Working' : 'Ready', bot }));
 }
 
-/** The app version line: "PandaCode 0.3.102", "Older PandaCode" or nothing until known. */
+/** The app version line: "PandaCode 0.3.102", "Older PandaCode" or nothing until known.
+ * `current` (host.updateStatus's currentVersion) wins where there is one: it is what the computer
+ * says about itself now, which may be newer than the host.hello this phone still holds. */
 export function versionLine(caps: HostCapabilities | undefined): string {
   if (!caps) return '';
   if (caps.kind === 'legacy') return 'An older PandaCode: update it to use more from the phone';

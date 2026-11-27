@@ -44,7 +44,7 @@ const PUSHED_SCREENS: readonly (readonly [name: string, title: string])[] = [
   ['computer/[device]', 'Computer'], ['files', 'Files'], ['file', 'File'], ['search', 'Search'], ['progress', 'Progress'],
   ['checks', 'Checks'], ['skills', 'Skills'], ['recipes', 'Recipes'], ['servers', 'Run & servers'],
   ['github', 'GitHub'], ['github-item', 'GitHub'], ['schedules', 'Schedules'], ['schedule', 'Schedule'],
-  ['terminal', 'Terminal'], ['bot-admin', 'Bot'], ['machines', 'Machines'],
+  ['terminal', 'Terminal'], ['bot-admin', 'Bot'], ['rooms', 'Rooms'], ['machines', 'Machines'],
   ['computer-settings', 'Settings'], ['moodboards', 'Moodboards'],
   ['designs', 'Designs'], ['design', 'Design'],
 ];
