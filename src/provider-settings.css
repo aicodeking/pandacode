@@ -18,7 +18,7 @@
 .connection-card a{display:flex;align-items:center;justify-content:space-between;gap:8px;min-height:36px;margin:0 calc(var(--ds-card-pad) - var(--ds-row-pad-x));padding:0 calc(var(--ds-row-pad-x) - var(--ds-card-pad));border-radius:var(--ds-control-radius);font-size:var(--type-meta);color:var(--muted);text-decoration:none;transition:background-color var(--ds-ease-out) ease-out,color var(--ds-ease-out) ease-out}
 .connection-card a:hover{background:var(--ds-row-hover);color:var(--text);transition-duration:var(--ds-ease-in)}
 .connection-card a>.icon{width:var(--icon-sm);height:var(--icon-sm)}
-.connection-card label:not(.connection-env-global,.connection-secret,.ds-row-title){display:block;font-size:var(--type-subheading);font-weight:var(--type-subheading-weight);color:var(--muted);margin:12px 0 6px;line-height:var(--type-subheading-leading);letter-spacing:var(--tracking-none);}
+.connection-card label:not(.connection-env-global,.connection-proxy-global,.proxy-active,.connection-secret,.ds-row-title){display:block;font-size:var(--type-subheading);font-weight:var(--type-subheading-weight);color:var(--muted);margin:12px 0 6px;line-height:var(--type-subheading-leading);letter-spacing:var(--tracking-none);}
 .connection-input-row{display:flex;gap:6px;align-items:center}
 .connection-input-row input:not([type=checkbox]){flex:1;min-width:0;height:var(--ds-btn-h);font-size:var(--type-body);padding:0 12px;border:0;border-radius:var(--ds-control-radius);background:var(--ds-card-inset)}
 .connection-input-row button{flex-shrink:0;height:var(--ds-btn-h);font-size:var(--type-body);padding:0 14px}
@@ -29,20 +29,20 @@
 .connection-select select:where([multiple],[size]:not([size="1"])){padding-inline-end:10px}
 .connection-endpoint-hint{display:block;font-size:var(--type-meta);line-height:var(--type-meta-leading);color:var(--muted);margin:.35rem 0 0;font-family:var(--mono);overflow-wrap:anywhere}
 .connection-endpoint-hint.error{color:var(--ds-danger);font-family:inherit}
-.connection-path,.connection-env{margin:0 calc(var(--ds-card-pad) - var(--ds-row-pad-x))}
-.connection-card>:is(a,.connection-links)+:is(.connection-path,.connection-env),.connection-card>p+:is(.connection-path,.connection-env){margin-top:6px}
-.connection-env summary,.connection-path summary{display:flex;align-items:center;justify-content:space-between;min-height:36px;padding:0 calc(var(--ds-row-pad-x) - var(--ds-card-pad));border-radius:var(--ds-control-radius);list-style:none;font-size:var(--type-meta);color:var(--muted);cursor:pointer;transition:background-color var(--ds-ease-out) ease-out,color var(--ds-ease-out) ease-out}
-.connection-env summary:hover,.connection-path summary:hover:hover{background:var(--ds-row-hover);color:var(--text);transition-duration:var(--ds-ease-in)}
-.connection-env[open],.connection-path[open]{padding-bottom:8px}
-.connection-env[open]>:not(summary),.connection-path[open]>:not(summary)>:not(summary){margin-left:calc(var(--ds-row-pad-x) - var(--ds-card-pad));margin-right:calc(var(--ds-row-pad-x) - var(--ds-card-pad))}
-.connection-env summary::-webkit-details-marker,.connection-path summary::-webkit-details-marker::-webkit-details-marker{display:none}
-.connection-env summary>.icon,.connection-path summary>.icon>.icon{width:var(--icon-sm);height:var(--icon-sm);transition:rotate var(--ds-ease-out) ease-out}
-.connection-env[open] summary>.icon,.connection-path[open] summary>.icon summary>.icon{rotate:90deg}
-.connection-env small{display:block;font-size:var(--type-meta);color:var(--muted);margin-top:4px;line-height:var(--type-meta-leading)}
-.connection-card .connection-env-global,.connection-card .connection-secret{display:flex;align-items:center;gap:8px;margin:0;font-size:var(--type-meta);font-weight:var(--type-meta-weight);line-height:var(--type-meta-leading);color:var(--muted)}
-.connection-card .connection-env-global{margin:8px 0 4px}
+.connection-path,.connection-env,.connection-proxy{margin:0 calc(var(--ds-card-pad) - var(--ds-row-pad-x))}
+.connection-card>:is(a,.connection-links)+:is(.connection-path,.connection-env,.connection-proxy),.connection-card>p+:is(.connection-path,.connection-env,.connection-proxy),.connection-env+.connection-proxy{margin-top:6px}
+.connection-env summary,.connection-path summary,.connection-proxy summary{display:flex;align-items:center;justify-content:space-between;min-height:36px;padding:0 calc(var(--ds-row-pad-x) - var(--ds-card-pad));border-radius:var(--ds-control-radius);list-style:none;font-size:var(--type-meta);color:var(--muted);cursor:pointer;transition:background-color var(--ds-ease-out) ease-out,color var(--ds-ease-out) ease-out}
+.connection-env summary:hover,.connection-path summary:hover,.connection-proxy summary:hover{background:var(--ds-row-hover);color:var(--text);transition-duration:var(--ds-ease-in)}
+.connection-env[open],.connection-path[open],.connection-proxy[open]{padding-bottom:8px}
+.connection-env[open]>:not(summary),.connection-path[open]>:not(summary),.connection-proxy[open]>:not(summary){margin-left:calc(var(--ds-row-pad-x) - var(--ds-card-pad));margin-right:calc(var(--ds-row-pad-x) - var(--ds-card-pad))}
+.connection-env summary::-webkit-details-marker,.connection-path summary::-webkit-details-marker,.connection-proxy summary::-webkit-details-marker{display:none}
+.connection-env summary>.icon,.connection-path summary>.icon,.connection-proxy summary>.icon{width:var(--icon-sm);height:var(--icon-sm);transition:rotate var(--ds-ease-out) ease-out}
+.connection-env[open] summary>.icon,.connection-path[open] summary>.icon,.connection-proxy[open] summary>.icon{rotate:90deg}
+.connection-env small,.connection-proxy small{display:block;font-size:var(--type-meta);color:var(--muted);margin-top:4px;line-height:var(--type-meta-leading)}
+.connection-card .connection-env-global,.connection-card .connection-proxy-global,.connection-card .connection-secret{display:flex;align-items:center;gap:8px;margin:0;font-size:var(--type-meta);font-weight:var(--type-meta-weight);line-height:var(--type-meta-leading);color:var(--muted)}
+.connection-card .connection-env-global,.connection-card .connection-proxy-global{margin:8px 0 4px}
 .connection-card .connection-secret{flex:none;white-space:nowrap}
-.connection-env-global input[type=checkbox],.connection-secret input[type=checkbox]{flex:none;width:auto;height:auto;min-height:0;padding:0}
+.connection-env-global input[type=checkbox],.connection-proxy-global input[type=checkbox],.connection-secret input[type=checkbox]{flex:none;width:auto;height:auto;min-height:0;padding:0}
 .connection-env-list{display:flex;flex-direction:column;gap:.35rem;margin:.6rem 0}
 .connection-env-list:empty{display:none}
 .connection-env-var{display:flex;align-items:center;gap:8px;min-height:36px;font-size:var(--type-meta);padding:0 6px 0 12px;border-radius:var(--ds-control-radius);background:var(--ds-card-inset)}
@@ -56,9 +56,9 @@
 .connection-env-var .connection-env-replace input{flex:1;min-width:0;height:var(--control);font-size:var(--type-meta);line-height:var(--type-meta-leading);padding:0 8px;border:0;border-radius:var(--ds-control-radius);background:var(--ds-card);color:var(--text)}
 .connection-env-var>[data-replace-env],.connection-env-var>.connection-env-replace{margin-left:auto}
 .connection-env-var>button{flex:none}
-.connection-env-var button,html[data-theme] .connection-env-var button{font-size:var(--type-body);min-height:26px;padding:0 8px;border-radius:var(--radius-chip)}
-/* An environment row is a stepped control (6px); its inset action keeps a smaller corner (b). */
-html[data-theme] .provider-connections-dialog .connection-card .connection-env-var button{border-radius:var(--radius-hair)}
+.connection-env-var button,.proxy-actions button,html[data-theme] .connection-env-var button,html[data-theme] .proxy-actions button{font-size:var(--type-body);min-height:26px;padding:0 8px;border-radius:var(--radius-chip)}
+/* An environment or proxy row is a stepped control (6px); its inset action keeps a smaller corner (b). */
+html[data-theme] .provider-connections-dialog .connection-card .connection-env-var button,html[data-theme] .provider-connections-dialog .connection-card .proxy-actions button{border-radius:var(--radius-hair)}
 .connection-path small{display:block;font-size:var(--type-meta);color:var(--muted);margin-top:4px}
 .connection-feedback{font-size:var(--type-meta);margin:0;line-height:var(--type-meta-leading);color:var(--muted)}
 .connection-feedback.error{color:var(--ds-danger)}
@@ -68,8 +68,8 @@ html[data-theme] .provider-connections-dialog .connection-card .connection-env-v
 #claude-connection .connection-key-status{justify-content:flex-start}.claude-auth-source{min-width:0}.claude-auth-details{display:flex}#claude-connection [data-check-claude]{margin-left:auto}
 #claude-connection .claude-auth-endpoint{font-family:var(--mono);font-size:var(--type-caption);line-height:var(--type-caption-leading);overflow-wrap:anywhere}
 #claude-connection .claude-auth-conflict{color:var(--ds-warn)}
-@media(max-width:500px){.connection-card{padding:calc(var(--connection-head) + 8px) 14px 12px}.connection-input-row{flex-wrap:wrap}.connection-input-row input:not([type=checkbox]){flex-basis:100%}.connection-key-status{align-items:flex-start;flex-direction:column}.connection-card h3{flex-wrap:wrap}}
-@media(prefers-reduced-motion:reduce){.connection-card a,.connection-env summary,.connection-path summary,.connection-env summary>.icon,.connection-path summary>.icon>.icon{transition:none}}
+@media(max-width:500px){.connection-card{padding:calc(var(--connection-head) + 8px) 14px 12px}.connection-input-row{flex-wrap:wrap}.connection-input-row input:not([type=checkbox]){flex-basis:100%}.connection-key-status{align-items:flex-start;flex-direction:column}.connection-card h3{flex-wrap:wrap}.connection-card .proxy-form{grid-template-columns:minmax(0,1fr)}.connection-card .proxy-form>label{margin:6px 0 0}}
+@media(prefers-reduced-motion:reduce){.connection-card a,.connection-env summary,.connection-path summary,.connection-proxy summary,.connection-env summary>.icon,.connection-path summary>.icon,.connection-proxy summary>.icon{transition:none}}
 @media(prefers-contrast:more){.connection-card,.connection-card::before{border-color:var(--border);box-shadow:none}}
 .connection-card>h3:first-child+:is(label,div,p,form,.connection-auth-label){margin-top:0}
 /* A harness card folds to one row: logo, name, state, chevron. Open, it is the same outer + inner card. */
@@ -95,3 +95,32 @@ details.connection-card:not([open])::before{display:none}
 .connection-card>summary+:is(label,div,p,form,.connection-auth-label){margin-top:0}
 @media(prefers-reduced-motion:reduce){.connection-card>summary,.connection-card>summary>.icon{transition:none}}
 .connection-renew-row{margin:.75rem 0 .45rem;padding:0}.connection-renew-row .ds-row-trail{display:flex;align-items:center;gap:.5rem}
+/* Proxies: one row per saved proxy with its active choice, then the add/edit form. */
+.proxy-global{display:flex;flex-wrap:wrap;align-items:center;gap:8px 10px;margin:12px 0}
+.connection-card .proxy-global>label{margin:0;font-size:var(--type-meta);font-weight:var(--type-meta-weight);line-height:var(--type-meta-leading)}
+.proxy-global input{flex:1;min-width:0;height:var(--ds-btn-h);font-size:var(--type-body);line-height:var(--type-body-leading);padding:0 12px;border:0;border-radius:var(--ds-control-radius);background:var(--ds-card-inset)}
+.proxy-global button{flex-shrink:0;height:var(--ds-btn-h);font-size:var(--type-body);line-height:var(--type-body-leading);padding:0 14px}
+.proxy-global small{flex-basis:100%;font-size:var(--type-meta);line-height:var(--type-meta-leading);color:var(--muted)}
+@media(max-width:500px){.proxy-global input{flex-basis:100%}}
+.proxy-list{display:flex;flex-direction:column;gap:.35rem;margin:.6rem 0}
+.proxy-list:empty{display:none}
+.proxy-row{display:flex;flex-wrap:wrap;align-items:center;gap:4px 10px;min-height:38px;padding:4px 6px 4px 12px;border-radius:var(--ds-control-radius);background:var(--ds-card-inset)}
+.proxy-active{display:flex;align-items:center;gap:6px;margin:0;font-size:var(--type-meta);line-height:var(--type-meta-leading);color:var(--muted);cursor:pointer}
+.proxy-active input[type=radio]{flex:none;width:auto;height:auto;min-height:0;padding:0}
+.proxy-name{font-size:var(--type-meta);line-height:var(--type-meta-leading);color:var(--text)}
+.proxy-row code{font-family:var(--mono);font-size:var(--code-inline-size);line-height:inherit;color:var(--muted);overflow-wrap:anywhere;min-width:0}
+.proxy-noproxy,.proxy-usage{font-size:var(--type-meta);line-height:var(--type-meta-leading);color:var(--muted)}
+.proxy-actions{display:flex;gap:6px;margin-left:auto}
+.proxy-test-result{font-size:var(--type-meta);line-height:var(--type-meta-leading);color:var(--muted);flex-basis:100%}
+.proxy-test-result[data-status=ok]{color:var(--ds-success)}
+.proxy-test-result[data-status=auth]{color:var(--ds-warn)}
+.proxy-test-result[data-status=error]{color:var(--ds-danger)}
+.proxy-form>.proxy-test-result{grid-column:1/-1}
+.connection-card .proxy-form{display:grid;grid-template-columns:max-content minmax(0,1fr);align-items:center;gap:8px 10px;margin:12px 0 0}
+.connection-card .proxy-form>label{margin:0}
+.connection-card .proxy-form input:not([type=hidden]){min-width:0;height:var(--ds-btn-h);font-size:var(--type-body);padding:0 12px;border:0;border-radius:var(--ds-control-radius);background:var(--ds-card-inset)}
+.proxy-form-actions{grid-column:1/-1;display:flex;justify-content:flex-end;gap:6px}
+.proxy-hint{color:var(--muted)}
+.connection-proxy .proxy-env-warning,.connection-card .proxy-conflict-summary{color:var(--ds-warn)}
+.connection-proxy .proxy-env-warning{margin:6px 0 0;font-size:var(--type-meta);line-height:var(--type-meta-leading)}
+.connection-card .proxy-conflict-summary{margin:8px 0 0}

@@ -276,7 +276,9 @@ out), then the provider's own variables, then the harness's sign-in and
 endpoint configuration (a GLM or MiMo key always configures its Claude Code
 process, and "Prefer saved Claude login" scrubs inherited credential variables
 at this point), then a named connection's environment, whose variables land
-after the scrub.
+after the scrub. An active proxy (below) fills `HTTP_PROXY`, `HTTPS_PROXY` and
+`NO_PROXY` only when no earlier layer set them, so saved variables and a named
+connection's environment still win.
 
 Claude's model selection is the one thing PandaCode keeps for itself, in every
 mode. A Claude Code launch always names its model, so the inherited
@@ -303,9 +305,12 @@ catalogs and usage, so the next query runs with the new setting.
 On cloud machines nothing is inherited by default. Settings → Agents → Cloud
 sandboxes has a per-provider **Include provider environment variables** switch
 (off), and when it is on, a task on that cloud carries the harness's saved
-variables with it. The harness's own credentials and endpoints still win over
-inherited variables, and mirroring a task to another computer stays untouched —
-that computer uses its own settings.
+variables with it — a proxy the cloud machine can reach, for example, such as a
+corporate proxy reachable from an AWS VPC. A proxy pointing at this computer
+(`127.0.0.1`, `localhost`) refuses to start the task: the machine cannot reach
+it, and the harness would lose all its API traffic. The harness's own
+credentials and endpoints still win over inherited variables, and mirroring a
+task to another computer stays untouched — that computer uses its own settings.
 
 The per-provider list and the opt-out switch live on each provider's card here.
 Every harness has one: those with sign-in specifics are written by hand, and the
@@ -320,6 +325,59 @@ the link (a Homebrew Caskroom link or a Volta shim, say) therefore keeps working
 without editing the setting. GLM Coding Plan and MiMo Token Plan run the Claude
 executable, so they have no location of their own and use the one on the Claude
 Code card.
+
+### Proxies
+
+Settings → Providers also holds named proxies, one active at a time, so a proxy
+shared by every harness is saved once instead of retyped as variables. A proxy
+is a name, a URL (`http://` or `https://`, which may carry `user:pass@`
+userinfo) and an optional **No proxy for** list; up to 16 can be saved, and
+names are unique and 1–64 characters. The active proxy supplies `HTTP_PROXY`,
+`HTTPS_PROXY` and `NO_PROXY` to every harness PandaCode starts: task runs, model
+catalogs, slash-command and integration discovery, the harness console, and
+usage checks.
+
+`NO_PROXY` is built from three lists, merged in this order with duplicates
+dropped: the loopback and private ranges below, then the card's own **Never
+proxy these hosts** list (one global list shared by every harness), then the
+proxy's own **No proxy for** list. The global list saves retyping a corporate
+domain on every proxy. An explicit non-empty `NO_PROXY` variable saved in an
+environment list still wins over all of them and is reported in the override
+warning.
+
+Loopback and private ranges are always left off the proxy — `localhost`,
+`127.0.0.1`, `::1`, `10/8`, `172.16/12`, `192.168/16`, `169.254/16` and
+`100.64/10` — merged with the proxy's own no-proxy list, so local MCP and ACP
+servers on this computer are never sent through it.
+
+Each harness card can turn the active proxy off and pick its own saved proxy,
+or none. An environment variable saved in a card is explicit and wins over the
+proxy, and PandaCode warns on that card when `HTTP_PROXY`, `HTTPS_PROXY` or
+`NO_PROXY` is set there explicitly while a proxy applies.
+
+Proxy URLs live in PandaCode's secure store — the same 0600 secrets file or OS
+store as API keys — never in `provider-settings.json`, and are never sent back
+to the interface: the page shows the URL with its userinfo masked
+(`http://***@host:port`), and an edit always requires re-entering it. Code:
+`src-tauri/src/provider_settings.rs`; the layered order above still holds, with
+the proxy filling `HTTP_PROXY`, `HTTPS_PROXY` and `NO_PROXY` below explicitly
+saved variables and below a named connection's environment.
+
+A proxy URL must include its scheme (`http://`), which is why the URL field
+requires one: a scheme-less value makes the proxy unusable — Codex reports
+“Proxy URL scheme not supported” and falls back.
+
+**Test** checks a proxy without starting an agent. On a saved proxy, or on a URL
+typed into the form before saving, it opens one bounded connection (8 seconds)
+and asks the proxy for a small public page. The proxy answering at all means it
+is reachable and forwarding; a 407 means it wants different credentials, and any
+other error status means it could not reach the target. The probe sends a plain
+HTTP request through the proxy rather than a TLS one, so a proxy that inspects
+TLS is not reported as broken, and the result never includes the URL or its
+password. Every harness already keeps `localhost`, `127.0.0.1`, `::1`,
+`10/8`, `172.16/12`, `192.168/16`, `169.254/16` and `100.64/10` off the proxy,
+so the test says nothing about whether a *local* server works — it only checks
+the internet path through the proxy.
 
 ## GitHub Copilot CLI
 
@@ -872,7 +930,11 @@ account's plan can reach (Command Code's own models plus any BYOK providers).
 choice maps onto one directly: Standard → `default`, Accept edits → `auto-accept`,
 Plan → `plan` (read-only: no edits or commands), Full access → `bypass`. A mode the
 server stops advertising fails the turn instead of silently running in a different
-one; plan mode needs no prompt prefix, because the harness enforces it.
+one; plan mode needs no prompt prefix, because the harness enforces it. When the model
+ends a plan with `exit_plan_mode`, PandaCode shows the harness's approval as
+"Implement the plan?"; approving switches the task back to the permission mode it had
+before Plan mode. A harness mode update (`current_mode_update`) is mirrored into the
+task's stored mode.
 
 **Turn data.** Streaming text, tool calls, context usage (`usage_update`), slash
 commands (`available_commands_update`, including installed skills), cancel, resume

@@ -60,6 +60,119 @@ test('global and per-provider environment variables are added, shown, replaced, 
   expect(errors).toEqual([]);
 });
 
+test('proxies are saved, activated, masked, and can be turned off per harness', async ({ page }) => {
+  const errors: string[] = []; page.on('pageerror', error => errors.push(error.message));
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  const settings = page.getByRole('region', { name: 'Settings', exact: true });
+  await settings.getByRole('tab', { name: 'Agents', exact: true }).click(); await settings.getByRole('tab', { name: 'Providers', exact: true }).click(); await page.locator('#settings-panel-providers details.connection-card').first().waitFor(); for (const s of await page.locator('#settings-panel-providers details.connection-card>summary').all()) await s.click();
+  await expect(page.locator('#global-environment')).toHaveJSProperty('open', true);
+
+  // A saved proxy shows a masked URL and its no-proxy list, and never the password it was given.
+  const proxiesCard = page.locator('#proxies');
+  const proxyList = proxiesCard.locator('.proxy-list');
+  const form = proxiesCard.locator('#proxy-form');
+  const globalNoProxy = proxiesCard.locator('#proxy-global-noproxy');
+  const saveGlobalNoProxy = proxiesCard.locator('[data-save-global-noproxy]');
+  await expect(proxiesCard.locator('.proxy-global small')).toContainText('loopback and private ranges, which are always included');
+  await globalNoProxy.fill('  .corp.example, 10.20.0.0/16  ');
+  await saveGlobalNoProxy.click();
+  await expect(page.locator('.connection-feedback')).toHaveText('Global no-proxy list saved.');
+  await expect(globalNoProxy).toHaveValue('.corp.example, 10.20.0.0/16');
+  await globalNoProxy.fill('');
+  await saveGlobalNoProxy.click();
+  await expect(page.locator('.connection-feedback')).toHaveText('Global no-proxy list cleared.');
+  await expect(globalNoProxy).toHaveValue('');
+  // Enter saves only this field, leaving the add-proxy form untouched.
+  await globalNoProxy.fill('.enter.example');
+  await globalNoProxy.press('Enter');
+  await expect(page.locator('.connection-feedback')).toHaveText('Global no-proxy list saved.');
+  await expect(globalNoProxy).toHaveValue('.enter.example');
+  await globalNoProxy.fill('');
+  await saveGlobalNoProxy.click();
+  await expect(page.locator('.connection-feedback')).toHaveText('Global no-proxy list cleared.');
+
+  await form.getByLabel('Name', { exact: true }).fill('Office proxy');
+  await form.getByLabel('Proxy URL', { exact: true }).fill('http://user:secret@proxy.example:3128');
+  await form.getByLabel('No proxy for', { exact: true }).fill('*.internal');
+  await proxiesCard.getByRole('button', { name: 'Add proxy', exact: true }).click();
+  const row = proxyList.locator('.proxy-row').filter({ hasText: 'Office proxy' });
+  await expect(row).toBeVisible();
+  await expect(row.locator('.proxy-name')).toHaveText('Office proxy');
+  await expect(row.locator('code')).toHaveText('http://***@proxy.example:3128');
+  await expect(row.locator('.proxy-noproxy')).toHaveText('No proxy for *.internal');
+  await expect(proxyList).not.toContainText('secret');
+
+  const result = row.locator('[data-proxy-test]');
+  await row.locator('[data-test-proxy]').click();
+  await expect(result).toBeVisible();
+  await expect(result).toHaveAttribute('data-status', 'ok');
+  await expect(result).toHaveText('The proxy answered. Traffic through it can reach the internet. (53 ms)');
+  await expect(row.getByRole('button', { name: 'Test', exact: true })).toBeEnabled();
+  await expect(proxyList).not.toContainText('secret');
+
+  // Selecting it makes it the one active proxy, so every harness follows it.
+  const active = row.getByRole('radio', { name: /Active/ });
+  await active.check();
+  await expect(active).toBeChecked();
+  await expect(proxyList.locator('.proxy-usage')).toHaveText('21 harnesses');
+  await expect(result).toBeHidden();
+  await row.locator('[data-test-proxy]').click();
+  await expect(result).toHaveAttribute('data-status', 'ok');
+
+  // Codex turns the global proxy off; its own select wakes up and picks the saved proxy.
+  const codex = page.locator('.connection-card', { has: page.locator('form[data-env-provider="codex"]') });
+  await codex.locator('details.connection-proxy > summary').click();
+  const useGlobal = codex.locator('[data-use-global-proxy="codex"]');
+  await expect(useGlobal).toBeChecked();
+  await useGlobal.uncheck();
+  await expect(useGlobal).not.toBeChecked();
+  // Opting out drops Codex from the count; choosing the saved proxy for itself puts it back.
+  await expect(proxyList.locator('.proxy-usage')).toHaveText('20 harnesses');
+  await expect(result).toBeVisible();
+  await expect(result).toHaveAttribute('data-status', 'ok');
+  const harnessProxy = codex.getByRole('combobox', { name: 'Proxy for this harness' });
+  await expect(harnessProxy).toBeEnabled();
+  await harnessProxy.selectOption({ label: 'Office proxy' });
+  await expect(harnessProxy).toHaveValue(/.+/);
+  await expect(proxyList.locator('.proxy-usage')).toHaveText('21 harnesses');
+
+  // Editing clears row health; an empty URL tests the saved secret without exposing it.
+  await row.getByRole('button', { name: 'Edit', exact: true }).click();
+  await expect(result).toBeHidden();
+  const formResult = form.locator('[data-proxy-test-form]');
+  const formTest = form.locator('[data-test-proxy-form]');
+  await expect(form.getByLabel('Proxy URL', { exact: true })).toHaveValue('');
+  await formTest.click();
+  await expect(formResult).toHaveAttribute('data-status', 'ok');
+  await expect(formResult).toContainText('The proxy answered.');
+  await expect(form).not.toContainText('secret');
+  await form.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await expect(formResult).toBeHidden();
+
+  // Unsaved form probes report authentication and connection failures without creating rows.
+  await formTest.click();
+  await expect(form.getByLabel('Proxy URL', { exact: true })).toBeFocused();
+  await expect(formResult).toBeHidden();
+  await form.getByLabel('Proxy URL', { exact: true }).fill('http://auth.invalid:3128');
+  await formTest.click();
+  await expect(formResult).toBeVisible();
+  await expect(formResult).toHaveAttribute('data-status', 'auth');
+  await expect(formResult).toHaveText('The proxy requires a user name and password.');
+  await form.getByLabel('Proxy URL', { exact: true }).fill('http://unreachable.invalid:3128');
+  await formTest.click();
+  await expect(formResult).toHaveAttribute('data-status', 'error');
+  await expect(formResult).toHaveText('Could not reach the proxy. Check the address and that the proxy is running.');
+  await expect(proxyList.locator('.proxy-name')).toHaveCount(1);
+  await expect(proxiesCard).not.toContainText('secret');
+
+  // Removing it takes the row away and the harness falls back to no proxy.
+  await proxyList.getByRole('button', { name: 'Remove Office proxy' }).click();
+  await expect(proxyList.locator('.proxy-row').filter({ hasText: 'Office proxy' })).toHaveCount(0);
+  await expect(harnessProxy).toHaveValue('');
+  expect(errors).toEqual([]);
+});
+
 test('every harness has environment settings, and all but GLM, MiMo and Alibaba an executable location', async ({ page }) => {
   const errors: string[] = []; page.on('pageerror', error => errors.push(error.message));
   await page.goto('/');

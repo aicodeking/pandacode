@@ -16,16 +16,26 @@ const globalEnvHelp = 'These variables are added to every agent harness PandaCod
 const envHelp = 'These variables are added whenever PandaCode starts this harness — for example HTTP_PROXY, HTTPS_PROXY and NO_PROXY behind a proxy. Provider sign-in and endpoint settings always win, and a named connection adds its own environment on top; values are saved on this computer, where plain values are shown and can be replaced, while secrets are kept in secure storage and never shown again.';
 /** Shown on the Secret tickbox when the platform has no secure store (the browser preview, or a build without one). */
 const secretUnavailable = 'Secrets need the desktop app’s secure storage. Plain variables still work here.';
+const proxyHelp = 'One proxy can be active at a time. While it is active it supplies HTTP_PROXY, HTTPS_PROXY and NO_PROXY to every harness that follows it. Each harness can turn that off and choose its own saved proxy, or none. Environment variables set for a harness are explicit, so they override the proxy; PandaCode lists them here. Saved proxy URLs are never shown again.';
+const proxyEnvHelp = 'Follows the active proxy until you turn this off, then this harness uses its own choice or no proxy. Environment variables set in this card win over the proxy.';
+const globalNoProxyHelp = 'This NO_PROXY list applies to every harness and is added after the always-direct loopback and private ranges: localhost, 127.0.0.1, ::1, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16 and 100.64.0.0/10. These are always included. A NO_PROXY variable saved in an environment list still wins.';
 
 /** One saved environment variable. A plain variable carries `value`; a secret one has no `value` at all. */
 interface EnvEntry { name: string; secret: boolean; value?: string }
 
+interface ProxyReport { status: 'ok' | 'auth' | 'error'; message: string; code: number | null; latencyMs: number | null }
 
 interface Configuration {
   executablePaths: Record<string, string>;
   globalEnvironment?: EnvEntry[];
   environment?: Record<string, EnvEntry[]>;
   useGlobalEnvironment?: Record<string, boolean>;
+  proxies?: { id: string; label: string; displayUrl: string; noProxy: string; active: boolean; providers: string[] }[];
+  activeProxy?: string | null;
+  globalNoProxy?: string;
+  useGlobalProxy?: Record<string, boolean>;
+  providerProxy?: Record<string, string>;
+  proxyEnvConflicts?: Record<string, string[]>;
   providers?: [string, string][];
   glmKeySaved: boolean;
   glmKeyFromEnvironment: boolean;
@@ -69,12 +79,18 @@ function envValueArea(entry: EnvEntry): string {
     : `<code class="connection-env-value">${escape(entry.value ?? '')}</code>`;
 }
 
-/** Per-provider collapsed environment section with the global-set toggle. */
+/** Per-provider collapsed environment section with the global-set toggle, and its own proxy choice. */
 function envDetails(provider: string): string {
   return `<details class="connection-env"><summary>Environment variables ${icon('chevron')}</summary>
     <label class="connection-env-global"><input type="checkbox" data-use-global="${provider}"> Use global environment variables</label>
     ${envEditor(provider)}
     <small>${escape(envHelp)}</small>
+  </details>
+  <details class="connection-proxy"><summary>Proxy ${icon('chevron')}</summary>
+    <label class="connection-proxy-global"><input type="checkbox" data-use-global-proxy="${provider}" checked> Use global proxy <span class="proxy-hint">(if set)</span></label>
+    <div class="connection-select"><select data-provider-proxy="${provider}" aria-label="Proxy for this harness" disabled><option value="">No proxy</option></select></div>
+    <p class="proxy-env-warning" data-proxy-warning="${provider}" hidden></p>
+    <small>${escape(proxyEnvHelp)}</small>
   </details>`;
 }
 
@@ -97,6 +113,25 @@ export function mountProviderSettings(host: HTMLElement, saved: () => Promise<un
     <details class="connection-card" id="global-environment"><summary><h3>Global environment variables</h3><span class="connection-state"></span>${icon('chevron')}</summary>
       <p>Added to every agent harness PandaCode starts — for example <code>HTTP_PROXY</code>, <code>HTTPS_PROXY</code> and <code>NO_PROXY</code> behind a proxy.${infoMark(globalEnvHelp, 'How the global environment is applied')}<span class="sr-only">${escape(globalEnvHelp)}</span></p>
       ${envEditor('*')}
+    </details>
+    <details class="connection-card" id="proxies"><summary><h3>Proxies</h3><span class="connection-state"></span>${icon('chevron')}</summary>
+      <p>One proxy can be active at a time, and it applies <code>HTTP_PROXY</code>, <code>HTTPS_PROXY</code> and <code>NO_PROXY</code> to every harness unless a harness turns it off.${infoMark(proxyHelp, 'How proxies are applied')}<span class="sr-only">${escape(proxyHelp)}</span></p>
+      <div class="proxy-global">
+        <label for="proxy-global-noproxy">Never proxy these hosts</label>
+        <input id="proxy-global-noproxy" maxlength="4096" placeholder=".corp.example,10.20.0.0/16" autocomplete="off" spellcheck="false" aria-describedby="proxy-global-help">
+        <button type="button" class="secondary-button" data-save-global-noproxy>Save</button>
+        <small id="proxy-global-help">Applies to every harness, added after the always-direct loopback and private ranges, which are always included. A <code>NO_PROXY</code> variable saved in an environment list still wins.${infoMark(globalNoProxyHelp, 'How the global no-proxy list is applied')}</small>
+      </div>
+      <div class="proxy-list" data-proxy-list></div>
+      <form id="proxy-form" class="proxy-form" data-proxy-form>
+        <input type="hidden" id="proxy-id" value="">
+        <label for="proxy-label">Name</label><input id="proxy-label" placeholder="Office proxy" maxlength="64" autocomplete="off" spellcheck="false">
+        <label for="proxy-url">Proxy URL</label><input id="proxy-url" placeholder="http://user:pass@host:8080" maxlength="4096" autocomplete="off" spellcheck="false">
+        <label for="proxy-noproxy">No proxy for</label><input id="proxy-noproxy" placeholder="localhost,127.0.0.1,.internal" maxlength="4096" autocomplete="off" spellcheck="false">
+        <div class="proxy-form-actions"><button type="button" class="secondary-button" data-test-proxy-form>Test</button><button type="button" class="secondary-button" data-cancel-proxy hidden>Cancel</button><button class="primary-button" type="submit">Add proxy</button></div>
+        <span class="proxy-test-result" data-proxy-test-form role="status" hidden></span>
+      </form>
+      <p class="proxy-conflict-summary" hidden></p>
     </details>
     <details class="connection-card" id="claude-connection"><summary><h3>${providerLogo('claude')}Claude Code</h3><span class="connection-state"></span>${icon('chevron')}</summary>
       <div class="connection-auth-label"><label for="claude-connection-mode">Claude connection</label><span class="sr-only" id="claude-connection-help">${escape(claudeHelp)}</span></div>
@@ -159,9 +194,73 @@ export function mountProviderSettings(host: HTMLElement, saved: () => Promise<un
   const claudeSource = host.querySelector<HTMLElement>('.claude-auth-source')!;
   const claudeCheck = host.querySelector<HTMLButtonElement>('[data-check-claude]')!;
   let claudeEdited = false, claudeRevision = 0;
-  let latest: Configuration | null = null;
+  const proxyForm = host.querySelector<HTMLFormElement>('#proxy-form')!;
+  const globalNoProxy = host.querySelector<HTMLInputElement>('#proxy-global-noproxy')!;
+  const globalNoProxySave = host.querySelector<HTMLButtonElement>('[data-save-global-noproxy]')!;
+  const proxyId = host.querySelector<HTMLInputElement>('#proxy-id')!;
+  const proxyLabel = host.querySelector<HTMLInputElement>('#proxy-label')!;
+  const proxyUrl = host.querySelector<HTMLInputElement>('#proxy-url')!;
+  const proxyNoProxy = host.querySelector<HTMLInputElement>('#proxy-noproxy')!;
+  const proxySubmit = proxyForm.querySelector<HTMLButtonElement>('button[type=submit]')!;
+  const proxyCancel = proxyForm.querySelector<HTMLButtonElement>('[data-cancel-proxy]')!;
+  const proxySummary = host.querySelector<HTMLElement>('.proxy-conflict-summary')!;
+  const proxyUrlPlaceholder = proxyUrl.placeholder;
+  let editingProxy: string | null = null, latest: Configuration | null = null;
+  const proxyTests = new Map<string, { status: string; message: string }>();
+  function applyProxyTests(): void {
+    for (const target of host.querySelectorAll<HTMLElement>('[data-proxy-test], [data-proxy-test-form]')) {
+      const result = proxyTests.get(target.dataset.proxyTest ?? 'form');
+      target.textContent = result?.message ?? '';
+      target.hidden = !result;
+      target.dataset.status = result?.status ?? '';
+    }
+  }
+  function clearProxyTest(id: string): void {
+    proxyTests.delete(id);
+    applyProxyTests();
+  }
+  async function runProxyTest(request: { proxyId?: string; url?: string }, target: HTMLElement, button: HTMLButtonElement): Promise<void> {
+    if (pending || disposed) return;
+    const id = target.dataset.proxyTest ?? 'form';
+    const testing = { status: '', message: 'Testing the proxy…' };
+    proxyTests.set(id, testing);
+    button.disabled = true;
+    button.textContent = 'Testing…';
+    target.textContent = ''; target.hidden = true;
+    applyProxyTests();
+    try {
+      const report = await call<ProxyReport>('provider_test_proxy', request);
+      if (disposed || proxyTests.get(id) !== testing) return;
+      proxyTests.set(id, { status: report.status, message: report.latencyMs != null && report.status === 'ok' ? `${report.message} (${report.latencyMs} ms)` : report.message });
+      applyProxyTests();
+    } catch (error) {
+      if (!disposed && proxyTests.get(id) === testing) {
+        proxyTests.set(id, { status: 'error', message: errorText(error) });
+        applyProxyTests();
+      }
+    } finally {
+      button.textContent = 'Test';
+      button.disabled = pending || disposed;
+    }
+  }
+  /** The one inline Replace open in a variable list, and where focus goes once that list is rebuilt. */
   let replacingEnv: { key: string; name: string; draft: string } | null = null;
   let focusEnv: { key: string; name: string; edit: boolean } | null = null;
+  function resetProxyForm(focus = false): void {
+    clearProxyTest('form');
+    editingProxy = null;
+    proxyId.value = ''; proxyLabel.value = ''; proxyUrl.value = ''; proxyNoProxy.value = '';
+    proxyUrl.placeholder = proxyUrlPlaceholder;
+    proxySubmit.textContent = 'Add proxy'; proxyCancel.hidden = true;
+    if (focus) proxyLabel.focus();
+  }
+  function syncActiveRadios(active: string | null): void {
+    for (const radio of host.querySelectorAll<HTMLInputElement>('[data-active-proxy]')) radio.checked = (radio.dataset.activeProxy || null) === active;
+  }
+  function syncProxySelects(): void {
+    const globals = new Map([...host.querySelectorAll<HTMLInputElement>('[data-use-global-proxy]')].map(box => [box.dataset.useGlobalProxy!, box.checked]));
+    for (const select of host.querySelectorAll<HTMLSelectElement>('[data-provider-proxy]')) select.disabled = globals.get(select.dataset.providerProxy!) ?? true;
+  }
   async function checkClaude(): Promise<void> {
     const ticket = ++claudeRevision;
     claudeSource.textContent = 'Checking Claude login…'; claudeCheck.disabled = true;
@@ -258,7 +357,55 @@ export function mountProviderSettings(host: HTMLElement, saved: () => Promise<un
     for (const toggle of host.querySelectorAll<HTMLInputElement>('[data-use-global]')) {
       toggle.checked = config.useGlobalEnvironment?.[toggle.dataset.useGlobal!] ?? true;
     }
+    if (latest && latest.activeProxy !== config.activeProxy) proxyTests.clear();
     latest = config;
+    globalNoProxy.value = config.globalNoProxy ?? '';
+    const proxies = config.proxies ?? [];
+    const activeProxy = config.activeProxy ?? null;
+    const activeProxyEntry = proxies.find(proxy => proxy.id === activeProxy);
+    const proxyList = host.querySelector<HTMLElement>('[data-proxy-list]')!;
+    // "No proxy" leads the list, checked when none is active, so an active proxy can be turned off.
+    const proxyRows: HTMLElement[] = [];
+    const noProxyRow = document.createElement('div');
+    noProxyRow.className = 'proxy-row proxy-row-none';
+    noProxyRow.innerHTML = `<label class="proxy-active"><input type="radio" name="active-proxy" data-active-proxy=""${activeProxy ? '' : ' checked'}>No proxy</label>`;
+    proxyRows.push(noProxyRow);
+    for (const proxy of proxies) {
+      const row = document.createElement('div');
+      row.className = 'proxy-row';
+      row.dataset.proxyId = proxy.id;
+      row.dataset.proxyLabel = proxy.label;
+      row.dataset.proxyNoProxy = proxy.noProxy;
+      row.dataset.proxyDisplayUrl = proxy.displayUrl;
+      row.innerHTML = `<label class="proxy-active"><input type="radio" name="active-proxy" data-active-proxy="${escape(proxy.id)}"${proxy.id === activeProxy ? ' checked' : ''}>Active<span class="sr-only">: ${escape(proxy.label)}</span></label>
+        <span class="proxy-name">${escape(proxy.label)}</span><code>${escape(proxy.displayUrl)}</code>
+        ${proxy.noProxy ? `<span class="proxy-noproxy">No proxy for ${escape(proxy.noProxy)}</span>` : ''}
+        ${proxy.providers.length ? `<span class="proxy-usage">${proxy.providers.length} harness${proxy.providers.length === 1 ? '' : 'es'}</span>` : ''}
+        <span class="proxy-actions"><button type="button" class="secondary-button" data-test-proxy="${escape(proxy.id)}">Test</button><button type="button" class="secondary-button" data-edit-proxy="${escape(proxy.id)}">Edit</button><button type="button" class="secondary-button" data-remove-proxy="${escape(proxy.id)}" aria-label="Remove ${escape(proxy.label)}">Remove</button></span>
+        <span class="proxy-test-result" data-proxy-test="${escape(proxy.id)}" role="status" hidden></span>`;
+      proxyRows.push(row);
+    }
+    proxyList.replaceChildren(...proxyRows);
+    applyProxyTests();
+    const proxyCount = `${proxies.length} ${proxies.length === 1 ? 'proxy' : 'proxies'}`;
+    const proxyConflicts = Object.entries(config.proxyEnvConflicts ?? {}).filter(([, names]) => names.length);
+    cardState(proxyList, activeProxyEntry ? `${proxyCount} · Active: ${activeProxyEntry.label}` : proxies.length ? proxyCount : 'None', proxyConflicts.length && activeProxyEntry ? 'warn' : activeProxyEntry ? 'info' : '');
+    for (const box of host.querySelectorAll<HTMLInputElement>('[data-use-global-proxy]')) box.checked = config.useGlobalProxy?.[box.dataset.useGlobalProxy!] ?? true;
+    for (const select of host.querySelectorAll<HTMLSelectElement>('[data-provider-proxy]')) {
+      const provider = select.dataset.providerProxy!;
+      select.replaceChildren(new Option('No proxy', ''), ...proxies.map(proxy => new Option(proxy.label, proxy.id)));
+      select.value = config.providerProxy?.[provider] ?? '';
+    }
+    for (const warning of host.querySelectorAll<HTMLElement>('[data-proxy-warning]')) {
+      const names = config.proxyEnvConflicts?.[warning.dataset.proxyWarning!] ?? [];
+      warning.hidden = !names.length;
+      warning.textContent = names.length ? `Environment variables override the proxy for this harness: ${names.join(', ')}.` : '';
+    }
+    proxySummary.hidden = !proxyConflicts.length;
+    const proxyNames = new Map(config.providers ?? []);
+    proxySummary.textContent = proxyConflicts.length ? `Environment variables override the active proxy for ${proxyConflicts.map(([provider, names]) => `${proxyNames.get(provider) ?? provider} (${names.join(', ')})`).join('; ')}.` : '';
+    syncProxySelects();
+    if (editingProxy && !proxies.some(proxy => proxy.id === editingProxy)) resetProxyForm();
     for (const provider of Object.keys(keyed) as KeyedProvider[]) {
       const spec = keyed[provider];
       const status = host.querySelector(`#${provider}-key-status`)!;
@@ -287,9 +434,13 @@ export function mountProviderSettings(host: HTMLElement, saved: () => Promise<un
     if (pending || disposed) return false;
     const submittedValue = submittedInput?.value;
     pending = true; host.setAttribute('aria-busy', 'true');
-    claudeMode.disabled = true; claudeRefresh.disabled = true;
+    claudeMode.disabled = true; claudeRefresh.disabled = true; globalNoProxy.disabled = true;
     host.querySelectorAll<HTMLButtonElement>('button').forEach(button => button.disabled = true);
     host.querySelectorAll<HTMLInputElement>('[data-use-global]').forEach(toggle => toggle.disabled = true);
+    host.querySelectorAll<HTMLInputElement>('[data-use-global-proxy]').forEach(toggle => toggle.disabled = true);
+    host.querySelectorAll<HTMLInputElement>('[data-active-proxy]').forEach(radio => radio.disabled = true);
+    host.querySelectorAll<HTMLSelectElement>('[data-provider-proxy]').forEach(select => select.disabled = true);
+    proxyForm.querySelectorAll<HTMLInputElement | HTMLButtonElement>('input,button').forEach(control => control.disabled = true);
     try {
       const configuration = await operation();
       if (disposed) return false;
@@ -304,12 +455,24 @@ export function mountProviderSettings(host: HTMLElement, saved: () => Promise<un
     } catch (error) { if (!disposed) { message(errorText(error), true); onFailure?.(); } return false; }
     finally {
       pending = false;
-      if (!disposed) { claudeMode.disabled = false; claudeRefresh.disabled = false; host.removeAttribute('aria-busy'); host.querySelectorAll<HTMLButtonElement>('button').forEach(button => button.disabled = false); host.querySelectorAll<HTMLInputElement>('[data-use-global]').forEach(toggle => toggle.disabled = false); for (const input of keyInputs) host.querySelector<HTMLButtonElement>(`#${input.id}-form button`)!.disabled = input.disabled; }
+      if (!disposed) { claudeMode.disabled = false; claudeRefresh.disabled = false; globalNoProxy.disabled = false; host.removeAttribute('aria-busy'); host.querySelectorAll<HTMLButtonElement>('button').forEach(button => button.disabled = false); host.querySelectorAll<HTMLInputElement>('[data-use-global]').forEach(toggle => toggle.disabled = false); host.querySelectorAll<HTMLInputElement>('[data-use-global-proxy]').forEach(toggle => toggle.disabled = false); host.querySelectorAll<HTMLInputElement>('[data-active-proxy]').forEach(radio => radio.disabled = false); proxyForm.querySelectorAll<HTMLInputElement | HTMLButtonElement>('input,button').forEach(control => control.disabled = false); syncProxySelects(); for (const input of keyInputs) host.querySelector<HTMLButtonElement>(`#${input.id}-form button`)!.disabled = input.disabled; }
     }
   }
   const submit = (event: Event) => {
     const form = (event.target as HTMLElement).closest<HTMLFormElement>('form'); if (!form || !host.contains(form)) return;
     event.preventDefault(); event.stopPropagation();
+    if (form.dataset.proxyForm !== undefined) {
+      clearProxyTest('form');
+      const label = proxyLabel.value.trim();
+      const url = proxyUrl.value.trim();
+      const noProxy = proxyNoProxy.value.trim();
+      if (!label) { proxyLabel.focus(); return; }
+      if (!url) { proxyUrl.focus(); return; }
+      if (editingProxy) clearProxyTest(editingProxy);
+      // Saved URLs are never shown again, so an edit always needs the URL re-entered.
+      void perform(() => call<Configuration>('provider_save_proxy', { proxyId: proxyId.value || undefined, label, url, noProxy }), 'Proxy saved.').then(ok => { if (ok) resetProxyForm(true); });
+      return;
+    }
     const envKey = form.dataset.envProvider;
     if (envKey !== undefined) {
       const name = form.querySelector<HTMLInputElement>('.connection-env-name')!;
@@ -345,7 +508,43 @@ export function mountProviderSettings(host: HTMLElement, saved: () => Promise<un
   };
   const click = async (event: MouseEvent) => {
     const target = (event.target as HTMLElement).closest<HTMLButtonElement>('button'); if (!target) return;
+    if (target.hasAttribute('data-save-global-noproxy')) {
+      const noProxy = globalNoProxy.value.trim();
+      void perform(() => call<Configuration>('provider_set_global_no_proxy', { noProxy }), noProxy ? 'Global no-proxy list saved.' : 'Global no-proxy list cleared.');
+      return;
+    }
+    const testingProxy = target.dataset.testProxy;
+    if (testingProxy !== undefined) {
+      const result = target.closest('.proxy-row')!.querySelector<HTMLElement>('[data-proxy-test]')!;
+      void runProxyTest({ proxyId: testingProxy }, result, target);
+      return;
+    }
+    if (target.hasAttribute('data-test-proxy-form')) {
+      const url = proxyUrl.value.trim();
+      if (!url && !editingProxy) { proxyUrl.focus(); return; }
+      void runProxyTest(url ? { url } : { proxyId: editingProxy! }, proxyForm.querySelector<HTMLElement>('[data-proxy-test-form]')!, target);
+      return;
+    }
     if (target.hasAttribute('data-check-claude')) { void checkClaude(); return; }
+    if (target.hasAttribute('data-cancel-proxy')) { resetProxyForm(true); return; }
+    const editing = target.dataset.editProxy;
+    if (editing !== undefined) {
+      clearProxyTest(editing);
+      clearProxyTest('form');
+      const row = target.closest<HTMLElement>('.proxy-row');
+      proxyId.value = editing;
+      proxyLabel.value = row?.dataset.proxyLabel ?? '';
+      proxyNoProxy.value = row?.dataset.proxyNoProxy ?? '';
+      proxyUrl.value = '';
+      proxyUrl.placeholder = row?.dataset.proxyDisplayUrl ? `Re-enter the URL (saved: ${row.dataset.proxyDisplayUrl})` : 'Re-enter the proxy URL';
+      editingProxy = editing;
+      proxySubmit.textContent = 'Save proxy';
+      proxyCancel.hidden = false;
+      proxyUrl.focus();
+      return;
+    }
+    const removingProxy = target.dataset.removeProxy;
+    if (removingProxy !== undefined) { clearProxyTest(removingProxy); void perform(() => call<Configuration>('provider_remove_proxy', { proxyId: removingProxy }), 'Proxy removed.'); return; }
     const replacing = target.dataset.replaceEnv;
     if (replacing !== undefined && target.dataset.envName) {
       // Replace never reveals the saved value: it opens an empty input, plain or secret.
@@ -433,6 +632,11 @@ export function mountProviderSettings(host: HTMLElement, saved: () => Promise<un
   const keydown = (event: KeyboardEvent) => {
     if (isImeKey(event)) return;
     const target = event.target;
+    if (target === globalNoProxy && event.key === 'Enter') {
+      event.preventDefault(); event.stopPropagation();
+      globalNoProxySave.click();
+      return;
+    }
     if (!(target instanceof HTMLInputElement) || !target.closest('.connection-env-replace')) return;
     if (event.key === 'Enter') {
       event.preventDefault();
@@ -461,6 +665,42 @@ export function mountProviderSettings(host: HTMLElement, saved: () => Promise<un
         undefined,
         // perform only reports the failure; the checkbox returns to the saved state.
         () => { target.checked = !useGlobal; },
+      );
+      return;
+    }
+    if (target instanceof HTMLInputElement && target.matches('[data-use-global-proxy]')) {
+      if (pending) { target.checked = !target.checked; return; }
+      const provider = target.dataset.useGlobalProxy!;
+      const useGlobal = target.checked;
+      void perform(
+        () => call<Configuration>('provider_set_use_global_proxy', { provider, useGlobal }),
+        useGlobal ? 'This harness follows the active proxy.' : 'This harness uses its own proxy choice.',
+        undefined,
+        () => { target.checked = latest?.useGlobalProxy?.[provider] ?? true; },
+      );
+      return;
+    }
+    if (target instanceof HTMLInputElement && target.matches('[data-active-proxy]')) {
+      if (pending) { syncActiveRadios(latest?.activeProxy ?? null); return; }
+      if (!target.checked) return;
+      const proxyId = target.dataset.activeProxy || undefined;
+      void perform(
+        () => call<Configuration>('provider_set_active_proxy', { proxyId }),
+        'Active proxy changed.',
+        undefined,
+        () => syncActiveRadios(latest?.activeProxy ?? null),
+      );
+      return;
+    }
+    if (target instanceof HTMLSelectElement && target.matches('[data-provider-proxy]')) {
+      if (pending) return;
+      const provider = target.dataset.providerProxy!;
+      const proxyId = target.value || undefined;
+      void perform(
+        () => call<Configuration>('provider_set_provider_proxy', { provider, proxyId }),
+        proxyId ? 'Proxy saved for this harness.' : 'This harness no longer uses a proxy.',
+        undefined,
+        () => { target.value = latest?.providerProxy?.[provider] ?? ''; },
       );
       return;
     }
