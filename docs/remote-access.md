@@ -890,13 +890,16 @@ Round 21:
   (`remote::methods::schedules::tests::a_bots_thread_needs_a_full_device_to_be_scheduled`; the
   source scan `phone_methods_that_drive_a_task_refuse_bot_threads_below_full` covers
   `schedules.rs`).
-- **Send now from a phone.** `queue.take` sends one entry without waiting for the run to end, and
-  does it on the host rather than leaning on the desktop webview: `dispatchQueue` returns early in a
-  browser tab unless the desktop itself marked the entry, and the window learns of a phone's edit
-  only from the Tauri `queue-changed` event, which a Connect call never raises. The idle path reuses
-  the headless drain's own delivery (`headless::send_queued`: attachments folded in, the entry put
-  back and the queue held when a launch fails), and the running path is `task.steer` followed by
-  `message_queue::remove_delivered`, so a stale Undo is refused exactly as after a desktop steer.
+- **Send now from a phone.** `queue.take` sends one entry without waiting for the run to end. It
+  sends on the host rather than asking the desktop window to, because what it needs is a decision the
+  host already owns: only the host knows whether the task is running, which entry is first, and
+  whether that device may drive it at all — and a browser tab's `dispatchQueue` returns early
+  (`webMode`). The desktop window is not left behind: `on_queue` emits the Tauri `queue-changed`
+  event on the app handle, `main.ts` subscribes to it, reloads the queue and dispatches. The idle
+  path reuses the headless drain's own delivery (`headless::send_queued`: attachments folded in, the
+  entry put back and the queue held when a launch fails), and the running path is `task.steer`
+  followed by `message_queue::remove_delivered`, so a stale Undo is refused exactly as after a
+  desktop steer.
   A running task is never stopped to send a queued message — the desktop's Send now does that, which
   is reasonable from a window the user is looking at and not from a list on a phone.
 - **Headless queue drain.** A phone's `queue.update`, `queue.remove`, `queue.restore` or
