@@ -341,6 +341,10 @@ pub(super) fn staff(config: &TeamConfig, lead: &storage::Session, assignment: &A
             if config.roster_only && roster.is_none() {
                 return Err("Panda Router picked a model outside this team.".into());
             }
+            // The lead's explicit level always wins; otherwise the router's own difficulty estimate
+            // picks a starting level, which `apply` still fits to the model's catalog.
+            let derived = model_efforts::from_difficulty(*difficulty, routed.mode).to_string();
+            let wanted = wanted.or(Some(&derived));
             let (reasoning_effort, adjusted) = model_efforts::apply(&pick.provider, &pick.model, wanted, roster.and_then(|p| p.reasoning_effort.as_ref()));
             let label = if pick.name.contains('·') { pick.name.clone() } else { format!("{} · {}", pick.name, pick.provider) };
             // The keyword heuristic stands in while the profiler downloads; say so.
@@ -588,5 +592,54 @@ mod council_diversity_tests {
         let route = routes["r2"].as_ref().unwrap();
         let open = opening_rung(route.pinned.as_ref(), &route.failed, route.mode, &route.ladder).unwrap();
         assert_eq!((open.provider.as_str(), open.model.as_str()), ("claude", "2"));
+    }
+
+    /// A routed assignment's starting effort follows the difficulty the router already computed,
+    /// and an explicit level from the lead still overrides it.
+    #[test]
+    fn a_routed_assignment_starts_on_the_effort_its_difficulty_implies() {
+        let config = || TeamConfig {
+            catalog: Vec::new(),
+            auto: true,
+            roster_only: false,
+            name: None,
+            workers: Vec::new(),
+            max_parallel: 0,
+            max_rounds: 0,
+            max_assignments: 0,
+            workspace: "shared".into(),
+            summary_limit: 2000,
+            lead_guidance: None,
+            council: None,
+        };
+        let store = storage::Store::open(std::path::Path::new(":memory:")).unwrap();
+        let project = store.add_project(&std::env::temp_dir()).unwrap();
+        let lead = store.create_session(&project.id, "claude", "default", "ask").unwrap();
+        let staffing = |difficulty: u8, effort: Option<&str>| {
+            let mut routes = AutoRoutes::new();
+            let mut found = route(Mode::Balanced, rung("codex", "difficulty-effort"), vec![rung("codex", "difficulty-effort")]).unwrap();
+            found.difficulty = difficulty;
+            routes.insert("k".to_string(), Ok(found));
+            let assignment: Assignment = serde_json::from_value(json!({
+                "key":"k","name":"k","prompt":"p","files":["src/a"],
+                "reasoningEffort": effort,
+            }))
+            .unwrap();
+            let (profile, _note, adjusted) = staff(&config(), &lead, &assignment, &routes).unwrap();
+            (profile.reasoning_effort, adjusted)
+        };
+        model_efforts::reset(false);
+        model_efforts::seed("codex", &[("difficulty-effort", &["low", "medium", "high"])]);
+        assert_eq!(staffing(2, None).0.as_deref(), Some("low"));
+        assert_eq!(staffing(5, None).0.as_deref(), Some("medium"));
+        assert_eq!(staffing(9, None).0.as_deref(), Some("high"));
+        // The lead's own choice is untouched by the derivation.
+        assert_eq!(staffing(2, Some("high")).0.as_deref(), Some("high"));
+        // A model that lacks the implied level is fitted down with a note, as any effort is.
+        model_efforts::seed("codex", &[("difficulty-effort", &["low"])]);
+        let (effort, adjusted) = staffing(9, None);
+        assert_eq!(effort.as_deref(), Some("low"));
+        assert!(adjusted.unwrap().contains("used low"));
+        model_efforts::reset(false);
     }
 }

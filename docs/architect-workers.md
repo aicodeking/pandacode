@@ -138,7 +138,19 @@ chat:
 
 An assignment or follow-up may set `reasoningEffort` (a worker's own sub-worker follow-ups
 accept it too, and the `sub_workers` schema advertises it) (`low`…`max`; some models also
-`off`, `minimal`); it overrides the profile's or the lead's default. It is normalised
+`off`, `minimal`); it overrides the profile's or the lead's default.
+
+When a routed assignment names no effort, the router's own difficulty estimate picks the starting
+level rather than leaving it at the model's default: `≤3` opens at `low`, `4–6` at `medium` and
+`≥7` at `high`, with *Cheap* shifting one step down and *Best* one step up, and never above `high`
+on its own — a lead that wants `max` says so. The level is only a request: it is fitted to the
+model's catalog exactly like an explicit one (below), so a model without it lands on its nearest
+supported level with a note. It is chosen at dispatch only, never per turn, because changing a
+top-level effort mid-conversation invalidates the harness's prompt cache. An explicit
+`reasoningEffort` always wins, and unrouted assignments (no difficulty to read) keep the
+profile's or the lead's default.
+
+It is normalised
 (trimmed, lowercase) and fitted to the chosen model (`architect/model_efforts.rs`):
 - A level is lowered only when the model's harness catalog is known to lack it (the
   nearest supported level, else the default). With no catalog, the harness's general

@@ -2,6 +2,10 @@
 
 PandaCode is an original implementation. T3 Code source and documentation were inspected for product requirements, system boundaries and tradeoffs; no implementation, assets or layouts were copied.
 
+## AI techniques survey (2026-11)
+
+Seven area reports and a synthesis live in [research/ai-techniques/](research/ai-techniques/00-README.md): agent orchestration and test-time compute, context engineering and memory, verification and reliability, the model/routing layer, interfaces and computer use, evaluation and self-learning, and agent security. Each names only techniques with published or shipped evidence, ties every proposal to a real PandaCode surface with a cost and an acceptance signal, and lists what it rejected and why. Start with the synthesis: it merges the seven ranked shortlists into one table, splits the work into four delivery waves, separates enhancements from genuinely new features, and carries the merged do-not-build list. Treat them as proposals, not commitments — nothing there is implemented beyond what the synthesis' first-PR section describes.
+
 ## T3 Code
 
 - [Architecture](https://github.com/pingdotgg/t3code/blob/main/docs/internals/overview.md): Electron desktop shell, React renderer, Node/Effect server; execution and storage belong to the server.

@@ -234,6 +234,30 @@ pub(super) fn seed(provider: &str, models: &[(&str, &[&str])]) {
     });
 }
 
+/// The effort a routed assignment starts on when the lead named none, from the router's own
+/// difficulty estimate (1..10). Allocation should follow difficulty — a harder task benefits from
+/// more reasoning, an easy one wastes it — and the level is only a starting point: `apply` still
+/// fits it to the model's catalog, so a model without it lands on its nearest supported level with
+/// a note. The mode shifts one step: Best spends up, Cheap down. Never raises above `high`
+/// automatically, so an automatic team does not open every hard task at `max`; a lead that wants
+/// more says so explicitly. Set at dispatch only: changing it mid-conversation invalidates the
+/// harness's prompt cache.
+pub(super) fn from_difficulty(difficulty: u8, mode: crate::panda_router::Mode) -> &'static str {
+    let rung = if difficulty >= 7 {
+        2u8
+    } else if difficulty >= 4 {
+        1
+    } else {
+        0
+    };
+    let shifted = match mode {
+        crate::panda_router::Mode::Quality => (rung + 1).min(2),
+        crate::panda_router::Mode::Cheapest => rung.saturating_sub(1),
+        crate::panda_router::Mode::Balanced => rung,
+    };
+    ["low", "medium", "high"][shifted as usize]
+}
+
 /// Forgets every catalog on this test thread; `stale` marks them due for a refresh instead.
 #[cfg(test)]
 pub(super) fn reset(stale: bool) {
@@ -246,4 +270,47 @@ pub(super) fn reset(stale: bool) {
             catalogs.clear();
         }
     });
+}
+
+#[cfg(test)]
+mod difficulty_tests {
+    use super::*;
+    use crate::panda_router::Mode;
+
+    #[test]
+    fn difficulty_picks_a_level_and_the_mode_shifts_one_step() {
+        let level = |d: u8, mode| from_difficulty(d, mode);
+        assert_eq!(level(1, Mode::Balanced), "low");
+        assert_eq!(level(3, Mode::Balanced), "low");
+        assert_eq!(level(4, Mode::Balanced), "medium");
+        assert_eq!(level(6, Mode::Balanced), "medium");
+        assert_eq!(level(7, Mode::Balanced), "high");
+        assert_eq!(level(10, Mode::Balanced), "high", "never opens above high");
+        // Best spends up, Cheap down, both clamped to low..high.
+        assert_eq!(level(1, Mode::Quality), "medium");
+        assert_eq!(level(10, Mode::Quality), "high");
+        assert_eq!(level(10, Mode::Cheapest), "medium");
+        assert_eq!(level(1, Mode::Cheapest), "low");
+        assert_eq!(level(4, Mode::Cheapest), "low");
+        assert_eq!(level(7, Mode::Cheapest), "medium");
+    }
+
+    #[test]
+    fn the_derived_level_still_fits_the_models_catalog() {
+        reset(false);
+        seed("codex", &[("difficulty-fits-down", &["low", "medium"])]);
+        let wanted = from_difficulty(9, Mode::Balanced).to_string();
+        assert_eq!(wanted, "high");
+        // A model without `high` lands on its nearest supported level, with a note.
+        let (effort, note) = apply("codex", "difficulty-fits-down", Some(&wanted), None);
+        assert_eq!(effort.as_deref(), Some("medium"));
+        assert!(note.unwrap().contains("used medium"));
+        // An explicit lead request is unaffected by the derivation and passes through as before.
+        let explicit = Some("max".to_string());
+        seed("codex", &[("difficulty-full", &["low", "medium", "high", "xhigh", "max"])]);
+        assert_eq!(apply("codex", "difficulty-full", explicit.as_ref(), None), (Some("max".into()), None));
+        // With no catalog the level is kept (missing data never lowers an effort).
+        assert_eq!(apply("claude", "unknown-difficulty-model", Some(&wanted), None).0.as_deref(), Some("high"));
+        reset(false);
+    }
 }
