@@ -91,6 +91,7 @@ Bot-to-bot work is available through the `bot_message_bot(to, text)` tool in a b
 | Channels | `src-tauri/src/bots/channels/{mod,http,web,telegram,slack,discord,whatsapp}.rs` |
 | Hooks in `lib.rs` | `bots::start` at setup, `bots::approval_requested` in the event sink, `bots::run_finished` after `done`, `bots::tools::with_bot` in the tool host chain |
 | UI | `src/bots.ts`, `src/bots-panels.ts`, `src/bots.css`, `src/sidebar-bots.ts`, `src/bot-thread.ts`, `src/bot-shared-channels.ts`, preview mock `src/preview-bots.ts`, tests `tests/bots*.spec.ts` |
+| Other clients | Connect methods `rooms.list`, `rooms.messages` and `rooms.post` (`src-tauri/src/remote/methods/rooms.rs`, [remote access](remote-access.md)) let a paired phone list, read and post to shared channels; posting wakes bots, so it needs a Full grant and Full access for remote tasks, as `bot.message` does. The mobile app's calls are in `mobile/src/connect/api/rooms.ts`. The local web chat page has no room view; rooms are otherwise desktop-only. |
 
 Bot tasks deliver their queued messages natively when a run ends, so the window skips `dispatchQueue` for bot projects. Bots run while PandaCode is running. Quitting stops their work; a schedule that came due while the app was closed runs once at the next start, and its missed repeats are skipped.
 
