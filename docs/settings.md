@@ -20,6 +20,8 @@ Settings is a full page with nine sections in the left column, opening on Recomm
 
 **Appearance** holds the theme, the Wallpapers switch (off by default: the thread shows a live sky), colors and imported VS Code themes, and wallpaper customization: separate live visibility and blur controls, the scene sets, and a fixed favorite.
 
+Turn on **Solid surfaces** to hide the live sky and wallpapers and replace glass effects with opaque surfaces in the workspace. The switch is off by default. Turning it off restores your usual appearance, including saved wallpaper choices, subject to your system accessibility preferences.
+
 **Voice** sets up [voice input](voice-input.md) in three cards. **Input** picks the microphone, runs the microphone test and sets how the dictation shortcut records. **Transcription** chooses where audio goes (an on-device model, a speech service or off) and the language, and holds the on-device model browser: filter by language, sort, then download, select, test or delete a model. **Speech services** holds profiles for online or self-hosted transcription services and their keys.
 
 **Agents → Harnesses** contains the default agent and model, agent updates, and compact installation status rows. Expand a harness to see its version and executable path. Refresh checks installations without resetting the selected tab, default agent control, or expanded details. Its Advanced fold holds harness privacy and OpenCode models.

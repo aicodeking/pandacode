@@ -1,5 +1,6 @@
 import { call, nativeDesktop } from './bridge';
 import { isMac } from './platform';
+import { SOLID_SURFACES_CHANGE, solidSurfacesEnabled } from './solid-surfaces';
 
 type AppearancePreferences = { reducedTransparency: boolean; increasedContrast: boolean; darkMode: boolean };
 type NativeAppearance = { platform: 'macos' | 'other'; material: 'liquidGlass' | 'vibrancy' | 'solid' };
@@ -21,7 +22,7 @@ export function initializeNativeAppearance(
 
   function preferences(): AppearancePreferences {
     return {
-      reducedTransparency: transparency.matches,
+      reducedTransparency: transparency.matches || solidSurfacesEnabled(),
       increasedContrast: contrast.matches,
       darkMode: root.dataset.theme === 'dark',
     };
@@ -51,7 +52,7 @@ export function initializeNativeAppearance(
   function refresh(): void {
     if (disposed) return;
     dirty = true;
-    if (transparency.matches || contrast.matches) root.dataset.nativeMaterial = 'solid';
+    if (transparency.matches || contrast.matches || solidSurfacesEnabled()) root.dataset.nativeMaterial = 'solid';
     if (!busy) void synchronize();
   }
   function dispose(): void {
@@ -60,6 +61,7 @@ export function initializeNativeAppearance(
     contrast.removeEventListener('change', refresh);
     window.removeEventListener('focus', refresh);
     window.removeEventListener('pandacode-theme-change', refresh);
+    window.removeEventListener(SOLID_SURFACES_CHANGE, refresh);
     window.removeEventListener('pagehide', dispose);
     delete root.dataset.nativeMaterial;
     delete root.dataset.nativePlatform;
@@ -69,6 +71,7 @@ export function initializeNativeAppearance(
   contrast.addEventListener('change', refresh);
   window.addEventListener('focus', refresh);
   window.addEventListener('pandacode-theme-change', refresh);
+  window.addEventListener(SOLID_SURFACES_CHANGE, refresh);
   window.addEventListener('pagehide', dispose, { once: true });
   refresh();
   return dispose;

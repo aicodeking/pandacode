@@ -230,7 +230,7 @@ Discord, WhatsApp or a browser too.
 **Settings in nine sections.** Recommended, General, Appearance, Voice, Agents,
 Schedules, Tools, Connections and About, with colors and imported VS Code themes.
 
-<img src="docs/screenshots/settings.webp" alt="Settings on the Appearance page, with the nine sections listed on the left and theme, color and VS Code theme controls" width="100%">
+<img src="docs/screenshots/settings.webp" alt="Settings on the Appearance page, with the nine sections listed on the left and controls for the theme, solid surfaces and colors" width="100%">
 
 <sub>Screenshots come from the browser preview with sample data. Regenerate them with
 `npm run screenshots` (see [`scripts/screenshots`](scripts/screenshots/capture.spec.ts)).</sub>

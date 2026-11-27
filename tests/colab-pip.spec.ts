@@ -77,6 +77,16 @@ test('colab-pip stays hidden, and its module unloaded, while the thread has no C
   await expect(pill(page)).toHaveCount(0);
 });
 
+test('colab-pip uses opaque fills with solid surfaces on', async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('pandacode.solidSurfaces', '1'));
+  await open(page);
+  await seed(page, [runtime()]);
+  await expect(pill(page)).toHaveCSS('backdrop-filter', 'none');
+  await expect(pill(page)).toHaveCSS('background-color', await token(page, '--panel'));
+  await pill(page).click();
+  await expect(card(page)).toHaveCSS('background-color', await token(page, '--panel'));
+});
+
 test('colab-pip appears as a pill when a runtime starts, and follows it to ready and busy', async ({ page }) => {
   await open(page);
   const transcript = await box(page.locator('#transcript'));

@@ -7,6 +7,7 @@ import { infoMark } from './tooltip';
 import { providerLogo } from './provider-logos';
 import { uiSizeControls } from './ui-size';
 import { mountReadingWidthControl, readingWidthControl } from './reading-width';
+import { setSolidSurfacesEnabled, solidSurfacesEnabled } from './solid-surfaces';
 import type { Project, Provider, ProviderId } from './types';
 import { mountOverlaySettings } from './overlay-settings';
 import { mountVoiceSettings } from './voice-settings';
@@ -163,6 +164,7 @@ function sectionHtml(id: SettingsPage, options: SettingsOptions): string {
       <h3 class="settings-heading">Quick launcher</h3><div id="launcher-settings"></div><h3 class="settings-heading">Running agents widget</h3><div id="agents-dock-settings"></div><h3 class="settings-heading">Crash recovery</h3>${crashRestartSettingsHtml()}${options.projects ? '<h3 class="settings-heading">Projects</h3><div id="projects-settings" class="settings-group"></div>' : ''}`;
     case 'appearance': return `<div class="settings-group">
         ${settingRow('Theme', `<button type="button" class="secondary-button" data-action="toggle-theme">${icon(options.theme === 'dark' ? 'sun' : 'moon')}Use ${options.theme === 'dark' ? 'light' : 'dark'}</button>`, 'Imported VS Code themes keep their own.')}
+        ${switchRow('solid-surfaces', 'Solid surfaces', 'Hide the live sky and wallpapers and use opaque menus and panels.', solidSurfacesEnabled())}
         ${switchRow('daily-wallpapers', 'Wallpapers', 'Off, the thread shows a live sky that follows the time of day.', options.wallpapers)}
         ${switchRow('still-sky', 'Still sky', 'Keep the live sky as a still frame without animating clouds or pointer motion.', stillSkyEnabled())}
         ${settingRow('Reading width', readingWidthControl(), 'Comfortable keeps thread lines near 100 characters. Wide fits more code and tables, at longer lines.')}
@@ -384,6 +386,8 @@ export function mountSettings(host: HTMLElement, options: SettingsOptions): Sett
       syncVisibility();
       cleanups.push(() => observer.disconnect());
       stillSky.addEventListener('change', () => setStillSkyEnabled(stillSky.checked));
+      const solidSurfaces = panel.querySelector<HTMLInputElement>('#solid-surfaces')!;
+      solidSurfaces.addEventListener('change', () => setSolidSurfacesEnabled(solidSurfaces.checked));
       cleanups.push(mountReadingWidthControl(panel));
     }
     if (id === 'general') {

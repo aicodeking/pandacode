@@ -1,5 +1,5 @@
 import { showHarness } from './model-picker-helper';
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Locator, type Page } from '@playwright/test';
 
 // Settings is a full page (a region over the workspace) with a vertical list of groups.
 const dialog = (page: Page) => page.getByRole('region', { name: 'Settings', exact: true });
@@ -10,6 +10,66 @@ const GROUPS = ['Recommended', 'General', 'Appearance', 'Voice', 'Agents', 'Sche
 const FIRST: Record<string,string> = { Agents: 'Harnesses', Tools: 'Add-ons', Connections: 'Cloud sandboxes' };
 const prompt = (page: Page) => page.getByRole('textbox', { name: 'Message your coding agent' });
 const providerCalls = (page: Page) => page.evaluate(() => (window as any).__settingsProviders.calls);
+const tokenColor = (target: Locator, token: string) => target.evaluate((node, token) => {
+  const probe = document.createElement('span');
+  probe.style.color = `var(${token})`;
+  node.append(probe);
+  const color = getComputedStyle(probe).color;
+  probe.remove();
+  return color;
+}, token);
+
+test('solid surfaces stops the sky, removes menu glass, and persists across reloads', async ({ page }, testInfo) => {
+  await page.goto('/');
+  const workspace = page.locator('.workspace');
+  const sky = page.locator('.main-pane > .thread-sky');
+  await expect(workspace).toHaveAttribute('data-scene', 'sky');
+  await expect(sky).toBeVisible();
+
+  await page.evaluate(async () => {
+    const { initializeNativeAppearance } = await import('/src/appearance.ts');
+    initializeNativeAppearance(async ({ reducedTransparency }) => ({
+      platform: 'macos', material: reducedTransparency ? 'solid' : 'liquidGlass',
+    }));
+  });
+  await expect(page.locator('html')).toHaveAttribute('data-native-material', 'liquidGlass');
+  const openAppearance = async () => {
+    await page.getByRole('button', { name: 'Settings', exact: true }).click();
+    await tab(page, 'Appearance').click();
+  };
+  await openAppearance();
+  const solid = panel(page, 'Appearance').getByRole('checkbox', { name: 'Solid surfaces', exact: true });
+  await expect(solid).not.toBeChecked();
+  await solid.focus();
+  await page.keyboard.press('Space');
+  await expect(solid).toBeChecked();
+  await expect(page.locator('html')).toHaveAttribute('data-native-material', 'solid');
+  await expect(workspace).not.toHaveAttribute('data-scene', /.+/);
+  await expect(sky).toBeHidden();
+  await page.screenshot({ path: testInfo.outputPath('solid-surfaces.png'), animations: 'disabled' });
+  await back(page).click();
+
+  await page.getByRole('button', { name: 'Filter projects', exact: true }).click();
+  const menu = page.getByRole('dialog', { name: 'Filter projects', exact: true });
+  await expect(menu).toHaveCSS('backdrop-filter', 'none');
+  await expect(menu).toHaveCSS('background-color', await tokenColor(menu, '--panel'));
+  await page.keyboard.press('Escape');
+  await page.setViewportSize({ width: 640, height: 900 });
+  const dock = page.locator('#action-dock');
+  await expect(dock).toBeVisible();
+  await expect(dock).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)');
+  await page.emulateMedia({ contrast: 'more' });
+  await expect(dock).toHaveCSS('background-color', await tokenColor(dock, '--bg'));
+  await page.emulateMedia({ contrast: null });
+  await page.setViewportSize({ width: 1440, height: 940 });
+  await page.reload();
+  await expect(sky).toBeHidden();
+  await expect(workspace).not.toHaveAttribute('data-scene', /.+/);
+  await openAppearance();
+  await expect(solid).toBeChecked();
+  await solid.uncheck();
+  await expect(workspace).toHaveAttribute('data-scene', 'sky');
+});
 
 for (const theme of ['dark', 'light']) for (const { width, scale } of [{ width: 460, scale: 1.4 }, { width: 540, scale: 1.6 }, { width: 1100, scale: 1 }]) {
   test(`settings organization keeps full Agents tabs readable at ${width}px ${scale * 100}% ${theme}`, async ({ page }, testInfo) => {
