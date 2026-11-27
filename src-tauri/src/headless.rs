@@ -39,6 +39,9 @@ struct Modifiers {
     web_port: Option<u16>,
     /// `--host`: the web UI's address (default 127.0.0.1).
     web_host: Option<IpAddr>,
+    /// `--allowed-host` (repeatable): extra `Host` names the web UI answers to, for a TLS
+    /// terminator such as Tailscale Serve in front of a loopback bind.
+    web_allowed_hosts: Vec<String>,
 }
 
 /// `pandacode … serve …`: true when the argument was handled; the process then serves
@@ -102,7 +105,7 @@ pub fn handle_version() -> bool {
 
 /// Builds the app with no window and runs it until an explicit exit. Never returns.
 fn serve(command: Command, modifiers: Modifiers) -> ! {
-    let Modifiers { import, web_port, web_host } = modifiers;
+    let Modifiers { import, web_port, web_host, web_allowed_hosts } = modifiers;
     #[allow(unused_mut)]
     let mut context = crate::app_context();
     if web_port.is_some() {
@@ -117,7 +120,7 @@ fn serve(command: Command, modifiers: Modifiers) -> ! {
             let dir = crate::setup_common(app).unwrap_or_else(|error| startup_failed(&error));
             match web_port {
                 // The web UI's calls run through the main webview, so it stays: hidden, blank.
-                Some(port) => start_web(app.handle(), port, web_host),
+                Some(port) => start_web(app.handle(), port, web_host, web_allowed_hosts),
                 // No window on a server: close the one from tauri.conf.json right away; the
                 // run loop keeps the process alive (see on_run_event). Users watch from their
                 // devices, never from here.
@@ -161,8 +164,8 @@ fn keep_hidden_main(context: &mut tauri::Context<tauri::Wry>) {
 }
 
 /// Starts the web UI for this run, or exits: a host asked to serve it must not run without it.
-fn start_web(app: &tauri::AppHandle, port: u16, host: Option<IpAddr>) {
-    let status = crate::web_server::start_from_cli(app, port, host).unwrap_or_else(|error| startup_failed(&error));
+fn start_web(app: &tauri::AppHandle, port: u16, host: Option<IpAddr>, allowed_hosts: Vec<String>) {
+    let status = crate::web_server::start_from_cli(app, port, host, &allowed_hosts).unwrap_or_else(|error| startup_failed(&error));
     crate::web_server::print_start_notice(&status, host);
 }
 
@@ -589,6 +592,13 @@ fn parse(args: &[String]) -> Result<(Command, Modifiers), String> {
                 modifiers.web_host = Some(crate::web_server::parse_host(value).map_err(|error| format!("{error}\n\n{}", help()))?);
                 index += 1;
             }
+            "--allowed-host" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| format!("--allowed-host needs a host name.\n\n{}", help()))?;
+                modifiers.web_allowed_hosts.push(value.clone());
+                index += 1;
+            }
             "--device-name" => {
                 let value = args
                     .get(index + 1)
@@ -616,19 +626,24 @@ fn parse(args: &[String]) -> Result<(Command, Modifiers), String> {
     if modifiers.import.is_some() && !serving {
         return Err(format!("--import-bots only works with serve or --sign-in.\n\n{}", help()));
     }
-    if (modifiers.web_port.is_some() || modifiers.web_host.is_some()) && !serving {
-        return Err(format!("--port and --host only work with serve or --sign-in.\n\n{}", help()));
+    if (modifiers.web_port.is_some() || modifiers.web_host.is_some() || !modifiers.web_allowed_hosts.is_empty()) && !serving {
+        return Err(format!("--port, --host and --allowed-host only work with serve or --sign-in.\n\n{}", help()));
     }
     if modifiers.web_host.is_some() && modifiers.web_port.is_none() {
         return Err(format!("--host needs --port.\n\n{}", help()));
     }
+    if !modifiers.web_allowed_hosts.is_empty() && modifiers.web_port.is_none() {
+        return Err(format!("--allowed-host needs --port.\n\n{}", help()));
+    }
+    modifiers.web_allowed_hosts = crate::web_server::validate_allowed_hosts(&modifiers.web_allowed_hosts)
+        .map_err(|error| format!("{error}\n\n{}", help()))?;
     Ok((command, modifiers))
 }
 
 fn help() -> String {
     "PandaCode headless host (docs/headless.md)
 
-Usage: pandacode serve [--sign-in [--device-name <name>]] [--sign-out] [--full-access | --no-full-access] [--export-bots <file>] [--import-bots <file>] [--port|-p <port> [--host <addr>]] [--version]
+Usage: pandacode serve [--sign-in [--device-name <name>]] [--sign-out] [--full-access | --no-full-access] [--export-bots <file>] [--import-bots <file>] [--port|-p <port> [--host <addr>] [--allowed-host <name>]...] [--version]
 
 Runs this computer as an always-on PandaCode Connect host: your devices see it as a
 computer and can start, watch, steer and approve tasks on it. Linux servers run it
@@ -648,6 +663,10 @@ under `xvfb-run -a pandacode serve …` (a display is required to start, none is
                          plain HTTP: prefer 127.0.0.1 with SSH port forwarding
                          (ssh -L <port>:127.0.0.1:<port> <server>), or bind a private
                          Tailscale/WireGuard interface IP.
+  --allowed-host <name>  Also answer requests whose Host is this name (repeatable; needs
+                         --port). Use it for a name in front of a loopback bind, such as
+                         Tailscale Serve, which terminates HTTPS. The bearer token is still
+                         required and Origin must still match Host.
   --version, -V          Print `pandacode <version>` and exit 0 without starting the host."
         .into()
 }
@@ -732,6 +751,7 @@ mod tests {
             "--port",
             "-p",
             "--host",
+            "--allowed-host",
             "--version",
             "-V",
             "xvfb-run",
@@ -887,7 +907,12 @@ mod tests {
         assert_eq!(parse(&argv("--port 8080")).unwrap().0, Command::Serve);
         assert_eq!(parse(&argv("--sign-in --port 8080")).unwrap().0, Command::SignIn { name: None });
         assert_eq!(modifiers("").web_port, None);
-        // Bad values, missing values, a host alone, and the exiting ops all refuse.
+        // Trusted names are repeatable modifiers that need the port, in any order.
+        let parsed = modifiers("--allowed-host My-Mac.Tail.ts.net --port 8080 --allowed-host box.local");
+        assert_eq!(parsed.web_allowed_hosts, ["my-mac.tail.ts.net", "box.local"]);
+        assert_eq!(modifiers("--allowed-host box.local -p 0").web_allowed_hosts, ["box.local"]);
+        assert_eq!(parse(&argv("--allowed-host box.local --port 1")).unwrap().0, Command::Serve);
+        // Bad values, missing values, a host or trusted name alone, and the exiting ops all refuse.
         for flags in [
             "--port",
             "--port abc",
@@ -896,10 +921,15 @@ mod tests {
             "--host",
             "--host nope --port 1",
             "--host 127.0.0.1",
+            "--allowed-host",
+            "--allowed-host box.local",
+            "--allowed-host bad/name --port 1",
+            "--port 1 --allowed-host a.ts.net --allowed-host A.ts.net",
             "--sign-out --port 8080",
             "--full-access --port 8080",
             "--no-full-access -p 1",
             "--export-bots x.json --port 1",
+            "--sign-out --allowed-host box.local",
         ] {
             assert!(parse(&argv(flags)).is_err(), "{flags}");
         }

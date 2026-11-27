@@ -38,6 +38,10 @@ const CONFIG_FILE: &str = "web-server.json";
 const CHANGED_EVENT: &str = "web-server-changed";
 const MAX_HEAD: usize = 32 * 1024;
 const MAX_BODY: usize = 32 * 1024 * 1024;
+/// Opt-in trusted `Host` names: enough for a few MagicDNS and proxy names, small enough that
+/// every request's check stays trivial.
+const MAX_ALLOWED_HOSTS: usize = 32;
+const MAX_ALLOWED_HOST_LEN: usize = 253;
 /// Client frames are tiny control messages (auth, subscribe, unsubscribe, ping); this
 /// bounds what an unauthenticated socket can make the server buffer.
 const MAX_WS_MESSAGE: usize = 16 * 1024;
@@ -89,29 +93,109 @@ type HubEvent = Arc<(String, String)>;
 
 // ---- Saved configuration ----
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 struct Config {
     enabled: bool,
     port: u16,
+    /// The bind address to use on the next start; `None` is loopback, which keeps old files
+    /// and the common case clean.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    host: Option<IpAddr>,
+    /// Opt-in extra `Host` names that a loopback or bound listener may answer to (for
+    /// example a MagicDNS name behind Tailscale Serve). Never a substitute for the token.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    allowed_hosts: Vec<String>,
 }
 
 impl Default for Config {
     fn default() -> Self {
-        Self { enabled: false, port: DEFAULT_PORT }
+        Self { enabled: false, port: DEFAULT_PORT, host: None, allowed_hosts: Vec::new() }
     }
 }
 
-/// A missing or unreadable file is the default: off.
+impl Config {
+    fn bind_host(&self) -> IpAddr {
+        self.host.unwrap_or(DEFAULT_HOST)
+    }
+}
+
+/// A missing or unreadable file is the default: off. Trusted names are normalized on load so
+/// a hand-edited file can never put a scheme, port or upper-case name into live checks.
 fn load_config(dir: &Path) -> Config {
-    std::fs::read(dir.join(CONFIG_FILE))
+    let mut config: Config = std::fs::read(dir.join(CONFIG_FILE))
         .ok()
         .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-        .unwrap_or_default()
+        .unwrap_or_default();
+    let mut names = Vec::new();
+    for entry in &config.allowed_hosts {
+        let Ok(name) = normalize_allowed_host(entry) else { continue };
+        if names.len() < MAX_ALLOWED_HOSTS && !names.contains(&name) {
+            names.push(name);
+        }
+    }
+    config.allowed_hosts = names;
+    config
+}
+
+/// A bare DNS name or IP literal, lowercased, as compared against a `Host` name. An IPv6
+/// literal is kept bracketed, the form [`split_host`] returns.
+fn normalize_allowed_host(entry: &str) -> Result<String, String> {
+    let text = entry.trim().to_ascii_lowercase();
+    if text.is_empty() {
+        return Err("A trusted host name cannot be empty.".into());
+    }
+    if text.len() > MAX_ALLOWED_HOST_LEN {
+        return Err(format!("`{text}` is too long for a host name."));
+    }
+    let bare = text.strip_prefix('[').and_then(|rest| rest.strip_suffix(']')).unwrap_or(&text);
+    if let Ok(ip) = bare.parse::<IpAddr>() {
+        return Ok(match ip.to_canonical() {
+            IpAddr::V4(ip) => ip.to_string(),
+            IpAddr::V6(ip) => format!("[{ip}]"),
+        });
+    }
+    if text.contains(':') {
+        return Err(format!("`{entry}` must be a host name without a port."));
+    }
+    // No scheme, path, userinfo, query or fragment can survive a DNS-label check.
+    let label = |part: &str| {
+        !part.is_empty()
+            && part.len() <= 63
+            && !part.starts_with('-')
+            && !part.ends_with('-')
+            && part.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+    };
+    if !text.split('.').all(label) {
+        return Err(format!("`{entry}` is not a bare host name (for example my-mac.tail1234.ts.net)."));
+    }
+    Ok(text)
+}
+
+/// A whole trusted-name list: each entry normalized, no duplicates, bounded in count.
+pub(crate) fn validate_allowed_hosts(entries: &[String]) -> Result<Vec<String>, String> {
+    if entries.len() > MAX_ALLOWED_HOSTS {
+        return Err(format!("At most {MAX_ALLOWED_HOSTS} trusted host names are allowed."));
+    }
+    let mut seen = HashSet::new();
+    let mut names = Vec::with_capacity(entries.len());
+    for entry in entries {
+        let name = normalize_allowed_host(entry)?;
+        if !seen.insert(name.clone()) {
+            return Err(format!("`{name}` is listed twice."));
+        }
+        names.push(name);
+    }
+    Ok(names)
 }
 
 /// Temp file + rename, so a crash never leaves a half-written file; 0600 on Unix.
 fn save_config(dir: &Path, config: Config) -> Result<(), String> {
+    let mut config = config;
+    if config.host == Some(DEFAULT_HOST) {
+        config.host = None;
+    }
+    config.allowed_hosts = validate_allowed_hosts(&config.allowed_hosts)?;
     let path = dir.join(CONFIG_FILE);
     let temp = dir.join(format!(".{CONFIG_FILE}.{}.tmp", uuid::Uuid::new_v4().simple()));
     let data = serde_json::to_vec_pretty(&config).map_err(|error| error.to_string())?;
@@ -133,11 +217,13 @@ fn save_config(dir: &Path, config: Config) -> Result<(), String> {
 
 // ---- CLI ----
 
-/// A port and optional address asked for on the command line or in the environment.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// A port, an optional address and optional trusted `Host` names asked for on the command
+/// line or in the environment.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct CliWeb {
     pub port: u16,
     pub host: Option<IpAddr>,
+    pub allowed_hosts: Vec<String>,
 }
 
 pub(crate) fn parse_port(text: &str) -> Result<u16, String> {
@@ -150,12 +236,20 @@ pub(crate) fn parse_host(text: &str) -> Result<IpAddr, String> {
     bare.parse::<IpAddr>().map_err(|_| format!("`{text}` is not an IP address (for example 127.0.0.1 or ::1)."))
 }
 
-/// The desktop's `--port`/`--web-port <PORT>` and `--host`/`--web-host <ADDR>` (also
-/// `--flag=value`), falling back to `PANDACODE_WEB_PORT` / `PANDACODE_WEB_HOST`. Other
-/// arguments are not ours and are skipped. `None` when no port was asked for.
-pub(crate) fn parse_cli(args: &[String], env_port: Option<&str>, env_host: Option<&str>) -> Result<Option<CliWeb>, String> {
+/// The desktop's `--port`/`--web-port <PORT>`, `--host`/`--web-host <ADDR>` and repeatable
+/// `--allowed-host <NAME>` (also `--flag=value`), falling back to `PANDACODE_WEB_PORT`,
+/// `PANDACODE_WEB_HOST` and comma-separated `PANDACODE_WEB_ALLOWED_HOSTS`. Other arguments
+/// are not ours and are skipped. `None` when no port was asked for.
+pub(crate) fn parse_cli(
+    args: &[String],
+    env_port: Option<&str>,
+    env_host: Option<&str>,
+    env_allowed: Option<&str>,
+) -> Result<Option<CliWeb>, String> {
     let mut port: Option<u16> = None;
     let mut host: Option<IpAddr> = None;
+    let mut allowed_hosts: Vec<String> = Vec::new();
+    let mut allowed_from_flag = false;
     let mut index = 0;
     while index < args.len() {
         let arg = args[index].as_str();
@@ -165,7 +259,8 @@ pub(crate) fn parse_cli(args: &[String], env_port: Option<&str>, env_host: Optio
         };
         let is_port = matches!(flag, "--port" | "--web-port");
         let is_host = matches!(flag, "--host" | "--web-host");
-        if is_port || is_host {
+        let is_allowed = flag == "--allowed-host";
+        if is_port || is_host || is_allowed {
             let value = match inline {
                 Some(value) => value,
                 None => {
@@ -175,8 +270,11 @@ pub(crate) fn parse_cli(args: &[String], env_port: Option<&str>, env_host: Optio
             };
             if is_port {
                 port = Some(parse_port(value)?);
-            } else {
+            } else if is_host {
                 host = Some(parse_host(value)?);
+            } else {
+                allowed_hosts.push(normalize_allowed_host(value)?);
+                allowed_from_flag = true;
             }
         }
         index += 1;
@@ -188,12 +286,29 @@ pub(crate) fn parse_cli(args: &[String], env_port: Option<&str>, env_host: Optio
     if host.is_some() && port.is_none() {
         return Err("--host requires --port.".into());
     }
-    // The environment's host goes only with the environment's port: a stale
-    // `PANDACODE_WEB_HOST=0.0.0.0` must never expose an explicit `--port` (loopback then).
-    if host.is_none() && !port_from_flag {
-        host = env_host.filter(|value| !value.trim().is_empty()).map(parse_host).transpose()?;
+    if allowed_from_flag && port.is_none() {
+        return Err("--allowed-host requires --port.".into());
     }
-    Ok(port.map(|port| CliWeb { port, host }))
+    // The environment's host and trusted names go only with the environment's port: a stale
+    // `PANDACODE_WEB_HOST=0.0.0.0` must never expose an explicit `--port` (loopback then).
+    if !port_from_flag {
+        if host.is_none() {
+            host = env_host.filter(|value| !value.trim().is_empty()).map(parse_host).transpose()?;
+        }
+        if !allowed_from_flag {
+            allowed_hosts = parse_allowed_env(env_allowed)?;
+        }
+    }
+    let allowed_hosts = validate_allowed_hosts(&allowed_hosts)?;
+    Ok(port.map(|port| CliWeb { port, host, allowed_hosts }))
+}
+
+/// `PANDACODE_WEB_ALLOWED_HOSTS`, comma-separated; blank entries are not names.
+fn parse_allowed_env(value: Option<&str>) -> Result<Vec<String>, String> {
+    let Some(value) = value else { return Ok(Vec::new()) };
+    let entries: Vec<String> =
+        value.split(',').map(str::trim).filter(|entry| !entry.is_empty()).map(str::to_owned).collect();
+    validate_allowed_hosts(&entries)
 }
 
 /// [`parse_cli`] over this process's arguments and environment.
@@ -201,7 +316,8 @@ pub(crate) fn cli_from_env() -> Result<Option<CliWeb>, String> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let port = std::env::var("PANDACODE_WEB_PORT").ok();
     let host = std::env::var("PANDACODE_WEB_HOST").ok();
-    parse_cli(&args, port.as_deref(), host.as_deref())
+    let allowed = std::env::var("PANDACODE_WEB_ALLOWED_HOSTS").ok();
+    parse_cli(&args, port.as_deref(), host.as_deref(), allowed.as_deref())
 }
 
 // ---- What the server needs from the app ----
@@ -381,6 +497,9 @@ pub struct WebServerStatus {
     pub host: String,
     pub port: u16,
     pub configured_port: u16,
+    /// The persisted bind address (`127.0.0.1` when the setting never picked one).
+    pub configured_host: String,
+    pub allowed_hosts: Vec<String>,
     pub url: Option<String>,
     pub token_url: Option<String>,
     /// Not secret: 0 when stopped, 1 at start, +1 on every rotation, so other windows and
@@ -398,6 +517,9 @@ struct Running {
     token_generation: u64,
     bound_addr: SocketAddr,
     token: Arc<RwLock<String>>,
+    /// The live trusted `Host` names; a Settings change writes here in place, so no restart
+    /// and no token rotation is needed.
+    allowed: Arc<RwLock<Vec<String>>>,
     /// Set once this server is stopped or replaced: its token then fails every check, so a
     /// request still in flight on it can't read the next server's link.
     retired: Arc<AtomicBool>,
@@ -480,6 +602,7 @@ struct Configure {
     enabled: bool,
     port: Option<u16>,
     host: Option<String>,
+    allowed_hosts: Option<Vec<String>>,
     persist: Option<bool>,
 }
 
@@ -555,9 +678,10 @@ fn bind(ip: IpAddr, port: u16) -> Result<TcpListener, String> {
 impl WebServer {
     pub fn new(dir: PathBuf) -> Self {
         let config = load_config(&dir);
+        let host = config.bind_host();
         Self {
             dir,
-            state: Mutex::new(State { config, host: DEFAULT_HOST, running: None, last_error: None, next_token_generation: 0 }),
+            state: Mutex::new(State { config, host, running: None, last_error: None, next_token_generation: 0 }),
             ops: tokio::sync::Mutex::new(()),
             hub: Arc::new(EventHub::new()),
             #[cfg(test)]
@@ -592,7 +716,7 @@ impl WebServer {
     }
 
     /// The address a Settings change binds: the one given, else the current one (a CLI
-    /// `--host` while it runs, else 127.0.0.1).
+    /// `--host` while it runs, else the saved/default address).
     fn configure_ip(&self, host: Option<&str>) -> Result<IpAddr, String> {
         match host.map(str::trim).filter(|host| !host.is_empty()) {
             Some(host) => parse_host(host),
@@ -614,8 +738,22 @@ impl WebServer {
     /// Starts (or keeps) the server on `ip:port`. `persist` saves `enabled: true`; a start
     /// from the command line is for this session only.
     async fn start(&self, backend: Arc<dyn Backend>, ip: IpAddr, port: u16, persist: bool) -> Result<WebServerStatus, String> {
+        self.start_allowed(backend, ip, port, persist, Vec::new()).await
+    }
+
+    /// [`WebServer::start`] with command-line trusted names; an empty list keeps the saved
+    /// ones (a CLI start never rewrites the saved setting).
+    async fn start_allowed(
+        &self,
+        backend: Arc<dyn Backend>,
+        ip: IpAddr,
+        port: u16,
+        persist: bool,
+        allowed: Vec<String>,
+    ) -> Result<WebServerStatus, String> {
         let _op = self.ops.lock().await;
-        self.start_locked(backend, ip, port, persist, None).await.map_err(|refused| match refused {
+        let allowed = (!allowed.is_empty()).then_some(allowed);
+        self.start_locked(backend, ip, port, persist, allowed, None).await.map_err(|refused| match refused {
             ConfigureRefused::Stale => "The access token changed.".to_owned(),
             ConfigureRefused::Failed(error) => error,
         })
@@ -628,18 +766,21 @@ impl WebServer {
         ip: IpAddr,
         port: u16,
         persist: bool,
+        allowed_hosts: Option<Vec<String>>,
         expected: Option<&str>,
     ) -> Result<WebServerStatus, ConfigureRefused> {
         let (current, previous) = {
             let state = lock(&self.state);
-            (state.running.as_ref().map(|running| running.bound_addr), state.config)
+            (state.running.as_ref().map(|running| running.bound_addr), state.config.clone())
         };
+        let allowed = allowed_hosts.unwrap_or_else(|| previous.allowed_hosts.clone());
         // Port 0 always asks the OS for a fresh port, even while running.
         let same = current.is_some_and(|addr| addr.ip() == ip && port != 0 && addr.port() == port);
-        let config = Config { enabled: true, port };
+        // Plain loopback is stored as `None`, keeping old files and the common case clean.
+        let config = Config { enabled: true, port, host: (ip != DEFAULT_HOST).then_some(ip), allowed_hosts: allowed.clone() };
         if same {
             if persist {
-                self.save(config).map_err(|error| ConfigureRefused::Failed(self.fail(error)))?;
+                self.save(config.clone()).map_err(|error| ConfigureRefused::Failed(self.fail(error)))?;
             }
             let mut state = lock(&self.state);
             if !caller_current(&state, expected) {
@@ -651,6 +792,10 @@ impl WebServer {
             }
             if persist {
                 state.config = config;
+            }
+            // Trusted names apply in place, without a restart or a new token.
+            if let Some(running) = state.running.as_ref() {
+                *running.allowed.write().unwrap_or_else(|poisoned| poisoned.into_inner()) = allowed;
             }
             state.last_error = None;
             return Ok(status_of(&state, None));
@@ -670,10 +815,12 @@ impl WebServer {
             released(taken).await;
         }
         // Every failure from here on: when the old listener already stopped, nothing runs, so
-        // a later Settings "on" (no host) binds loopback, never an earlier CLI `--host`.
+        // a later Settings "on" (no host) binds the saved/default address, never an earlier
+        // CLI `--host`.
         let failed = |error: String| {
             ConfigureRefused::Failed(if same_port_host_change {
-                lock(&self.state).host = DEFAULT_HOST;
+                let fallback = lock(&self.state).config.bind_host();
+                lock(&self.state).host = fallback;
                 self.fail(format!("{error} The previous listener was stopped."))
             } else {
                 self.fail(error)
@@ -683,7 +830,7 @@ impl WebServer {
         let bound_addr = listener.local_addr().map_err(|error| failed(error.to_string()))?;
         if persist {
             // On failure `listener` drops here and the old server (if still up) keeps running.
-            self.save(config).map_err(&failed)?;
+            self.save(config.clone()).map_err(&failed)?;
         }
         // Commit point: the caller is checked and the old server retired under one lock.
         let taken = {
@@ -702,7 +849,7 @@ impl WebServer {
         let running = {
             let mut state = lock(&self.state);
             let generation = state.next_generation();
-            launch(listener, bound_addr, backend, self.hub.clone(), generation)
+            launch(listener, bound_addr, backend, self.hub.clone(), generation, allowed)
         };
         let token = running.token.read().unwrap_or_else(|poisoned| poisoned.into_inner()).clone();
         let mut state = lock(&self.state);
@@ -721,32 +868,46 @@ impl WebServer {
     #[cfg(test)]
     async fn stop_and_save(&self, port: Option<u16>, persist: bool) -> Result<WebServerStatus, String> {
         let _op = self.ops.lock().await;
-        self.stop_and_save_locked(port, persist, None).await.map_err(|refused| match refused {
+        self.stop_and_save_locked(port, persist, None, None, None).await.map_err(|refused| match refused {
             ConfigureRefused::Stale => "The access token changed.".to_owned(),
             ConfigureRefused::Failed(error) => error,
         })
     }
 
-    /// [`WebServer::stop_and_save`] with `ops` already held.
-    async fn stop_and_save_locked(&self, port: Option<u16>, persist: bool, expected: Option<&str>) -> Result<WebServerStatus, ConfigureRefused> {
+    /// [`WebServer::stop_and_save`] with `ops` already held. `host`: an address this change
+    /// explicitly picked; otherwise the saved address is kept.
+    async fn stop_and_save_locked(
+        &self,
+        port: Option<u16>,
+        persist: bool,
+        expected: Option<&str>,
+        host: Option<IpAddr>,
+        allowed_hosts: Option<Vec<String>>,
+    ) -> Result<WebServerStatus, ConfigureRefused> {
         // Commit point: the caller is checked and the server retired under one lock.
         let taken = {
             let mut state = lock(&self.state);
             if !caller_current(&state, expected) {
                 return Err(ConfigureRefused::Stale);
             }
-            // A later "on" in Settings binds loopback again, never an earlier CLI `--host`.
-            state.host = DEFAULT_HOST;
+            // A later "on" in Settings binds the saved address again, never an earlier
+            // session-only CLI `--host`.
+            state.host = state.config.bind_host();
             take_running(&mut state)
         };
         released(taken).await;
+        let (port, host, allowed) = {
+            let state = lock(&self.state);
+            let allowed = allowed_hosts.unwrap_or_else(|| state.config.allowed_hosts.clone());
+            (port.unwrap_or(state.config.port), host.or(state.config.host), allowed)
+        };
         if persist {
-            let port = port.unwrap_or(lock(&self.state).config.port);
-            let config = Config { enabled: false, port };
-            self.save(config).map_err(|error| ConfigureRefused::Failed(self.fail(error)))?;
+            let config = Config { enabled: false, port, host, allowed_hosts: allowed };
+            self.save(config.clone()).map_err(|error| ConfigureRefused::Failed(self.fail(error)))?;
             lock(&self.state).config = config;
         }
         let mut state = lock(&self.state);
+        state.host = state.config.bind_host();
         state.last_error = None;
         Ok(status_of(&state, None))
     }
@@ -764,11 +925,16 @@ impl WebServer {
         // `false`: a change for this session only (a CLI-started server keeps its saved "off").
         let persist = change.persist.unwrap_or(true);
         let ip = self.configure_ip(change.host.as_deref()).map_err(ConfigureRefused::Failed)?;
+        let host_given = change.host.as_deref().is_some_and(|host| !host.trim().is_empty());
+        let allowed_hosts = match change.allowed_hosts {
+            Some(entries) => Some(validate_allowed_hosts(&entries).map_err(ConfigureRefused::Failed)?),
+            None => None,
+        };
         if change.enabled {
             let port = change.port.unwrap_or_else(|| lock(&self.state).config.port);
-            self.start_locked(backend, ip, port, persist, expected).await
+            self.start_locked(backend, ip, port, persist, allowed_hosts, expected).await
         } else {
-            self.stop_and_save_locked(change.port, persist, expected).await
+            self.stop_and_save_locked(change.port, persist, expected, host_given.then_some(ip), allowed_hosts).await
         }
     }
 
@@ -833,11 +999,26 @@ impl WebServer {
     }
 }
 
+/// The browsable link for a bound address. A loopback bind uses the address itself; with a
+/// trusted name configured it uses the first name with `https://` instead, because a name can
+/// only reach a loopback listener through a TLS terminator in front of it (Tailscale Serve),
+/// which speaks HTTPS. A non-loopback bind keeps its plain-HTTP address.
+fn status_url(bound: SocketAddr, allowed: &[String]) -> String {
+    match allowed.first() {
+        Some(name) if bound.ip().to_canonical().is_loopback() => format!("https://{name}:{}", bound.port()),
+        _ => format!("http://{}", url_authority(bound)),
+    }
+}
+
 /// The status as of `state` (whose lock the caller holds). `token`: the exact token a
 /// rotation just wrote, so its reply never shows a later one; else the current token.
 fn status_of(state: &State, token: Option<&str>) -> WebServerStatus {
     let running = state.running.as_ref();
-    let url = running.map(|running| format!("http://{}", url_authority(running.bound_addr)));
+    let allowed_hosts = match running {
+        Some(running) => running.allowed.read().unwrap_or_else(|poisoned| poisoned.into_inner()).clone(),
+        None => state.config.allowed_hosts.clone(),
+    };
+    let url = running.map(|running| status_url(running.bound_addr, &allowed_hosts));
     let token_url = running.zip(url.as_ref()).map(|(running, url)| match token {
         Some(token) => format!("{url}/#token={token}"),
         None => format!("{url}/#token={}", running.token.read().unwrap_or_else(|poisoned| poisoned.into_inner())),
@@ -848,6 +1029,8 @@ fn status_of(state: &State, token: Option<&str>) -> WebServerStatus {
         host: running.map_or(state.host, |running| running.bound_addr.ip()).to_string(),
         port: running.map_or(0, |running| running.bound_addr.port()),
         configured_port: state.config.port,
+        configured_host: state.config.bind_host().to_string(),
+        allowed_hosts,
         url,
         token_url,
         token_generation: running.map_or(0, |running| running.token_generation),
@@ -856,16 +1039,25 @@ fn status_of(state: &State, token: Option<&str>) -> WebServerStatus {
     }
 }
 
-fn launch(listener: TcpListener, bound_addr: SocketAddr, backend: Arc<dyn Backend>, hub: Arc<EventHub>, token_generation: u64) -> Running {
+fn launch(
+    listener: TcpListener,
+    bound_addr: SocketAddr,
+    backend: Arc<dyn Backend>,
+    hub: Arc<EventHub>,
+    token_generation: u64,
+    allowed: Vec<String>,
+) -> Running {
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let (rotate_tx, rotate_rx) = watch::channel(0u64);
     let token = Arc::new(RwLock::new(new_token()));
     let clients = Arc::new(AtomicUsize::new(0));
     let retired = Arc::new(AtomicBool::new(false));
+    let allowed = Arc::new(RwLock::new(allowed));
     let shared = Arc::new(Shared {
         backend,
         hub,
         token: token.clone(),
+        allowed: allowed.clone(),
         retired: retired.clone(),
         clients: clients.clone(),
         bound: bound_addr,
@@ -875,7 +1067,7 @@ fn launch(listener: TcpListener, bound_addr: SocketAddr, backend: Arc<dyn Backen
     });
     let (dropped_tx, listener_dropped) = oneshot::channel();
     tokio::spawn(accept_loop(listener, shared, dropped_tx));
-    Running { shutdown_tx, rotate_tx: Arc::new(rotate_tx), token_generation, bound_addr, token, retired, clients, listener_dropped }
+    Running { shutdown_tx, rotate_tx: Arc::new(rotate_tx), token_generation, bound_addr, token, allowed, retired, clients, listener_dropped }
 }
 
 // ---- Tauri side ----
@@ -1057,9 +1249,10 @@ pub(crate) async fn web_server_configure(
     enabled: bool,
     port: Option<u16>,
     host: Option<String>,
+    allowed_hosts: Option<Vec<String>>,
     persist: Option<bool>,
 ) -> Result<WebServerStatus, String> {
-    let change = Configure { enabled, port, host, persist };
+    let change = Configure { enabled, port, host, allowed_hosts, persist };
     let result = state.configure(backend(&app), change, None).await.map_err(|refused| match refused {
         ConfigureRefused::Stale => "The access token changed.".to_owned(),
         ConfigureRefused::Failed(error) => error,
@@ -1081,9 +1274,9 @@ pub(crate) fn app_version() -> String {
 }
 
 /// Starts on `port` for this session (CLI or environment); the saved setting is untouched.
-pub(crate) async fn start_cli(app: &tauri::AppHandle, port: u16, host: Option<IpAddr>) -> Result<WebServerStatus, String> {
+pub(crate) async fn start_cli(app: &tauri::AppHandle, port: u16, host: Option<IpAddr>, allowed_hosts: &[String]) -> Result<WebServerStatus, String> {
     let state = app.try_state::<WebServer>().ok_or("The web server is not set up.")?;
-    let result = state.start(backend(app), host.unwrap_or(DEFAULT_HOST), port, false).await;
+    let result = state.start_allowed(backend(app), host.unwrap_or(DEFAULT_HOST), port, false, allowed_hosts.to_vec()).await;
     emit_changed(app);
     result
 }
@@ -1104,26 +1297,27 @@ fn non_loopback_warning(port: u16) -> String {
     format!(
         "Warning: the web UI is plain HTTP on a non-loopback address; the access token and everything you do \
          travel unencrypted. Prefer 127.0.0.1 over an SSH tunnel (ssh -L {port}:127.0.0.1:{port} <host>), or bind \
-         a private WireGuard/Tailscale interface IP."
+         a private WireGuard/Tailscale interface IP. Tailscale Serve in front of 127.0.0.1 plus --allowed-host \
+         <name> gives HTTPS without a non-loopback bind."
     )
 }
 
 /// [`start_cli`] from synchronous code outside the async runtime (setup).
-pub(crate) fn start_from_cli(app: &tauri::AppHandle, port: u16, host: Option<IpAddr>) -> Result<WebServerStatus, String> {
-    tauri::async_runtime::block_on(start_cli(app, port, host))
+pub(crate) fn start_from_cli(app: &tauri::AppHandle, port: u16, host: Option<IpAddr>, allowed_hosts: &[String]) -> Result<WebServerStatus, String> {
+    tauri::async_runtime::block_on(start_cli(app, port, host, allowed_hosts))
 }
 
-/// At launch: starts only when the user left it on.
+/// At launch: starts only when the user left it on, on the saved bind address.
 pub(crate) fn start_if_saved(app: &tauri::AppHandle) {
     let Some(state) = app.try_state::<WebServer>() else { return };
-    let config = lock(&state.state).config;
+    let config = lock(&state.state).config.clone();
     if !config.enabled {
         return;
     }
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         let state = app.state::<WebServer>();
-        if let Err(error) = state.start(backend(&app), DEFAULT_HOST, config.port, false).await {
+        if let Err(error) = state.start(backend(&app), config.bind_host(), config.port, false).await {
             eprintln!("Web server could not start: {error}");
         }
         emit_changed(&app);
@@ -1136,6 +1330,8 @@ struct Shared {
     backend: Arc<dyn Backend>,
     hub: Arc<EventHub>,
     token: Arc<RwLock<String>>,
+    /// Trusted `Host` names; read on every request, so a configure changes access live.
+    allowed: Arc<RwLock<Vec<String>>>,
     retired: Arc<AtomicBool>,
     clients: Arc<AtomicUsize>,
     bound: SocketAddr,
@@ -1151,6 +1347,11 @@ impl Shared {
         }
         let token = self.token.read().unwrap_or_else(|poisoned| poisoned.into_inner());
         given.is_some_and(|given| same(given, &token))
+    }
+
+    fn host_ok(&self, host: Option<&str>) -> bool {
+        let allowed = self.allowed.read().unwrap_or_else(|poisoned| poisoned.into_inner());
+        host_allowed(host, self.bound, &allowed)
     }
 }
 
@@ -1460,8 +1661,9 @@ fn split_host(host: &str) -> Option<(String, Option<u16>)> {
 /// be. Loopback listeners take `localhost` or a loopback literal; one bound to a specific
 /// address takes that address (or loopback, as through a tunnel); one on every interface
 /// takes any address literal or `localhost`. Any port but 0 (an `ssh -L 9000:127.0.0.1:8787`
-/// tunnel arrives with the local port; Origin must still match Host exactly).
-fn host_allowed(host: Option<&str>, bound: SocketAddr) -> bool {
+/// tunnel arrives with the local port; Origin must still match Host exactly). A configured
+/// trusted name is accepted in addition, on any bind, but only for that exact name.
+fn host_allowed(host: Option<&str>, bound: SocketAddr, allowed: &[String]) -> bool {
     let Some((name, port)) = host.and_then(split_host) else { return false };
     if port == Some(0) {
         return false;
@@ -1470,15 +1672,16 @@ fn host_allowed(host: Option<&str>, bound: SocketAddr) -> bool {
     let literal = host_literal(&name);
     let loopback = name == "localhost" || literal.is_some_and(|ip| ip.is_loopback());
     let bound_ip = bound.ip().to_canonical();
-    if bound_ip.is_loopback() || loopback {
-        return loopback;
-    }
-    if bound_ip.is_unspecified() {
+    let usual = if bound_ip.is_loopback() || loopback {
+        loopback
+    } else if bound_ip.is_unspecified() {
         // Every interface: any address literal, never a DNS name.
-        return literal.is_some();
-    }
-    // One interface (a LAN or Tailscale address): that address only.
-    literal == Some(bound_ip)
+        literal.is_some()
+    } else {
+        // One interface (a LAN or Tailscale address): that address only.
+        literal == Some(bound_ip)
+    };
+    usual || allowed.iter().any(|trusted| trusted == &name || literal.is_some_and(|ip| host_literal(trusted) == Some(ip)))
 }
 
 /// The canonical address in a Host name: dotted IPv4, or IPv6 in brackets; never a DNS name.
@@ -1683,7 +1886,7 @@ async fn refuse(stream: &mut TcpStream, response: &Response, unread: bool) {
 
 /// Host, Origin, route and token are all settled from the head alone.
 async fn route(request: &Request, ip: IpAddr, shared: &Shared) -> Gate {
-    if !host_allowed(request.header("host"), shared.bound) {
+    if !shared.host_ok(request.header("host")) {
         return Gate::Respond(Response::text(403, "Forbidden"));
     }
     let path = request.path();
@@ -1949,10 +2152,14 @@ async fn invoke(request: &Request, shared: &Shared) -> Response {
     if web_blocked_command(&call.command) || (shared.backend.enforces_allowlist() && !web_allowed_command(&call.command)) {
         return Response::error(403, "This command is only available in the desktop app.");
     }
-    // A tab may switch the port, never the listen address (that could expose the session).
+    // A tab may switch the port, never the listen address or trusted names (both could
+    // expose the session to a new host).
     let host_given = args.get("host").is_some_and(|host| !host.is_null() && host.as_str().is_none_or(|host| !host.trim().is_empty()));
     if call.command == "web_server_configure" && host_given {
         return Response::error(403, "The listen address can only be changed on the host machine.");
+    }
+    if call.command == "web_server_configure" && args.get("allowedHosts").is_some_and(|hosts| !hosts.is_null()) {
+        return Response::error(403, "The trusted host names can only be changed on the host machine.");
     }
     // These replies carry a new token: the token check and the change must be one step,
     // and the reply goes straight to the caller that made it.
@@ -2105,7 +2312,7 @@ fn ws_config() -> WebSocketConfig {
 /// Upgrades after the same Host and Origin checks as the API, answering the handshake
 /// from the already-parsed request.
 async fn websocket(mut stream: TcpStream, leftover: Vec<u8>, request: Request, ip: IpAddr, shared: Arc<Shared>) {
-    let refusal = if !host_allowed(request.header("host"), shared.bound) || !origin_allowed(request.header("origin"), request.header("host")) {
+    let refusal = if !shared.host_ok(request.header("host")) || !origin_allowed(request.header("origin"), request.header("host")) {
         Some(Response::error(403, "Forbidden"))
     } else if request.method != "GET" {
         Some(Response::error(405, "Use GET."))
@@ -2446,24 +2653,24 @@ mod tests {
         let bound: SocketAddr = "127.0.0.1:47322".parse().unwrap();
         // Any port: an `ssh -L 9000:127.0.0.1:47322` tunnel arrives as 127.0.0.1:9000.
         for host in ["127.0.0.1", "127.0.0.1:47322", "localhost", "LOCALHOST:47322", "[::1]", "[::1]:47322", "127.0.0.1:9000", "localhost:9000", "[::1]:9000", "127.0.0.1:80"] {
-            assert!(host_allowed(Some(host), bound), "{host}");
+            assert!(host_allowed(Some(host), bound, &[]), "{host}");
         }
         // IPv4-mapped loopback is loopback, as a Host literal and as the bound address.
-        assert!(host_allowed(Some("[::ffff:127.0.0.1]:47322"), bound));
+        assert!(host_allowed(Some("[::ffff:127.0.0.1]:47322"), bound, &[]));
         let mapped: SocketAddr = "[::ffff:127.0.0.1]:47322".parse().unwrap();
-        assert!(host_allowed(Some("localhost:47322"), mapped));
-        assert!(!host_allowed(Some("evil.com:47322"), mapped));
+        assert!(host_allowed(Some("localhost:47322"), mapped, &[]));
+        assert!(!host_allowed(Some("evil.com:47322"), mapped, &[]));
         assert_eq!(url_authority(mapped), "127.0.0.1:47322");
         for host in ["evil.com", "evil.com:47322", "evil.com:8787", "localhost:0", "127.0.0.1:99999", "127.0.0.1.evil.com", "[::1]x", "", "a@127.0.0.1"] {
-            assert!(!host_allowed(Some(host), bound), "{host}");
+            assert!(!host_allowed(Some(host), bound, &[]), "{host}");
         }
-        assert!(!host_allowed(None, bound));
+        assert!(!host_allowed(None, bound, &[]));
         // Off loopback a Host is still required, and it must be an address, not a DNS name.
         let lan: SocketAddr = "0.0.0.0:47322".parse().unwrap();
-        assert!(host_allowed(Some("192.168.1.5:47322"), lan));
-        assert!(!host_allowed(Some("my-box.local:47322"), lan));
-        assert!(!host_allowed(None, lan));
-        assert!(!host_allowed(Some(""), lan));
+        assert!(host_allowed(Some("192.168.1.5:47322"), lan, &[]));
+        assert!(!host_allowed(Some("my-box.local:47322"), lan, &[]));
+        assert!(!host_allowed(None, lan, &[]));
+        assert!(!host_allowed(Some(""), lan, &[]));
     }
 
     #[test]
@@ -2538,42 +2745,79 @@ mod tests {
     #[test]
     fn cli_flags_and_environment() {
         let args = |text: &str| text.split_whitespace().map(str::to_owned).collect::<Vec<_>>();
-        assert_eq!(parse_cli(&args(""), None, None), Ok(None));
-        assert_eq!(parse_cli(&args("--port 8080"), None, None), Ok(Some(CliWeb { port: 8080, host: None })));
-        assert_eq!(parse_cli(&args("--web-port=9 --web-host ::1"), None, None), Ok(Some(CliWeb { port: 9, host: Some("::1".parse().unwrap()) })));
-        assert_eq!(parse_cli(&args("--host [::1] --port 1"), None, None).unwrap().unwrap().host, Some("::1".parse().unwrap()));
-        assert_eq!(parse_cli(&args("--other x"), Some("7000"), Some("0.0.0.0")), Ok(Some(CliWeb { port: 7000, host: Some("0.0.0.0".parse().unwrap()) })));
+        let web = |port: u16, host: Option<&str>, allowed: &[&str]| CliWeb {
+            port,
+            host: host.map(|host| host.parse().unwrap()),
+            allowed_hosts: allowed.iter().map(|name| (*name).to_owned()).collect(),
+        };
+        assert_eq!(parse_cli(&args(""), None, None, None), Ok(None));
+        assert_eq!(parse_cli(&args("--port 8080"), None, None, None), Ok(Some(web(8080, None, &[]))));
+        assert_eq!(parse_cli(&args("--web-port=9 --web-host ::1"), None, None, None), Ok(Some(web(9, Some("::1"), &[]))));
+        assert_eq!(parse_cli(&args("--host [::1] --port 1"), None, None, None).unwrap().unwrap().host, Some("::1".parse().unwrap()));
+        assert_eq!(parse_cli(&args("--other x"), Some("7000"), Some("0.0.0.0"), None), Ok(Some(web(7000, Some("0.0.0.0"), &[]))));
         // Flags win over the environment; an empty variable is unset.
-        assert_eq!(parse_cli(&args("--port 1"), Some("2"), None).unwrap().unwrap().port, 1);
-        assert_eq!(parse_cli(&args(""), Some(" "), None), Ok(None));
-        assert_eq!(parse_cli(&args("--host 0.0.0.0"), None, None), Err("--host requires --port.".into()));
-        assert_eq!(parse_cli(&args("--web-host=::1"), None, None), Err("--host requires --port.".into()));
-        assert_eq!(parse_cli(&args("--host 0.0.0.0"), Some("5"), None).unwrap().unwrap().port, 5);
+        assert_eq!(parse_cli(&args("--port 1"), Some("2"), None, None).unwrap().unwrap().port, 1);
+        assert_eq!(parse_cli(&args(""), Some(" "), None, None), Ok(None));
+        assert_eq!(parse_cli(&args("--host 0.0.0.0"), None, None, None), Err("--host requires --port.".into()));
+        assert_eq!(parse_cli(&args("--web-host=::1"), None, None, None), Err("--host requires --port.".into()));
+        assert_eq!(parse_cli(&args("--host 0.0.0.0"), Some("5"), None, None).unwrap().unwrap().port, 5);
         // An environment host alone is ignored, not an error.
-        assert_eq!(parse_cli(&args(""), None, Some("0.0.0.0")), Ok(None));
+        assert_eq!(parse_cli(&args(""), None, Some("0.0.0.0"), None), Ok(None));
         // ...and never applies to an explicit `--port`: that one stays on loopback.
-        assert_eq!(parse_cli(&args("--port 8787"), None, Some("0.0.0.0")), Ok(Some(CliWeb { port: 8787, host: None })));
-        assert_eq!(parse_cli(&args("--web-port=8787"), Some("9000"), Some("0.0.0.0")), Ok(Some(CliWeb { port: 8787, host: None })));
+        assert_eq!(parse_cli(&args("--port 8787"), None, Some("0.0.0.0"), None), Ok(Some(web(8787, None, &[]))));
+        assert_eq!(parse_cli(&args("--web-port=8787"), Some("9000"), Some("0.0.0.0"), None), Ok(Some(web(8787, None, &[]))));
         // The environment's port takes the environment's host...
-        assert_eq!(parse_cli(&args(""), Some("8787"), Some("0.0.0.0")), Ok(Some(CliWeb { port: 8787, host: Some("0.0.0.0".parse().unwrap()) })));
+        assert_eq!(parse_cli(&args(""), Some("8787"), Some("0.0.0.0"), None), Ok(Some(web(8787, Some("0.0.0.0"), &[]))));
         // ...unless a `--host` flag says otherwise, with either kind of port.
-        assert_eq!(parse_cli(&args("--host ::1"), Some("8787"), Some("0.0.0.0")).unwrap().unwrap().host, Some("::1".parse().unwrap()));
-        assert_eq!(parse_cli(&args("--port 1 --host ::1"), None, Some("0.0.0.0")).unwrap().unwrap().host, Some("::1".parse().unwrap()));
+        assert_eq!(parse_cli(&args("--host ::1"), Some("8787"), Some("0.0.0.0"), None).unwrap().unwrap().host, Some("::1".parse().unwrap()));
+        assert_eq!(parse_cli(&args("--port 1 --host ::1"), None, Some("0.0.0.0"), None).unwrap().unwrap().host, Some("::1".parse().unwrap()));
         // A bad environment host is not read (so not an error) once `--port` was given.
-        assert!(parse_cli(&args("--port 1"), None, Some("nope")).is_ok());
-        assert!(parse_cli(&args(""), Some("1"), Some("nope")).is_err());
+        assert!(parse_cli(&args("--port 1"), None, Some("nope"), None).is_ok());
+        assert!(parse_cli(&args(""), Some("1"), Some("nope"), None).is_err());
         for bad in ["--port", "--port x", "--port 65536", "--host nope --port 1", "--web-port=-1"] {
-            assert!(parse_cli(&args(bad), None, None).is_err(), "{bad}");
+            assert!(parse_cli(&args(bad), None, None, None).is_err(), "{bad}");
         }
-        assert!(parse_cli(&args(""), Some("abc"), None).is_err());
+        assert!(parse_cli(&args(""), Some("abc"), None, None).is_err());
+    }
+
+    #[test]
+    fn cli_accepts_trusted_host_names_from_flags_and_the_environment() {
+        let args = |text: &str| text.split_whitespace().map(str::to_owned).collect::<Vec<_>>();
+        let names = |web: CliWeb| web.allowed_hosts;
+        // Repeatable, both spellings, any order, normalized case.
+        let web = parse_cli(&args("--port 1 --allowed-host My-Mac.Tail1234.ts.net --allowed-host=box.local"), None, None, None)
+            .unwrap()
+            .unwrap();
+        assert_eq!((web.port, names(web)), (1, vec!["my-mac.tail1234.ts.net".to_owned(), "box.local".to_owned()]));
+        // An IP literal is kept in the form Host checks compare against.
+        let web = parse_cli(&args("--allowed-host [FD7A:115C:A1E0::5] --port 2"), None, None, None).unwrap().unwrap();
+        assert_eq!(names(web), ["[fd7a:115c:a1e0::5]"]);
+        // It needs a port, from a flag or the environment.
+        assert_eq!(parse_cli(&args("--allowed-host box.local"), None, None, None), Err("--allowed-host requires --port.".into()));
+        assert!(parse_cli(&args("--allowed-host box.local"), Some("5"), None, None).is_ok());
+        // The environment list pairs only with the environment port; flags win.
+        let web = parse_cli(&args(""), Some("8787"), None, Some(" my-mac.tail.ts.net, ,box.local ,")).unwrap().unwrap();
+        assert_eq!(names(web), ["my-mac.tail.ts.net", "box.local"]);
+        let web = parse_cli(&args("--port 1"), None, None, Some("ignored.ts.net")).unwrap().unwrap();
+        assert!(names(web).is_empty());
+        let web = parse_cli(&args("--port 1 --allowed-host flag.ts.net"), None, None, Some("env.ts.net")).unwrap().unwrap();
+        assert_eq!(names(web), ["flag.ts.net"]);
+        assert_eq!(parse_cli(&args(""), None, None, Some("env.ts.net")), Ok(None));
+        // Bad names are refused wherever they come from.
+        for entry in ["", " ", "https://x.ts.net", "x.ts.net:443", "x/y", "a@b", "a b"] {
+            let args = vec!["--port".to_owned(), "1".to_owned(), "--allowed-host".to_owned(), entry.to_owned()];
+            assert!(parse_cli(&args, None, None, None).is_err(), "{entry:?}");
+        }
+        assert!(parse_cli(&args(""), Some("1"), None, Some("bad/name")).is_err());
+        assert!(parse_cli(&args("--port 1 --allowed-host a.ts.net --allowed-host A.ts.net"), None, None, None).is_err());
     }
 
     #[test]
     fn config_round_trips_and_defaults_off() {
         let dir = temp_dir();
-        assert_eq!(load_config(&dir), Config { enabled: false, port: DEFAULT_PORT });
-        save_config(&dir, Config { enabled: true, port: 8123 }).unwrap();
-        assert_eq!(load_config(&dir), Config { enabled: true, port: 8123 });
+        assert_eq!(load_config(&dir), Config { enabled: false, port: DEFAULT_PORT, host: None, allowed_hosts: Vec::new() });
+        save_config(&dir, Config { enabled: true, port: 8123, ..Config::default() }).unwrap();
+        assert_eq!(load_config(&dir), Config { enabled: true, port: 8123, ..Config::default() });
         let saved: Value = serde_json::from_slice(&std::fs::read(dir.join(CONFIG_FILE)).unwrap()).unwrap();
         assert_eq!(saved, serde_json::json!({ "enabled": true, "port": 8123 }));
         #[cfg(unix)]
@@ -2590,16 +2834,110 @@ mod tests {
     }
 
     #[test]
+    fn config_round_trips_a_bind_address_and_trusted_names() {
+        let dir = temp_dir();
+        let config = Config {
+            enabled: true,
+            port: 8787,
+            host: Some("100.64.1.5".parse().unwrap()),
+            allowed_hosts: vec!["my-mac.tail1234.ts.net".into(), "box.local".into()],
+        };
+        save_config(&dir, config.clone()).unwrap();
+        assert_eq!(load_config(&dir), config);
+        let saved: Value = serde_json::from_slice(&std::fs::read(dir.join(CONFIG_FILE)).unwrap()).unwrap();
+        assert_eq!(saved["host"], "100.64.1.5");
+        assert_eq!(saved["allowed_hosts"], serde_json::json!(["my-mac.tail1234.ts.net", "box.local"]));
+        // A loopback bind and an empty list stay out of the file entirely.
+        save_config(&dir, Config { enabled: true, port: 8787, host: Some(DEFAULT_HOST), allowed_hosts: Vec::new() }).unwrap();
+        let saved: Value = serde_json::from_slice(&std::fs::read(dir.join(CONFIG_FILE)).unwrap()).unwrap();
+        assert!(saved.get("host").is_none() && saved.get("allowed_hosts").is_none(), "{saved}");
+        assert_eq!(load_config(&dir), Config { enabled: true, port: 8787, ..Config::default() });
+    }
+
+    #[test]
+    fn old_format_configs_load_as_loopback_with_no_trusted_names() {
+        let dir = temp_dir();
+        std::fs::write(dir.join(CONFIG_FILE), br#"{"enabled":true,"port":8123}"#).unwrap();
+        let config = load_config(&dir);
+        assert_eq!(config, Config { enabled: true, port: 8123, host: None, allowed_hosts: Vec::new() });
+        assert_eq!(config.bind_host(), DEFAULT_HOST);
+        // A hand-edited file is normalized on load rather than trusted.
+        std::fs::write(dir.join(CONFIG_FILE), br#"{"enabled":false,"port":8123,"allowed_hosts":["My-Mac.Tail.ts.net","bad/name","[FD7A::5]"]}"#).unwrap();
+        let config = load_config(&dir);
+        assert_eq!(config.allowed_hosts, ["my-mac.tail.ts.net", "[fd7a::5]"]);
+        assert_eq!(config.bind_host(), DEFAULT_HOST);
+    }
+
+    #[test]
+    fn trusted_host_names_are_validated() {
+        assert_eq!(
+            validate_allowed_hosts(&["My-Mac.Tail1234.ts.net".into(), " box.local ".into()]).unwrap(),
+            ["my-mac.tail1234.ts.net", "box.local"]
+        );
+        assert_eq!(validate_allowed_hosts(&["100.64.1.5".into(), "[FD7A::5]".into()]).unwrap(), ["100.64.1.5", "[fd7a::5]"]);
+        for bad in [
+            "", " ", "https://my-mac.tail.ts.net", "my-mac.tail.ts.net:443", "my-mac.tail.ts.net/path", "a?b", "a#b",
+            "a@b", "a b", "a\tb", ".box.local", "box.local.", "a..b", "-box.local", "box-.local", "é.local", "[::1]x",
+        ] {
+            assert!(validate_allowed_hosts(&[bad.into()]).is_err(), "{bad:?}");
+        }
+        assert!(validate_allowed_hosts(&["box.local".into(), "BOX.local".into()]).is_err(), "duplicates are refused");
+        assert!(validate_allowed_hosts(&["a".repeat(MAX_ALLOWED_HOST_LEN + 1)]).is_err());
+        let many: Vec<String> = (0..=MAX_ALLOWED_HOSTS).map(|index| format!("box{index}.local")).collect();
+        assert!(validate_allowed_hosts(&many).is_err(), "count is bounded");
+        let most: Vec<String> = (0..MAX_ALLOWED_HOSTS).map(|index| format!("box{index}.local")).collect();
+        assert_eq!(validate_allowed_hosts(&most).unwrap().len(), MAX_ALLOWED_HOSTS);
+    }
+
+    #[test]
+    fn trusted_host_names_are_accepted_only_where_listed() {
+        let bound: SocketAddr = "127.0.0.1:8787".parse().unwrap();
+        let allowed = ["my-mac.tail1234.ts.net".to_owned(), "[fd7a::5]".to_owned()];
+        assert!(host_allowed(Some("my-mac.tail1234.ts.net:8787"), bound, &allowed));
+        assert!(host_allowed(Some("MY-MAC.tail1234.ts.net"), bound, &allowed));
+        assert!(host_allowed(Some("[FD7A::5]:8787"), bound, &allowed));
+        // An IP literal is compared by address, so any spelling of it matches.
+        assert!(host_allowed(Some("[fd7a:0:0:0:0:0:0:5]:8787"), bound, &allowed));
+        // The usual loopback names still work, and unlisted DNS names still don't.
+        assert!(host_allowed(Some("localhost:8787"), bound, &allowed));
+        assert!(!host_allowed(Some("other.tail1234.ts.net:8787"), bound, &allowed));
+        assert!(!host_allowed(Some("my-mac.tail1234.ts.net:0"), bound, &allowed));
+        assert!(!host_allowed(None, bound, &allowed));
+        // A trusted name also reaches a listener bound to one non-loopback address...
+        let tailscale: SocketAddr = "100.64.1.5:8787".parse().unwrap();
+        assert!(host_allowed(Some("my-mac.tail1234.ts.net:8787"), tailscale, &allowed));
+        assert!(!host_allowed(Some("other.tail1234.ts.net:8787"), tailscale, &allowed));
+        assert!(!host_allowed(Some("my-box.local:8787"), tailscale, &allowed));
+        // ...but never widens an unlisted name on the wildcard bind.
+        let any: SocketAddr = "0.0.0.0:8787".parse().unwrap();
+        assert!(!host_allowed(Some("my-box.local:8787"), any, &allowed));
+        // No list: exactly the old behaviour.
+        assert!(!host_allowed(Some("my-mac.tail1234.ts.net:8787"), bound, &[]));
+    }
+
+    #[test]
     fn status_urls() {
         assert_eq!(url_authority("127.0.0.1:5".parse().unwrap()), "127.0.0.1:5");
         assert_eq!(url_authority("[::1]:5".parse().unwrap()), "[::1]:5");
         assert_eq!(url_authority("0.0.0.0:5".parse().unwrap()), "127.0.0.1:5");
         let status = WebServer::new(temp_dir()).status();
         assert_eq!((status.running, status.port, status.configured_port, status.url.clone(), status.token_url.clone()), (false, 0, DEFAULT_PORT, None, None));
+        assert_eq!((status.configured_host.as_str(), status.allowed_hosts.clone()), ("127.0.0.1", Vec::new()));
         let json = serde_json::to_value(&status).unwrap();
-        for key in ["enabled", "running", "host", "port", "configuredPort", "url", "tokenUrl", "clients", "error"] {
+        for key in ["enabled", "running", "host", "port", "configuredPort", "configuredHost", "allowedHosts", "url", "tokenUrl", "clients", "error"] {
             assert!(json.get(key).is_some(), "{key}");
         }
+    }
+
+    #[test]
+    fn a_loopback_link_uses_the_first_trusted_name_over_https() {
+        let loopback: SocketAddr = "127.0.0.1:8787".parse().unwrap();
+        assert_eq!(status_url(loopback, &[]), "http://127.0.0.1:8787");
+        let names = ["my-mac.tail1234.ts.net".to_owned(), "second.ts.net".to_owned()];
+        assert_eq!(status_url(loopback, &names), "https://my-mac.tail1234.ts.net:8787");
+        // A non-loopback bind keeps its plain-HTTP address even with a trusted name.
+        let tailscale: SocketAddr = "100.64.1.5:8787".parse().unwrap();
+        assert_eq!(status_url(tailscale, &names), "http://100.64.1.5:8787");
     }
 
     // ---- Over TCP ----
@@ -2652,6 +2990,92 @@ mod tests {
         let localhost = ("Host", format!("localhost:{}", h.addr.port()));
         assert_eq!(request(h.addr, "POST", "/api/auth", &[localhost, bearer(&h.token)], "").await.status, 200);
         h.server.stop().await;
+    }
+
+    #[tokio::test]
+    async fn a_trusted_host_name_is_served_live_and_still_needs_the_token() {
+        let h = harness().await;
+        let change = Configure {
+            enabled: true,
+            port: Some(h.addr.port()),
+            allowed_hosts: Some(vec!["my-mac.tail1234.ts.net".into()]),
+            persist: Some(false),
+            ..Default::default()
+        };
+        let configured = h.server.configure(h.fake.clone(), change, None).await.unwrap();
+        assert_eq!(configured.port, h.addr.port(), "the allowlist changed in place, no restart");
+        assert_eq!(configured.allowed_hosts, ["my-mac.tail1234.ts.net"]);
+        assert_eq!(token_of(&configured), h.token, "changing trusted names never rotates the token");
+        let named = ("Host", format!("my-mac.tail1234.ts.net:{}", h.addr.port()));
+        // With the token: served where the old rules gave 403.
+        assert_eq!(request(h.addr, "POST", "/api/auth", &[named.clone(), bearer(&h.token)], "").await.status, 200);
+        // Without it: still 401.
+        assert_eq!(request(h.addr, "POST", "/api/auth", std::slice::from_ref(&named), "").await.status, 401);
+        // An unlisted name stays 403 even with the token.
+        let other = ("Host", format!("other.tail1234.ts.net:{}", h.addr.port()));
+        assert_eq!(request(h.addr, "POST", "/api/auth", &[other, bearer(&h.token)], "").await.status, 403);
+        // Origin must still match Host exactly, over https too.
+        let mismatch = ("Origin", "https://other.tail1234.ts.net".to_owned());
+        let reply = request(h.addr, "POST", "/api/invoke", &[named.clone(), bearer(&h.token), mismatch], r#"{"command":"echo"}"#).await;
+        assert_eq!(reply.status, 403);
+        let same = ("Origin", format!("https://my-mac.tail1234.ts.net:{}", h.addr.port()));
+        let reply = request(h.addr, "POST", "/api/invoke", &[named.clone(), bearer(&h.token), same], r#"{"command":"echo"}"#).await;
+        assert_eq!(reply.status, 200);
+        // Clearing the live list is the same in-place path, still with the same token.
+        let cleared = Configure {
+            enabled: true,
+            port: Some(h.addr.port()),
+            allowed_hosts: Some(Vec::new()),
+            persist: Some(false),
+            ..Default::default()
+        };
+        let cleared = h.server.configure(h.fake.clone(), cleared, None).await.unwrap();
+        assert!(cleared.allowed_hosts.is_empty());
+        assert_eq!(token_of(&cleared), h.token);
+        assert_eq!(request(h.addr, "POST", "/api/auth", &[named, bearer(&h.token)], "").await.status, 403);
+        h.server.stop().await;
+    }
+
+    #[tokio::test]
+    async fn settings_persist_the_bind_address_and_trusted_names_across_a_stop() {
+        let dir = temp_dir();
+        let fake = Arc::new(Fake::default());
+        let server = WebServer::new(dir.clone());
+        let port = free_port();
+        let change = Configure {
+            enabled: true,
+            port: Some(port),
+            host: Some("::1".into()),
+            allowed_hosts: Some(vec!["My-Mac.Tail1234.ts.net".into()]),
+            persist: Some(true),
+        };
+        let started = server.configure(fake.clone(), change, None).await.unwrap();
+        assert_eq!((started.host.as_str(), started.configured_host.as_str()), ("::1", "::1"));
+        assert_eq!(started.allowed_hosts, ["my-mac.tail1234.ts.net"]);
+        let saved = load_config(&dir);
+        assert_eq!((saved.enabled, saved.port, saved.host), (true, port, Some("::1".parse().unwrap())));
+        assert_eq!(saved.allowed_hosts, ["my-mac.tail1234.ts.net"]);
+        // ::1 is loopback, so the link prefers the trusted name over https.
+        assert!(started.url.as_deref().unwrap().starts_with("https://my-mac.tail1234.ts.net:"), "{:?}", started.url);
+        // A stop keeps the saved address instead of forgetting it.
+        let off = server.stop_and_save(None, true).await.unwrap();
+        assert_eq!(off.configured_host, "::1");
+        assert_eq!(lock(&server.state).host, "::1".parse::<IpAddr>().unwrap());
+        assert_eq!(load_config(&dir).host, Some("::1".parse().unwrap()));
+        // Settings "on" with no host binds the saved address again.
+        let restarted = server.start(fake.clone(), server.configure_ip(None).unwrap(), load_config(&dir).port, true).await.unwrap();
+        assert_eq!(restarted.host, "::1");
+        assert_eq!(restarted.configured_host, "::1");
+        assert_eq!(restarted.allowed_hosts, ["my-mac.tail1234.ts.net"]);
+        server.stop().await;
+        // A fresh process (start_if_saved's path) starts on the saved address and names.
+        let reopened = WebServer::new(dir.clone());
+        let saved = lock(&reopened.state).config.clone();
+        assert!(saved.enabled);
+        let status = reopened.start(fake.clone(), saved.bind_host(), saved.port, false).await.unwrap();
+        assert_eq!((status.host.as_str(), status.configured_host.as_str()), ("::1", "::1"));
+        assert_eq!(status.allowed_hosts, ["my-mac.tail1234.ts.net"]);
+        reopened.stop().await;
     }
 
     #[tokio::test]
@@ -2985,6 +3409,8 @@ mod tests {
         let off = server.stop_and_save(None, true).await.unwrap();
         assert_eq!(off.host, "127.0.0.1");
         assert_eq!(lock(&server.state).host, LOCAL);
+        // A CLI `--host` was session-only: stopping persists the saved loopback default.
+        assert_eq!(load_config(&server.dir).host, None);
     }
 
     #[test]
@@ -3196,7 +3622,7 @@ mod tests {
         let server = WebServer::new(dir.clone());
         let first = server.start(fake.clone(), LOCAL, 0, true).await.unwrap();
         assert!(first.running && first.enabled);
-        assert_eq!(load_config(&dir), Config { enabled: true, port: 0 });
+        assert_eq!(load_config(&dir), Config { enabled: true, port: 0, ..Config::default() });
         // Same address again keeps the server and its token.
         let same_again = server.start(fake.clone(), LOCAL, first.port, false).await.unwrap();
         assert_eq!(same_again.token_url, first.token_url);
@@ -3216,16 +3642,16 @@ mod tests {
         let status = server.status();
         assert!(!status.running);
         assert_eq!(status.error.as_deref(), Some(error.as_str()));
-        assert_eq!(load_config(&dir), Config { enabled: true, port: 0 });
+        assert_eq!(load_config(&dir), Config { enabled: true, port: 0, ..Config::default() });
         drop(blocker);
         // Turning it off saves `enabled: false` and clears the error.
         let off = server.stop_and_save(Some(9999), true).await.unwrap();
         assert!(!off.running && !off.enabled && off.error.is_none());
         assert_eq!(off.configured_port, 9999);
-        assert_eq!(load_config(&dir), Config { enabled: false, port: 9999 });
+        assert_eq!(load_config(&dir), Config { enabled: false, port: 9999, ..Config::default() });
         // A session-only start leaves the saved "off" alone.
         server.start(fake.clone(), LOCAL, 0, false).await.unwrap();
-        assert_eq!(load_config(&dir), Config { enabled: false, port: 9999 });
+        assert_eq!(load_config(&dir), Config { enabled: false, port: 9999, ..Config::default() });
         server.shutdown();
         assert!(!server.status().running);
     }
@@ -3431,7 +3857,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_tab_may_change_the_port_but_never_the_listen_address() {
+    async fn a_tab_may_change_the_port_but_never_the_listen_address_or_trusted_names() {
         let h = harness().await;
         let call = |args: Value| serde_json::json!({ "command": "web_server_configure", "args": args }).to_string();
         for args in [
@@ -3443,10 +3869,19 @@ mod tests {
             assert_eq!(reply.status, 403, "{args}");
             assert_eq!(reply.text(), r#"{"error":"The listen address can only be changed on the host machine."}"#);
         }
-        // No address, a null one or an empty one: the port-only change goes through.
+        // A trusted name is the same class of exposure change: a tab can't touch the list.
+        for args in [
+            serde_json::json!({ "enabled": true, "port": 8080, "allowedHosts": ["my-mac.tail1234.ts.net"] }),
+            serde_json::json!({ "enabled": false, "allowedHosts": [] }),
+        ] {
+            let reply = request(h.addr, "POST", "/api/invoke", &[host(h.addr), bearer(&h.token)], &call(args.clone())).await;
+            assert_eq!(reply.status, 403, "{args}");
+            assert_eq!(reply.text(), r#"{"error":"The trusted host names can only be changed on the host machine."}"#);
+        }
+        // No address or trusted list, a null one or an empty address: the port-only change goes through.
         for args in [
             serde_json::json!({ "enabled": true, "port": 8080 }),
-            serde_json::json!({ "enabled": true, "port": 8080, "host": null }),
+            serde_json::json!({ "enabled": true, "port": 8080, "host": null, "allowedHosts": null }),
             serde_json::json!({ "enabled": false, "host": "  " }),
         ] {
             let reply = request(h.addr, "POST", "/api/invoke", &[host(h.addr), bearer(&h.token)], &call(args.clone())).await;
@@ -3523,7 +3958,7 @@ mod tests {
         assert_ne!(auto.port, 0);
         assert_ne!(auto.port, free, "a fresh port, not the old one");
         assert_eq!(auto.configured_port, 0);
-        assert_eq!(load_config(&dir), Config { enabled: true, port: 0 });
+        assert_eq!(load_config(&dir), Config { enabled: true, port: 0, ..Config::default() });
         assert_ne!(token_of(&auto), token_of(&fixed));
         assert!(std::net::TcpListener::bind((LOCAL, free)).is_ok(), "old port released");
         let addr = SocketAddr::new(LOCAL, auto.port);
@@ -3558,25 +3993,25 @@ mod tests {
     fn non_loopback_listeners_only_answer_to_their_address() {
         let tailscale: SocketAddr = "100.64.1.5:8787".parse().unwrap();
         for host in ["100.64.1.5:8787", "100.64.1.5", "127.0.0.1:8787", "localhost:8787", "[::1]:8787", "[::ffff:100.64.1.5]:8787"] {
-            assert!(host_allowed(Some(host), tailscale), "{host}");
+            assert!(host_allowed(Some(host), tailscale, &[]), "{host}");
         }
         for host in ["evil.com:8787", "192.168.1.9:8787", "100.64.1.6:8787", "100.64.1.5:0", "my-box.ts.net:8787", "1684275461:8787"] {
-            assert!(!host_allowed(Some(host), tailscale), "{host}");
+            assert!(!host_allowed(Some(host), tailscale, &[]), "{host}");
         }
         let v6: SocketAddr = "[fd7a:115c:a1e0::5]:8787".parse().unwrap();
-        assert!(host_allowed(Some("[fd7a:115c:a1e0::5]:8787"), v6));
-        assert!(host_allowed(Some("[FD7A:115C:A1E0:0::5]:8787"), v6));
-        assert!(!host_allowed(Some("[fd7a:115c:a1e0::6]:8787"), v6));
+        assert!(host_allowed(Some("[fd7a:115c:a1e0::5]:8787"), v6, &[]));
+        assert!(host_allowed(Some("[FD7A:115C:A1E0:0::5]:8787"), v6, &[]));
+        assert!(!host_allowed(Some("[fd7a:115c:a1e0::6]:8787"), v6, &[]));
 
         for any in ["0.0.0.0:8787", "[::]:8787"] {
             let any: SocketAddr = any.parse().unwrap();
             for host in ["192.168.1.5:8787", "localhost:8787", "127.0.0.1:8787", "100.64.1.5", "[fd7a:115c:a1e0::5]:8787"] {
-                assert!(host_allowed(Some(host), any), "{host}");
+                assert!(host_allowed(Some(host), any, &[]), "{host}");
             }
             for host in ["evil.com:8787", "my-box.local:8787", "192.168.1.5.nip.io:8787", "192.168.1.5:0", ""] {
-                assert!(!host_allowed(Some(host), any), "{host}");
+                assert!(!host_allowed(Some(host), any, &[]), "{host}");
             }
-            assert!(!host_allowed(None, any));
+            assert!(!host_allowed(None, any, &[]));
         }
     }
 
@@ -4326,8 +4761,8 @@ mod tests {
     async fn a_rotation_during_the_save_refuses_a_tabs_change() {
         let dir = temp_dir();
         let fake: Arc<dyn Backend> = Arc::new(Fake::default());
-        let saved_before = Config { enabled: false, port: 1234 };
-        save_config(&dir, saved_before).unwrap();
+        let saved_before = Config { enabled: false, port: 1234, ..Config::default() };
+        save_config(&dir, saved_before.clone()).unwrap();
         let server = Arc::new(WebServer::new(dir.clone()));
         let first = server.start(fake.clone(), LOCAL, 0, false).await.unwrap();
         let old_token = token_of(&first);
@@ -4372,11 +4807,11 @@ mod tests {
         let change = Configure { enabled: true, port: Some(target), persist: Some(true), ..Default::default() };
         let moved = server.configure(fake.clone(), change, Some(&current)).await.unwrap();
         assert_eq!(moved.port, target);
-        assert_eq!(load_config(&dir), Config { enabled: true, port: target });
+        assert_eq!(load_config(&dir), Config { enabled: true, port: target, ..Config::default() });
         let change = Configure { enabled: false, persist: Some(true), ..Default::default() };
         let off = server.configure(fake.clone(), change, Some(&token_of(&moved))).await.unwrap();
         assert!(!off.running);
-        assert_eq!(load_config(&dir), Config { enabled: false, port: target });
+        assert_eq!(load_config(&dir), Config { enabled: false, port: target, ..Config::default() });
     }
 
     #[tokio::test]
