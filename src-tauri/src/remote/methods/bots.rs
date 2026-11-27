@@ -304,7 +304,7 @@ impl Run for RuleAdd {
             allow_write(ctx.full_access)?;
             let rule = with_store(&ctx, move |store| guard::add_rule(store, &bot_id, &pattern, &decision)).await?;
             changed(ctx.app);
-            Ok(serde_json::to_value(rule).map_err(|e| e.to_string())?)
+            serde_json::to_value(rule).map_err(|e| e.to_string())
         })
     }
 }
@@ -367,7 +367,7 @@ impl Run for ScheduleCreate {
             })
             .await?;
             changed(ctx.app);
-            Ok(serde_json::to_value(made).map_err(|e| e.to_string())?)
+            serde_json::to_value(made).map_err(|e| e.to_string())
         })
     }
 }
@@ -416,7 +416,7 @@ impl Run for ScheduleSetEnabled {
             })
             .await?;
             changed(ctx.app);
-            Ok(serde_json::to_value(updated).map_err(|e| e.to_string())?)
+            serde_json::to_value(updated).map_err(|e| e.to_string())
         })
     }
 }
