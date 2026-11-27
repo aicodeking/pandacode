@@ -287,6 +287,7 @@ export async function wakeCommand(sessionId: string, args: string, anchor: HTMLE
 
 // Quick add ------------------------------------------------------------------------------------
 let closePopover: (() => void) | undefined;
+let popoverAnchor: HTMLElement | undefined;
 const pad = (n: number) => String(n).padStart(2, '0');
 const localValue = (at: number) => { const d = new Date(at); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`; };
 function presets(now = Date.now()): { id: string; label: string; at: () => number }[] {
@@ -305,7 +306,11 @@ function presets(now = Date.now()): { id: string; label: string; at: () => numbe
 /** Opens "Wake this thread later" over `anchor` for a thread (the open one by default). */
 export function openWakeComposer(anchor: HTMLElement, sessionId = host?.sessionId() ?? ''): void {
   if (!host || !sessionId) return;
+  const toggle = anchor.matches('[data-wake="add"]');
+  const same = toggle && popoverAnchor === anchor;
   closePopover?.();
+  if (same) return;
+  popoverAnchor = toggle ? anchor : undefined;
   const choices = presets();
   let preset = '60';
   const popover = document.createElement('div');
@@ -334,10 +339,14 @@ export function openWakeComposer(anchor: HTMLElement, sessionId = host?.sessionI
     form.querySelector<HTMLElement>('.wake-at')!.hidden = hourly;
   });
   const close = (refocus = true) => {
-    popover.remove(); document.removeEventListener('pointerdown', outside, true); closePopover = undefined;
+    popover.remove(); document.removeEventListener('pointerdown', outside, true); closePopover = undefined; popoverAnchor = undefined;
     if (refocus) (anchor.isConnected ? anchor : document.querySelector<HTMLElement>('#prompt'))?.focus({ preventScroll: true });
   };
-  const outside = (event: Event) => { if (!popover.contains(event.target as Node)) close(false); };
+  const outside = (event: PointerEvent) => {
+    const target = event.target as Node | null;
+    if (toggle && target && anchor.contains(target) && event.button === 0) return;
+    if (!target || !popover.contains(target)) close(false);
+  };
   closePopover = () => close(false);
   popover.addEventListener('keydown', event => {
     if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); close(); return; }

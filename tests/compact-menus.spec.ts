@@ -10,6 +10,71 @@ async function open(page: Page): Promise<void> {
   await expect(prompt(page)).toBeEnabled();
 }
 
+for (const [triggerName, menuName] of [
+  ['Attach files for context', 'Attach'],
+  ['Mode: Standard', 'Permissions'],
+  ['Task actions', 'Task actions'],
+]) {
+  test(`attachment and task menus toggle from their triggers: ${menuName}`, async ({ page }) => {
+    await open(page);
+    const trigger = page.getByRole('button', { name: triggerName, exact: true });
+    const menu = page.getByRole('dialog', { name: menuName, exact: true });
+
+    await trigger.click();
+    await expect(menu).toBeVisible();
+    await expect(trigger).toHaveAttribute('aria-expanded', 'true');
+    await trigger.click();
+    await expect(menu).toHaveCount(0);
+    await expect(trigger).not.toHaveAttribute('aria-expanded', 'true');
+
+    await trigger.click();
+    await expect(menu).toBeVisible();
+    await prompt(page).focus();
+    await expect(menu).toHaveCount(0);
+    await expect(prompt(page)).toBeFocused();
+
+    // Cancelled press on trigger must not strand the menu open once focus moves away.
+    await trigger.click();
+    await expect(menu).toBeVisible();
+    const box = (await trigger.boundingBox())!;
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(box.x + box.width + 60, box.y + box.height + 60);
+    await page.mouse.up();
+    await prompt(page).focus();
+    await expect(menu).toHaveCount(0);
+
+    // Non-primary press on trigger closes the menu rather than arming a toggle press.
+    await trigger.click();
+    await expect(menu).toBeVisible();
+    await trigger.click({ button: 'right' });
+    await expect(menu).toHaveCount(0);
+  });
+}
+
+test('attachment and sidebar menus toggle inside focusable containers and sidebar rows', async ({ page }) => {
+  await open(page);
+  const row = page.locator('#navigation .task-row').first();
+  await row.hover();
+  const more = row.locator('button[data-action="sidebar-more"]');
+  const taskMenu = page.getByRole('dialog', { name: 'Task actions', exact: true });
+  await more.click();
+  await expect(taskMenu).toBeVisible();
+  await expect(more).toHaveAttribute('aria-expanded', 'true');
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+  await expect(taskMenu).toBeVisible();
+  await expect(more).toHaveAttribute('aria-expanded', 'true');
+  await more.click();
+  await expect(taskMenu).toHaveCount(0);
+
+  const fileActions = page.locator('#inspector .cv-body').getByRole('button', { name: 'File actions', exact: true }).first();
+  const fileMenu = page.locator('.choice-menu[role="dialog"]');
+  await fileActions.click();
+  await expect(fileMenu).toHaveCount(1);
+  await fileActions.click();
+  await expect(fileMenu).toHaveCount(0);
+});
+
 test('menu rows keep label and detail on one line and never wrap', async ({ page }) => {
   await open(page);
   await page.getByRole('button', { name: 'Attach files for context' }).click();

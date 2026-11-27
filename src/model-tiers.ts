@@ -52,7 +52,7 @@ export function mountModelTiers(group: HTMLElement, options: ModelTiersOptions):
   let held: { key: string; from: Tier | null; at: Tier | null } | null = null;
   // A live pointer drag holds renders until it ends, so the dragged chip is never replaced under it.
   let dragging = false, renderLater = false;
-  let closeMenu: (() => void) | null = null;
+  let closeMenu: (() => void) | null = null, menuAnchor: HTMLElement | null = null;
   const add = group.querySelector<HTMLButtonElement>('.tier-add')!;
   let harnessModels = installedModels(options);
   // Add model… shows once a harness's catalog is long enough to be limited.
@@ -188,13 +188,16 @@ export function mountModelTiers(group: HTMLElement, options: ModelTiersOptions):
     if (!trigger || !loaded) return;
     const key = trigger.dataset.key!, current = shown[key] ?? null;
     let moved: string | null = null;
+    const same = menuAnchor === trigger;
     closeMenu?.();
+    if (same) return;
+    menuAnchor = trigger;
     closeMenu = openChoiceMenu({
       anchor: trigger, title: `Move ${nameOf(key)} to`,
       items: ROWS.map(tier => ({ id: tier ?? 'U', label: tier ? `Tier ${tier}` : 'Unranked', selected: tier === current })),
       onSelect: id => { moved = key; move(key, id === 'U' ? null : id as Tier); },
       // The trigger was redrawn in the chip's new row; focus that copy.
-      onClose: () => { closeMenu = null; if (moved) focusChip(moved, 'tier-chip-menu'); moved = null; },
+      onClose: () => { closeMenu = null; menuAnchor = null; if (moved) focusChip(moved, 'tier-chip-menu'); moved = null; },
     });
   });
 
@@ -240,22 +243,26 @@ export function mountModelTiers(group: HTMLElement, options: ModelTiersOptions):
     harnessModels = installedModels(options); lastPool = ''; showAdd(); loadPool();
   };
   window.addEventListener(TEAM_MODELS_EVENT, onAdded);
-  add.addEventListener('click', () => void harnessModels.then(({ limited }) => {
-    if (disposed || !limited.length) return;
-    closeMenu?.();
-    let picked: ProviderId | null = null;
-    closeMenu = openChoiceMenu({
-      anchor: add, title: 'Add a model from', actions: true,
-      items: limited.map(p => ({ id: p.id, label: p.name, provider: p.id })),
-      onSelect: id => { picked = id as ProviderId; },
-      onClose: () => {
-        closeMenu = null;
-        const id = picked; picked = null;
-        if (!id) return;
-        void import('./team-model-add').then(({ openAddTeamModels }) => openAddTeamModels({ provider: id, name: limited.find(p => p.id === id)!.name, loadModels: options.loadModels, trigger: () => add }));
-      },
+  add.addEventListener('click', () => {
+    if (menuAnchor === add) { closeMenu?.(); return; }
+    void harnessModels.then(({ limited }) => {
+      if (disposed || !limited.length || menuAnchor === add) return;
+      closeMenu?.();
+      let picked: ProviderId | null = null;
+      menuAnchor = add;
+      closeMenu = openChoiceMenu({
+        anchor: add, title: 'Add a model from', actions: true,
+        items: limited.map(p => ({ id: p.id, label: p.name, provider: p.id })),
+        onSelect: id => { picked = id as ProviderId; },
+        onClose: () => {
+          closeMenu = null; menuAnchor = null;
+          const id = picked; picked = null;
+          if (!id) return;
+          void import('./team-model-add').then(({ openAddTeamModels }) => openAddTeamModels({ provider: id, name: limited.find(p => p.id === id)!.name, loadModels: options.loadModels, trigger: () => add }));
+        },
+      });
     });
-  }));
+  });
   const setExclusions = (next: Exclusions) => { exclusions = next; loadPool(); };
   const setHealth = (list: Unhealthy[]) => { paused = list; loadPool(); };
 
