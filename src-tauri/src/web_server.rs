@@ -2042,6 +2042,7 @@ const WEB_ALLOWED_COMMANDS: &[&str] = &[
     "capabilities_inventory", "cache_alignment", "prompt_activity", "set_resume_at_reset", "clear_usage_limit",
     "discard_draft", "queue_list", "queue_holds", "queue_add", "queue_update", "queue_remove", "queue_take_steered",
     "queue_reorder", "queue_take", "queue_restore", "set_queue_hold", "steer_task", "bots_list", "bot_desktop_thread",
+    "bots_import_preview", "bots_import", "bots_export",
     "bot_detail", "bot_create", "bot_update", "bot_set_paused", "bot_reset", "bot_delete", "bot_remember",
     "bot_forget", "bot_activity", "bot_project_ids", "bot_message", "bot_shared_channels",
     "bot_shared_channel_detail", "bot_shared_channel_create", "bot_shared_channel_update",

@@ -121,6 +121,39 @@ function seedSamples(host: PreviewBotsHost): Promise<void> {
   return seeding;
 }
 
+/** Mirrors the native preview/apply split: a preview reports the plan and writes nothing. */
+function importBundle(args: Record<string, unknown>, apply: boolean, host: PreviewBotsHost) {
+  let doc: { bots?: unknown };
+  try { doc = JSON.parse(String(args.doc ?? '')); }
+  catch { throw new Error('The bot import document is not valid JSON.'); }
+  const entries = Array.isArray(doc.bots) ? doc.bots : null;
+  if (!entries) throw new Error('The import file needs a "bots" array.');
+  const known = new Map([...bots.values()].map(entry => [entry.bot.name, entry]));
+  const report = { lines: [] as string[], addedChannels: [] as { id: string; bot: string; kind: string; label: string }[], failed: 0, bots: [] as { name: string; status: string; changes: { kind: string; name: string; status: string }[]; error?: string }[], links: [] as { channelId: string; url: string }[] };
+  for (const entry of entries as Record<string, unknown>[]) {
+    const name = String(entry?.name ?? '').trim();
+    const existing = known.get(name);
+    const channels = Array.isArray(entry?.channels) ? entry.channels as Record<string, unknown>[] : [];
+    const changes = [{ kind: 'profile', name, status: existing ? 'updated' : 'created' }];
+    if (!name) { report.failed++; report.bots.push({ name, status: 'failed', changes: [], error: 'Give the bot a name.' }); continue; }
+    if (apply && !existing) {
+      const bot = validate({ role: 'Imported', instructions: 'Imported bot.', goals: '', avatar: 'panda:2', provider: 'claude', model: 'sonnet', mode: 'ask', heartbeatMinutes: 0, ...entry, name });
+      const id = crypto.randomUUID(), now = Date.now();
+      const project = host.addProject(name);
+      bots.set(id, { bot: { ...bot, soul: bot.soul ?? '', skills: [], mcp: [], id, projectId: project.id, paused: false, memoryVersion: 0, notifyChannelId: null, notifyThread: null, nextHeartbeatAt: null, createdAt: now, updatedAt: now }, memories: [], schedules: [], channels: [], pairings: [], threads: [], rules: [], activity: [] });
+    }
+    for (const channel of channels) {
+      const kind = String(channel?.kind ?? ''), label = String(channel?.label ?? '').trim();
+      changes.push({ kind: 'channel', name: `${kind}:${label}`, status: 'created' });
+      report.addedChannels.push({ id: '', bot: name, kind, label });
+      if (kind === 'web' && apply) report.links.push({ channelId: '', url: `http://127.0.0.1:47321/chat/preview#${'0'.repeat(64)}` });
+    }
+    report.bots.push({ name, status: existing ? 'updated' : 'created', changes });
+    report.lines.push(`"${name}" ${existing ? 'updated' : 'imported'}`);
+  }
+  return report;
+}
+
 async function createSamples(host: PreviewBotsHost): Promise<void> {
   const base = { instructions: 'Sample bot.', goals: '', provider: 'claude', model: 'sonnet', mode: 'ask', heartbeatMinutes: 0 };
   const make = (name: string, role: string, avatar: string, profile: Partial<BotInput> = {}) => invokeBots<Bot>('bot_create', { input: { ...base, name, role, avatar, ...profile } }, host);
@@ -230,6 +263,12 @@ export async function invokeBots<T>(command: string, args: Record<string, any>, 
       failoverAsks.delete(sessionId); result = null; changed(); break;
     }
     case 'bot_detail': result = detail(store(args.botId)); break;
+    case 'bots_import_preview': result = importBundle(args, false, host); break;
+    case 'bots_import': result = importBundle(args, true, host); changed(); break;
+    case 'bots_export': {
+      result = { bots: [...bots.values()].map(entry => ({ name: entry.bot.name, role: entry.bot.role, provider: entry.bot.provider, model: entry.bot.model, mode: entry.bot.mode, channels: entry.channels.map(channel => ({ kind: channel.kind, label: channel.label })) })) };
+      break;
+    }
     case 'bot_create': {
       const input = validate(args.input);
       const id = crypto.randomUUID(), now = Date.now();

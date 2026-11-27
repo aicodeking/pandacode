@@ -323,6 +323,11 @@ pandacode serve --import-bots bots.json
   list `secretsNeeded` names; web tokens are excluded — a re-import mints a fresh link;
   already-fired once-schedules are omitted, since their run time is gone). Use it to
   snapshot or move a server's setup; put the tokens back before re-importing.
+- The same document is what the desktop's **Bots → Import** uses: `bots_import_preview`
+  returns the created/updated/unchanged/failed diff and writes nothing, and `bots_import`
+  applies it exactly as this flag does (then starts the added channels). A document has one
+  meaning for both callers, so a file that works here works there. See
+  [bot bundles](bot-bundles.md) for sharing one between computers.
 
 Schedules, rules, profiles and secrets are read fresh by a running serve; channels added
 by hand (not through the import) need a restart to connect.
