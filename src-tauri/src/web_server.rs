@@ -2095,7 +2095,7 @@ const WEB_ALLOWED_COMMANDS: &[&str] = &[
     "themes_list", "theme_import", "theme_install", "theme_remove", "token_saver_tools", "token_saver_install",
     "task_token_usage", "skill_manager_list", "skill_manager_set", "skill_manager_reset",
     "skill_manager_restore", "skill_manager_uninstall", "skill_manager_undo_uninstall", "skill_manager_preview",
-    "skill_manager_add", "skill_manager_add_library", "skills_list", "skills_import_folder",
+    "skill_manager_add", "skill_manager_add_library", "skills_list", "skills_found", "skills_import_folder",
     "skills_import_github", "skills_activate", "skills_deactivate", "skills_deactivate_all", "skills_matrix",
     "skills_scan", "skills_remove", "set_task_link", "import_prompt_image", "prompt_image", "read_document",
     "describe_folder", "list_files", "manage_workspace_entry", "write_workspace_file", "workspace_file_stamp",

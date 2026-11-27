@@ -32,7 +32,7 @@ pub struct FoundSkill {
 
 /// User-scope skill roots of every harness PandaCode knows (`skill_manager::roots::skill_roots`,
 /// which also feeds the Tools & add-ons inventory), plus the shared `~/.agents/skills`
-/// convention and ZCode's own folder. Duplicated roots (GLM and MiMo read Claude's) collapse.
+/// convention. Duplicated roots (GLM and MiMo read Claude's) collapse.
 pub(crate) fn roots(home: &Path) -> Vec<(PathBuf, String)> {
     roots_with_homes(home, &crate::skill_manager::roots::Homes::for_scan())
 }
@@ -44,13 +44,12 @@ fn roots_with_homes(home: &Path, homes: &crate::skill_manager::roots::Homes) -> 
             roots.push((path, label));
         }
     };
-    for harness in ["claude", "codex", "opencode", "kimi", "pi", "cline"] {
+    for (harness, _) in crate::providers::PROVIDERS {
         for (path, label) in crate::skill_manager::roots::skill_roots(harness, home, None, homes) {
             push(path, label);
         }
     }
     push(home.join(".agents/skills"), "~/.agents/skills".to_string());
-    push(home.join(".zcode/skills"), "~/.zcode/skills".to_string());
     roots
 }
 
@@ -148,7 +147,17 @@ mod tests {
             "~/.cline/skills",
             "~/.zcode/skills",
         ];
-        assert_eq!(labels, expect.iter().map(|label| label.to_string()).collect::<Vec<_>>());
+        for label in expect {
+            assert!(labels.iter().any(|actual| actual == label), "missing {label}");
+        }
+        let homes = crate::skill_manager::roots::Homes::default();
+        let found_roots = roots_with_homes(home, &homes);
+        for (harness, _) in crate::providers::PROVIDERS {
+            for (path, _) in crate::skill_manager::roots::skill_roots(harness, home, None, &homes) {
+                assert_eq!(found_roots.iter().filter(|(actual, _)| actual == &path).count(), 1,
+                    "{harness}: {} must appear once", path.display());
+            }
+        }
         let _ = fs::remove_dir_all(&base);
     }
 }
