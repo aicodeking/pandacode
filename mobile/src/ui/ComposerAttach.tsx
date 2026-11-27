@@ -17,16 +17,18 @@ import { hostCall } from '../connect/client.ts';
 import { uuid } from '../connect/crypto.ts';
 import { maybeRan } from '../connect/rpc.ts';
 import {
-  attachLimits, composeText, uploadImages, documentPending, DOCUMENT_READ_MAX, imageKind, imageName, imageRefusal,
+  attachLimits, base64Size, composeText, uploadImages, documentPending, DOCUMENT_READ_MAX, imageKind, imageName, imageRefusal,
   looksLikeText, textRefusal, withoutPending, withPending, type Pending, type SendImage,
 } from '../store/attach.ts';
 import { crossFadeIn, crossFadeOut, geometry, haptic, PressScale, type as textStyle, useMotion } from './ds/index.ts';
 import { Icon } from './Icon.tsx';
+import { fitImage } from './attach-image.ts';
 import { Menu, type MenuItem } from './Menu.tsx';
 import { useColors } from './theme.ts';
 import { TRAY_ICON_WIDTH } from './tray-fit.ts';
 
-/** JPEG quality for picked photos: keeps a phone photo well under the host's 5 MB. */
+/** The picker's own compression. It saves a decode, but a 12–48 MP phone photo still blows past the
+ * host's limit, so `fitImage` (attach-image.ts) does the real work afterwards. */
 const PHOTO_QUALITY = 0.8;
 const THUMB = 44;
 
@@ -52,17 +54,26 @@ export function useComposerAttach(deviceId: string, bot: boolean) {
   const supported = useHostSupports(deviceId, 'image.put');
   const [pending, setPending] = useState<Pending[]>([]);
 
-  const addImages = (assets: ImagePicker.ImagePickerAsset[]) => {
+  /** Picks up each asset and fits it to the host: a photo too large for the limit is downscaled and
+   * re-encoded rather than refused (attach-image.ts). */
+  const addImages = async (assets: ImagePicker.ImagePickerAsset[]) => {
     let list = pending;
     for (const [index, asset] of assets.entries()) {
-      const base64 = asset.base64 ?? '';
+      const picked = asset.base64 ?? '';
+      // Before fitting, the count is what can still be refused: too many images, or not an image.
+      if (list.filter(p => p.kind === 'image').length >= limits.maxImages) {
+        Alert.alert('Can’t attach more images', `Attach up to ${limits.maxImages} images per message.`);
+        break;
+      }
+      const fitted = picked ? await fitImage(asset.uri, picked, asset.width, asset.height, limits) : null;
+      const base64 = fitted?.base64 ?? picked;
       const refusal = imageRefusal(list, base64, limits);
       if (refusal) {
         Alert.alert('Can’t attach this image', refusal);
         break;
       }
       const kind = imageKind(base64) ?? 'jpeg';
-      list = withPending(list, { kind: 'image', id: uuid(), name: imageName(asset.fileName, kind, list.length + index), uri: asset.uri, base64, bytes: asset.fileSize ?? 0, width: asset.width, height: asset.height });
+      list = withPending(list, { kind: 'image', id: uuid(), name: imageName(asset.fileName, kind, list.length + index), uri: asset.uri, base64, bytes: base64Size(base64), width: fitted?.width ?? asset.width, height: fitted?.height ?? asset.height });
     }
     if (list !== pending) haptic('selection');
     setPending(list);
@@ -72,7 +83,7 @@ export function useComposerAttach(deviceId: string, bot: boolean) {
     if (imagesLeft <= 0) return void Alert.alert('Can’t attach more images', `Attach up to ${limits.maxImages} images per message.`);
     try {
       const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: 'images', allowsMultipleSelection: true, selectionLimit: imagesLeft, quality: PHOTO_QUALITY, base64: true });
-      if (!result.canceled) addImages(result.assets);
+      if (!result.canceled) await addImages(result.assets);
     } catch (error) {
       Alert.alert('Couldn’t open your photos', (error as Error).message);
     }
@@ -83,7 +94,7 @@ export function useComposerAttach(deviceId: string, bot: boolean) {
       const permission = await ImagePicker.requestCameraPermissionsAsync();
       if (!permission.granted) return void Alert.alert('Camera access is off', 'Allow PandaCode to use the camera in Settings to take a photo here.');
       const result = await ImagePicker.launchCameraAsync({ mediaTypes: 'images', quality: PHOTO_QUALITY, base64: true });
-      if (!result.canceled) addImages(result.assets);
+      if (!result.canceled) await addImages(result.assets);
     } catch (error) {
       Alert.alert('Couldn’t open the camera', (error as Error).message);
     }

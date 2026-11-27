@@ -86,6 +86,41 @@ export function imageRefusal(pending: readonly Pending[], base64: string, limits
   return null;
 }
 
+// ---- Fitting a photo to the host ----
+
+/** The longest edge a photo is kept at: more than a model reads usefully from a screenshot, and about
+ * what a phone photo needs before it stops looking soft. */
+export const PHOTO_MAX_EDGE = 2048;
+/** Quality steps tried in order until the encoded image fits the host's limit. */
+export const PHOTO_QUALITIES = [0.8, 0.65, 0.5, 0.4] as const;
+
+/** What to do with a picked image before upload. `unchanged` keeps the picked bytes exactly. */
+export type Fit = { kind: 'unchanged' } | { kind: 'resize'; width: number; quality: number };
+
+/** The first attempt for an image of `width`×`height` (scaled down to the longest edge), at the best
+ * quality. Pure, so the ladder is testable without a device (tests/attach.test.ts). */
+export function fitPlan(width: number, height: number): Fit {
+  const longest = Math.max(width, height);
+  if (longest <= PHOTO_MAX_EDGE) return { kind: 'unchanged' };
+  return { kind: 'resize', width: Math.max(1, Math.round((width * PHOTO_MAX_EDGE) / longest)), quality: PHOTO_QUALITIES[0] };
+}
+
+/** The next quality step down, or null when the ladder is exhausted (the original then stands and
+ * `imageRefusal` explains the limit). */
+export function nextQuality(quality: number): number | null {
+  const index = PHOTO_QUALITIES.findIndex(q => q < quality);
+  return index < 0 ? null : PHOTO_QUALITIES[index];
+}
+
+/**
+ * Whether an image needs work before upload: too many bytes for the host, or too many pixels to
+ * send as they are. A photo that already fits is never re-encoded, so attaching a small screenshot
+ * costs nothing and keeps its exact bytes.
+ */
+export function needsFit(bytes: number, width: number, height: number, limits: AttachLimits): boolean {
+  return bytes > limits.maxImageBytes || Math.max(width, height) > PHOTO_MAX_EDGE;
+}
+
 // ---- Documents ----
 
 const TEXT_MIME = /^(text\/|application\/(json|xml|javascript|x-sh|x-yaml|yaml|toml|x-toml|sql|graphql|ld\+json|x-ndjson))/;
