@@ -178,6 +178,9 @@ their next turn lists all three and says `REUSE`, a one-time cache rewrite.
   Standard leaves the tool list byte-identical (`Layers::hold`, `standard_names`). The
   instruction sentence stays, and the turn's message carries a 63 B line saying tools cannot
   be saved or run this turn (`plan_tools_note`).
+  ACP harnesses without verified MCP title matching (`kilo`, `cursor`, `deepseek`,
+  `github-copilot`, `hermes`) may decline `pandacode_tool_list` in Plan mode when it arrives
+  as a non-read/search permission request.
 - **Windows without `sh.exe` on PATH** (Git for Windows, MSYS2; an extensionless `sh` or
   `sh.bat` does not count, since the run starts `sh` the way Rust does, which adds `.exe`): no tools and no instruction
   sentence. The check runs once per process.

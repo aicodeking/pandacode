@@ -1,7 +1,9 @@
 //! Claude Code's own permission policy as it bears on file tracking: whether native edits wait
 //! for approval (mode plus the user's Edit/Write allow rules) and whether Read deny rules,
 //! managed settings or a linked worktree's main checkout restrict reads.
+use crate::connections::{self, Connection, Launch};
 use serde_json::Value;
+use std::collections::HashSet;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
@@ -44,12 +46,13 @@ pub(super) fn edits_wait_for_run_using(
 /// Whether Claude Code may apply this run's edits without asking. GLM, MiMo and Alibaba launch
 /// with `--setting-sources ""`, so user, project and local settings files do not apply to them,
 /// but Claude Code still enforces enterprise `managed-settings.json`, and a named connection on
-/// any Claude-family harness may pass `--allowedTools` or use another Claude config folder
-/// (not followed: treated as allowing). The config folder is resolved exactly as for reads.
+/// any Claude-family harness may pass `--allowedTools` or use another Claude config folder.
+/// An assigned or pooled named account is therefore treated as allowing edits.
 pub(super) fn claude_allows_edits(config: &crate::providers::RunConfig) -> bool {
     claude_allows_edits_with(
         config,
-        || crate::connections::for_task(&config.session_id, &config.provider).is_some(),
+        || connections::for_task(&config.session_id, &config.provider).is_some(),
+        || enabled_pool_members(&config.provider),
         host_managed_settings_may_allow,
         || {
             let env = crate::provider_settings::environment("claude");
@@ -61,13 +64,14 @@ pub(super) fn claude_allows_edits(config: &crate::providers::RunConfig) -> bool 
 pub(super) fn claude_allows_edits_with(
     config: &crate::providers::RunConfig,
     has_connection: impl FnOnce() -> bool,
+    pool_members: impl FnOnce() -> Option<Vec<Connection>>,
     managed_settings: impl FnOnce() -> bool,
     claude_config_dir: impl FnOnce() -> Option<std::path::PathBuf>,
 ) -> bool {
     if !crate::providers::claude_family(&config.provider) {
         return false;
     }
-    if has_connection() {
+    if has_connection() || pool_members().is_some_and(|members| !members.is_empty()) {
         return true;
     }
     if managed_settings() {
@@ -87,11 +91,38 @@ pub(crate) fn claude_restricts_reads(session_id: &str, provider: &str, cwd: &Pat
     claude_restricts_reads_with(
         provider,
         cwd,
-        || crate::connections::for_task(session_id, provider)
-            .map(|connection| crate::connections::launch(&connection)).transpose(),
+        || {
+            read_account_launches(
+                connections::for_task(session_id, provider),
+                enabled_pool_members(provider),
+                connections::launch,
+            )
+        },
         host_managed_settings_restrict_reads,
         |env| launch_config_dir(crate::provider_settings::environment(provider), env, cwd),
     )
+}
+
+fn enabled_pool_members(provider: &str) -> Option<Vec<Connection>> {
+    crate::account_pool::enabled(provider).then(|| connections::pool_members(provider))
+}
+
+/// Pool preparation and rotation can change the assignment after this policy check.
+/// With pooling enabled, include the default account and each named account once.
+pub(super) fn read_account_launches(
+    current: Option<Connection>,
+    pool: Option<Vec<Connection>>,
+    mut launch: impl FnMut(&Connection) -> crate::Result<Launch>,
+) -> impl Iterator<Item = crate::Result<Option<Launch>>> {
+    let extra_default = (current.is_some() && pool.is_some()).then_some(None);
+    let mut seen = HashSet::new();
+    std::iter::once(current)
+        .chain(extra_default)
+        .chain(pool.into_iter().flatten().map(Some))
+        .filter(move |connection| {
+            connection.as_ref().is_none_or(|connection| seen.insert(connection.id.clone()))
+        })
+        .map(move |connection| connection.as_ref().map(&mut launch).transpose())
 }
 
 /// The Claude config folder of a launch whose environment is `provider_env` then
@@ -113,21 +144,35 @@ pub(super) fn launch_config_dir_with(
     resolve_claude_config_dir_env_with(&env, inherited, cwd, cfg!(windows))
 }
 
-/// `config_dir` maps the connection's env (empty without one) to `launch_config_dir`.
-pub(super) fn claude_restricts_reads_with(
+/// `config_dir` maps each candidate's connection env to `launch_config_dir`.
+pub(super) fn claude_restricts_reads_with<I>(
     provider: &str,
     cwd: &Path,
-    connection: impl FnOnce() -> std::result::Result<Option<crate::connections::Launch>, String>,
+    launches: impl FnOnce() -> I,
     managed_settings: impl FnOnce() -> bool,
-    config_dir: impl FnOnce(&[(String, String)]) -> Option<PathBuf>,
-) -> bool {
+    mut config_dir: impl FnMut(&[(String, String)]) -> Option<PathBuf>,
+) -> bool
+where
+    I: IntoIterator<Item = crate::Result<Option<Launch>>>,
+{
     if !crate::providers::claude_family(provider) {
         return false;
     }
     if managed_settings() {
         return true;
     }
-    let connection_env = match connection() {
+    launches()
+        .into_iter()
+        .any(|launch| launch_restricts_reads(provider, cwd, launch, &mut config_dir))
+}
+
+fn launch_restricts_reads(
+    provider: &str,
+    cwd: &Path,
+    launch: crate::Result<Option<Launch>>,
+    config_dir: impl FnOnce(&[(String, String)]) -> Option<PathBuf>,
+) -> bool {
+    let connection_env = match launch {
         Ok(Some(connection)) => {
             if connection.args.iter().any(|arg| {
                 let flag = arg.split('=').next().unwrap_or_default();
@@ -354,11 +399,19 @@ fn edit_settings_warning(reason: &str) -> bool {
 /// The parsed file, `None` when it does not exist, or why it could not be read.
 pub(super) fn read_settings(path: &std::path::Path) -> std::result::Result<Option<Value>, &'static str> {
     use std::io::Read;
-    let meta = match std::fs::metadata(path) {
-        Ok(meta) => meta,
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NONBLOCK);
+    }
+    let file = match options.open(path) {
+        Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound && settings_path_absent(path) => return Ok(None),
         Err(_) => return Err("unreadable"),
     };
+    let meta = file.metadata().map_err(|_| "unreadable")?;
     if !meta.is_file() {
         return Err("not a file");
     }
@@ -366,7 +419,9 @@ pub(super) fn read_settings(path: &std::path::Path) -> std::result::Result<Optio
         return Err("too large");
     }
     let mut bytes = Vec::new();
-    std::fs::File::open(path).and_then(|file| file.take(SETTINGS_LIMIT + 1).read_to_end(&mut bytes)).map_err(|_| "unreadable")?;
+    file.take(SETTINGS_LIMIT + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| "unreadable")?;
     if bytes.len() as u64 > SETTINGS_LIMIT {
         return Err("too large");
     }
@@ -391,5 +446,5 @@ pub(super) fn settings_allow_edits(settings: &Value) -> bool {
 /// `Edit`, `Write(src/**)`, `*` …: a rule naming an edit tool (or every tool).
 pub(super) fn edit_rule(rule: &str) -> bool {
     let tool = rule.split('(').next().unwrap_or_default().trim();
-    tool == "*" || EDIT_TOOLS.contains(&tool)
+    EDIT_TOOLS.iter().any(|name| wildcard_matches(tool, name))
 }

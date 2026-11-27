@@ -304,9 +304,9 @@ pub(crate) async fn any_subtree_busy_or_reserved_excluding(
     checkout_busy_in_state(state, roots, exclude_session, true, true, ReservationScope::Subtree).await
 }
 
-/// Whether an agent or harness console is active in `root`.
-pub(crate) async fn active_agent_in_state(state: &AppState, root: &Path) -> Result<bool> {
-    checkout_busy_in_state(state, &[root.to_path_buf()], None, false, false, ReservationScope::Checkout).await
+/// Whether a run, harness console or reservation holds `root` before checks wait for exits.
+async fn active_agent_or_reserved_in_state(state: &AppState, root: &Path) -> Result<bool> {
+    checkout_busy_in_state(state, &[root.to_path_buf()], None, false, true, ReservationScope::Checkout).await
 }
 
 async fn checkout_busy_in_state(
@@ -394,7 +394,7 @@ pub(crate) async fn pending_exit_sessions_in_state(state: &AppState, root: &Path
 /// workspace root.
 pub(crate) async fn prepare_checkout_for_checks(state: &AppState, session_id: &str, root: &Path) -> Result<Reservation> {
     const BUSY: &str = "Wait for the agent to finish first.";
-    if checkout_reserved(&state.agents, root) || active_agent_in_state(state, root).await? {
+    if active_agent_or_reserved_in_state(state, root).await? {
         return Err(BUSY.into());
     }
     let wait = async {
@@ -543,7 +543,7 @@ pub(crate) mod test_support {
 mod tests {
     use super::test_support::Checkout;
     use super::{
-        active_agent_in_state, any_checkout_busy_excluding, any_checkout_busy_or_reserved_excluding,
+        active_agent_or_reserved_in_state, any_checkout_busy_excluding, any_checkout_busy_or_reserved_excluding,
         any_checkout_reserved, any_same_checkout, any_subtree_busy_excluding,
         any_subtree_busy_or_reserved_excluding, checkout_identity, checkout_reserved,
         prepare_checkout_for_checks, refuse_worktree_merge_busy, refuse_worktree_remove_busy,
@@ -670,7 +670,7 @@ mod tests {
                 .unwrap()
                 .insert(session.id.clone(), RunningAgent::new(tx, Arc::default()));
 
-            assert!(active_agent_in_state(&state, &checkout.pkg_a)
+            assert!(active_agent_or_reserved_in_state(&state, &checkout.pkg_a)
                 .await
                 .unwrap());
             assert_eq!(
@@ -682,6 +682,31 @@ mod tests {
             );
             state.agents.lock().unwrap().remove(&session.id);
         }
+    }
+
+    #[tokio::test]
+    async fn subfolder_checks_refuse_a_sibling_reservation_before_waiting_for_exit() {
+        let checkout = Checkout::new();
+        let state = test_state();
+        let reservation = reserve_idle_checkouts(&state, vec![checkout.pkg_b.clone()], "busy")
+            .await
+            .unwrap();
+        let session_id = format!("reserved-checks-{}", uuid::Uuid::new_v4());
+        let hold = providers::hold_exit_for_test(&session_id);
+        let prepared = tokio::time::timeout(
+            Duration::from_secs(2),
+            prepare_checkout_for_checks(&state, &session_id, &checkout.pkg_a),
+        )
+        .await;
+        drop(hold);
+        providers::await_exit(&session_id).await.unwrap();
+
+        assert_eq!(
+            prepared.expect("reservation must be checked before waiting for exit").err().as_deref(),
+            Some("Wait for the agent to finish first."),
+        );
+        assert!(checkout_reserved(&state.agents, &checkout.pkg_b));
+        drop(reservation);
     }
 
     #[tokio::test]

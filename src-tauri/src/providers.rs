@@ -4858,7 +4858,11 @@ pub(super) fn strip_mcp_architect_prefix(name: &str) -> Option<&str> {
 
 /// Host tools that need no permission prompt once registered for the run.
 fn self_scoped_host_tool(name: &str) -> bool {
-    optional_metadata_tool(name) || crate::bots::tools::self_scoped(name) || crate::schedules::tools::self_scoped(name) || crate::architect::team_tool(name)
+    optional_metadata_tool(name)
+        || name == crate::custom_tools::TOOL_LIST
+        || crate::bots::tools::self_scoped(name)
+        || crate::schedules::tools::self_scoped(name)
+        || crate::architect::team_tool(name)
 }
 fn optional_metadata_tool(name: &str) -> bool {
     name == crate::session_titles::TOOL || name == crate::turn_changes::TRACK_TOOL

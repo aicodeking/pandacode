@@ -2,6 +2,9 @@ use super::claude_policy::*;
 use crate::claude_roots::*;
 use super::*;
 
+#[path = "policy_tests.rs"]
+mod policy_tests;
+
 fn assert_reported_path_spelling(begin_path: &str, complete_path: &str) {
     let f = crate::turn_changes::tests::Fixture::new(false);
     f.write("src/ours.txt", "before batch\n");
@@ -164,8 +167,8 @@ fn restricts_reads(settings: &Settings, provider: &str, connection: Option<crate
 fn restricts_reads_over(settings: &Settings, provider: &str, provider_env: Vec<(String, String)>,
     connection: Option<crate::connections::Launch>) -> bool {
     let cwd = settings.base.join("project");
-    claude_restricts_reads_with(provider, &cwd, || Ok(connection), || false,
-        |env| launch_config_dir_with(provider_env, env, None, &cwd))
+    claude_restricts_reads_with(provider, &cwd, || [Ok(connection)], || false,
+        |env| launch_config_dir_with(provider_env.clone(), env, None, &cwd))
 }
 
 #[test]
@@ -289,7 +292,7 @@ fn nonstandard_linked_checkout(settings: &Settings) -> (PathBuf, PathBuf, PathBu
 }
 
 fn linked_reads_restricted(settings: &Settings, worktree: &Path) -> bool {
-    claude_restricts_reads_with("claude", worktree, || Ok(None), || false,
+    claude_restricts_reads_with("claude", worktree, || [Ok(None)], || false,
         |_| Some(settings.base.join("config")))
 }
 
@@ -699,7 +702,7 @@ fn relay_reads_ignore_user_and_project_rules_but_honor_managed_policy() {
         .project("settings.local.json", r#"{"permissions":{"ask":["Grep"]}}"#);
     for provider in ["glm", "mimo", "alibaba"] {
         assert!(!restricts_reads(&settings, provider, None), "{provider}");
-        assert!(claude_restricts_reads_with(provider, &settings.base, || panic!("managed restriction"),
+        assert!(claude_restricts_reads_with::<[_; 1]>(provider, &settings.base, || panic!("managed restriction"),
             || true, |_| panic!("relay config")));
         assert!(restricts_reads(&settings, provider, Some(read_launch(&["--settings=custom.json"], &[]))));
     }
@@ -716,7 +719,7 @@ fn claude_connections_resolve_config_and_reject_unfollowed_flags() {
             }
         }
         assert!(restricts_reads(&settings, provider, Some(read_launch(&[], &[("CLAUDE_CONFIG_DIR", "")]))));
-        assert!(claude_restricts_reads_with(provider, &settings.base, || Err("missing saved key".into()),
+        assert!(claude_restricts_reads_with(provider, &settings.base, || [Err("missing saved key".into())],
             || false, |_| panic!("bad connection")));
     }
     let custom = settings.base.join("custom");
@@ -745,7 +748,7 @@ fn claude_connections_resolve_config_and_reject_unfollowed_flags() {
     settings.user("settings.json", r#"{"permissions":{"deny":["Read"]}}"#);
     std::fs::write(custom.join("settings.local.json"), "{}").unwrap();
     assert!(!restricts_reads(&settings, "claude", connection()), "the connection's folder wins");
-    assert!(claude_restricts_reads_with("claude", &settings.base, || Ok(None), || false, |_| None));
+    assert!(claude_restricts_reads_with("claude", &settings.base, || [Ok(None)], || false, |_| None));
 }
 
 // A named connection's HOME (USERPROFILE on Windows) picks `<home>/.claude` when no
@@ -815,7 +818,7 @@ fn project_read_rules_stop_at_nearest_git_root_and_skip_overridden_home() {
 #[test]
 fn non_claude_harnesses_never_probe_claude_read_settings() {
     for provider in ["codex", "opencode", "kimi"] {
-        assert!(!claude_restricts_reads_with(provider, Path::new("unused"),
+        assert!(!claude_restricts_reads_with::<[_; 1]>(provider, Path::new("unused"),
             || panic!("non-Claude connection"), || panic!("non-Claude policy"),
             |_| panic!("non-Claude config")));
     }
@@ -940,6 +943,7 @@ fn a_managed_drop_in_directory_requires_the_tracking_handshake() {
             claude_allows_edits_with(
                 config,
                 || false,
+                || None,
                 || managed_settings_may_allow(Some(&managed)),
                 || panic!("relay config"),
             )
@@ -969,7 +973,7 @@ fn managed_policy_stat_errors_fail_closed_on_every_platform() {
         let config = crate::providers::tests::config("glm");
         let allows = || managed_path_may_allow_with(|| Err(std::io::Error::from(kind)));
         assert!(
-            claude_allows_edits_with(&config, || false, allows, || panic!("relay config")),
+            claude_allows_edits_with(&config, || false, || None, allows, || panic!("relay config")),
             "{kind:?}"
         );
     }
@@ -1060,6 +1064,7 @@ fn windows_registry_presence_and_errors_require_native_edit_tracking() {
                 !edits_wait_for_run_using(&config, |config| claude_allows_edits_with(
                     config,
                     || false,
+                    || None,
                     allows,
                     || panic!("relay config"),
                 )),
@@ -1139,29 +1144,29 @@ fn claude_family_relays_respect_connections_and_managed_settings_but_ignore_user
         // Neither named connection nor managed settings: relays skip user/project settings
         // (and never query claude_config_dir), even when an Edit allow rule is present there.
         assert!(
-            !claude_allows_edits_with(&config, || false, || managed_settings_may_allow(Some(&absent_managed)), || panic!("relays must not read claude_config_dir")),
+            !claude_allows_edits_with(&config, || false, || None, || managed_settings_may_allow(Some(&absent_managed)), || panic!("relays must not read claude_config_dir")),
             "{provider} without connection or managed settings"
         );
         assert!(
-            edits_wait_for_run_using(&config, |c| claude_allows_edits_with(c, || false, || managed_settings_may_allow(Some(&absent_managed)), || Some(config_dir.clone()))),
+            edits_wait_for_run_using(&config, |c| claude_allows_edits_with(c, || false, || None, || managed_settings_may_allow(Some(&absent_managed)), || Some(config_dir.clone()))),
             "{provider} waits when neither connection nor managed settings apply"
         );
         // A named connection may pass --allowedTools or another config folder: do not rely on the wait.
         assert!(
-            claude_allows_edits_with(&config, || true, || managed_settings_may_allow(Some(&absent_managed)), || panic!("connection short-circuits before config dir")),
+            claude_allows_edits_with(&config, || true, || None, || managed_settings_may_allow(Some(&absent_managed)), || panic!("connection short-circuits before config dir")),
             "{provider} with named connection"
         );
         assert!(
-            !edits_wait_for_run_using(&config, |c| claude_allows_edits_with(c, || true, || managed_settings_may_allow(Some(&absent_managed)), || None)),
+            !edits_wait_for_run_using(&config, |c| claude_allows_edits_with(c, || true, || None, || managed_settings_may_allow(Some(&absent_managed)), || None)),
             "{provider} does not wait with named connection"
         );
         // Enterprise managed-settings.json still applies even with --setting-sources "".
         assert!(
-            claude_allows_edits_with(&config, || false, || managed_settings_may_allow(Some(&present_managed)), || panic!("managed settings short-circuit before config dir")),
+            claude_allows_edits_with(&config, || false, || None, || managed_settings_may_allow(Some(&present_managed)), || panic!("managed settings short-circuit before config dir")),
             "{provider} with managed settings"
         );
         assert!(
-            !edits_wait_for_run_using(&config, |c| claude_allows_edits_with(c, || false, || managed_settings_may_allow(Some(&present_managed)), || None)),
+            !edits_wait_for_run_using(&config, |c| claude_allows_edits_with(c, || false, || None, || managed_settings_may_allow(Some(&present_managed)), || None)),
             "{provider} does not wait with managed settings"
         );
     }
@@ -1173,17 +1178,17 @@ fn claude_family_relays_respect_connections_and_managed_settings_but_ignore_user
         cwd: project_dir,
         ..crate::providers::tests::config("claude")
     };
-    assert!(claude_allows_edits_with(&claude, || false, || managed_settings_may_allow(Some(&absent_managed)), || Some(config_dir.clone())));
-    assert!(!edits_wait_for_run_using(&claude, |c| claude_allows_edits_with(c, || false, || managed_settings_may_allow(Some(&absent_managed)), || Some(config_dir.clone()))));
-    assert!(claude_allows_edits_with(&claude, || false, || managed_settings_may_allow(Some(&absent_managed)), || None));
+    assert!(claude_allows_edits_with(&claude, || false, || None, || managed_settings_may_allow(Some(&absent_managed)), || Some(config_dir.clone())));
+    assert!(!edits_wait_for_run_using(&claude, |c| claude_allows_edits_with(c, || false, || None, || managed_settings_may_allow(Some(&absent_managed)), || Some(config_dir.clone()))));
+    assert!(claude_allows_edits_with(&claude, || false, || None, || managed_settings_may_allow(Some(&absent_managed)), || None));
     let clean = Settings::new();
     let claude_clean = crate::providers::RunConfig {
         mode: "ask".into(),
         cwd: clean.base.join("project"),
         ..crate::providers::tests::config("claude")
     };
-    assert!(!claude_allows_edits_with(&claude_clean, || false, || managed_settings_may_allow(Some(&absent_managed)), || Some(clean.base.join("config"))));
-    assert!(edits_wait_for_run_using(&claude_clean, |c| claude_allows_edits_with(c, || false, || managed_settings_may_allow(Some(&absent_managed)), || Some(clean.base.join("config")))));
+    assert!(!claude_allows_edits_with(&claude_clean, || false, || None, || managed_settings_may_allow(Some(&absent_managed)), || Some(clean.base.join("config"))));
+    assert!(edits_wait_for_run_using(&claude_clean, |c| claude_allows_edits_with(c, || false, || None, || managed_settings_may_allow(Some(&absent_managed)), || Some(clean.base.join("config")))));
 
     // Non-Claude-family harnesses short-circuit before connection/managed/config checks.
     let codex = crate::providers::RunConfig {
@@ -1193,6 +1198,7 @@ fn claude_family_relays_respect_connections_and_managed_settings_but_ignore_user
     assert!(!claude_allows_edits_with(
         &codex,
         || panic!("non-Claude harnesses must not check connections"),
+        || panic!("non-Claude harnesses must not check pools"),
         || panic!("non-Claude harnesses must not check managed settings"),
         || panic!("non-Claude harnesses must not check claude_config_dir"),
     ));
@@ -1382,11 +1388,11 @@ fn an_empty_claude_config_dir_is_unknown_and_fails_closed() {
     assert_eq!(resolve_claude_config_dir_env(&later_empty, &cwd, false), None, "the last value wins");
     assert_eq!(resolve_claude_config_dir_env(&later_empty[..1], &cwd, false), Some(cwd.join("custom")));
     let config = crate::providers::RunConfig { mode: "ask".into(), cwd: cwd.clone(), ..crate::providers::tests::config("claude") };
-    let allows = |config: &crate::providers::RunConfig| claude_allows_edits_with(config, || false, || false,
+    let allows = |config: &crate::providers::RunConfig| claude_allows_edits_with(config, || false, || None, || false,
         || resolve_claude_config_dir_env(&empty, &config.cwd, false));
     assert!(allows(&config));
     assert!(!edits_wait_for_run_using(&config, allows));
-    assert!(claude_restricts_reads_with("claude", &cwd, || Ok(None), || false,
+    assert!(claude_restricts_reads_with("claude", &cwd, || [Ok(None)], || false,
         |_| resolve_claude_config_dir_env(&empty, &cwd, false)));
 }
 
@@ -1401,7 +1407,7 @@ fn edit_allow_rules_cover_ancestors_up_to_the_git_root() {
     settings.project("settings.json", r#"{"permissions":{"allow":["Edit"]}}"#);
     assert!(edit_allow_rules(&config, &nested), "ancestor up to the .git root");
     let run = crate::providers::RunConfig { mode: "ask".into(), cwd: nested.clone(), ..crate::providers::tests::config("claude") };
-    assert!(!edits_wait_for_run_using(&run, |c| claude_allows_edits_with(c, || false, || false, || Some(config.clone()))));
+    assert!(!edits_wait_for_run_using(&run, |c| claude_allows_edits_with(c, || false, || None, || false, || Some(config.clone()))));
     std::fs::create_dir(nested.join(".git")).unwrap();
     assert!(!edit_allow_rules(&config, &nested), "the walk stops at the nearest root");
     std::fs::remove_dir(nested.join(".git")).unwrap();
@@ -1422,7 +1428,7 @@ fn linked_worktrees_inherit_main_checkout_local_edit_allow_rules() {
         std::fs::write(main.join(".claude/settings.local.json"), r#"{"permissions":{"allow":["Write(src/**)"]}}"#).unwrap();
         assert!(edit_allow_rules(&config, &worktree), "relative={relative}");
         let run = crate::providers::RunConfig { mode: "ask".into(), cwd: worktree.clone(), ..crate::providers::tests::config("claude") };
-        assert!(!edits_wait_for_run_using(&run, |c| claude_allows_edits_with(c, || false, || false, || Some(config.clone()))));
+        assert!(!edits_wait_for_run_using(&run, |c| claude_allows_edits_with(c, || false, || None, || false, || Some(config.clone()))));
     }
 }
 

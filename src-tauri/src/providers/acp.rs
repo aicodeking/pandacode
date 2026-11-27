@@ -5460,6 +5460,47 @@ mod tests {
     }
 
     #[test]
+    fn cline_and_antigravity_auto_approve_tool_list_in_plan_mode() {
+        use crate::custom_tools::{TOOL_LIST, TOOL_RUN, TOOL_SAVE};
+
+        for (provider, prefix, suffix) in [
+            ("cline", "pandacode_architect__", ": {}"),
+            ("antigravity", "mcp__pandacode_architect__", ""),
+        ] {
+            let mut cfg = config(provider);
+            cfg.mode = "plan".into();
+            let mut p = Protocol::new(cfg);
+            p.remote_id = "plan-mcp".into();
+            p.phase = 1;
+            p.mcp_server = (provider == "antigravity").then(|| json!({}));
+            // A resumed Plan turn may still advertise save and run.
+            p.mcp_tool_names.extend([TOOL_LIST, TOOL_SAVE, TOOL_RUN].map(str::to_owned));
+
+            for name in [TOOL_LIST, TOOL_SAVE, TOOL_RUN] {
+                let step = p.receive(json!({
+                    "jsonrpc": "2.0",
+                    "id": 42,
+                    "method": "session/request_permission",
+                    "params": {
+                        "sessionId": "plan-mcp",
+                        "toolCall": {"toolCallId": name, "title": format!("{prefix}{name}{suffix}"), "kind": "other", "locations": []},
+                        "options": [
+                            {"optionId": "allow", "kind": "allow_once"},
+                            {"optionId": "deny", "kind": "reject_once"}
+                        ]
+                    }
+                })).unwrap();
+                if name == TOOL_LIST {
+                    assert_eq!(step.write.len(), 1, "{provider} {name}");
+                    assert_eq!(step.write[0]["result"]["outcome"]["optionId"], "allow", "{provider} {name}");
+                } else {
+                    assert!(step.write.is_empty(), "{provider} {name}");
+                }
+            }
+        }
+    }
+
+    #[test]
     fn antigravity_self_scoped_mcp_auto_approval_and_deduplication() {
         let mut p = Protocol::new(config("antigravity"));
         p.remote_id = "ag-mcp".into();

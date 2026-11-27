@@ -154,7 +154,7 @@ function warmStatsCaption(snapshot: WarmStatsSnapshot, enabled = true): string {
     idleNow: count(stats?.idleNow), pausedSecs: enabled ? count(stats?.pausedSecs) : 0,
   });
   const ordinary = pool(snapshot?.ordinary), lead = pool(snapshot?.lead);
-  const empty = (p: ReturnType<typeof pool>) => p.started === 0 && p.cold === 0 && p.idleNow === 0 && p.pausedSecs === 0 && p.memorySkipped === 0;
+  const empty = (p: ReturnType<typeof pool>) => p.started === 0 && p.cold === 0 && p.idleNow === 0 && p.pausedSecs === 0 && p.churnSkipped === 0 && p.memorySkipped === 0;
   if (empty(ordinary) && empty(lead)) return 'This launch: no spares started yet.';
   const formatPaused = (secs: number) => (secs < 60 ? '<1 min' : `${Math.ceil(secs / 60)} min`);
   const formatPool = (p: ReturnType<typeof pool>, prefix = '') => {

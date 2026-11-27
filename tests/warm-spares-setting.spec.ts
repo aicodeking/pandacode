@@ -62,6 +62,12 @@ test('warm spares memory-guard skips show in this launch’s totals even when no
   await expect(status(page)).not.toHaveAttribute('role', 'alert');
 });
 
+test('warm spares backoff skips show in this launch’s totals even when no spare started', async ({ page }) => {
+  await page.goto('/?warm-spares-on&warm-spares-stats-churn-only');
+  await openAgents(page);
+  await expect(status(page)).toHaveText('This launch: 2 starts paused');
+});
+
 test('a refused save puts the warm spares switch back and says why', async ({ page }) => {
   await page.goto('/?warm-spares-fail');
   await openAgents(page);

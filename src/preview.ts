@@ -2171,6 +2171,7 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       // `?warm-spares-stats`: this launch already started, adopted, missed, expired and replaced spares in both pools; one ordinary spare is idle now.
       // `?warm-spares-stats-expired`: every ordinary spare expired unused and churn backoff paused warming (29 min left).
       // `?warm-spares-stats-low-memory`: no spare started; the low-memory guard skipped 2 ordinary starts.
+      // `?warm-spares-stats-churn-only`: Git status backoff skipped 2 ordinary starts before any spare started.
       // `?warm-spares-stats-delayed`: the read answers after 15 ms, as a slow native read would.
       // Each answered read bumps `data-preview-warm-stats-reads` on <html>, so a spec can wait for it.
       // The query is read afresh on every call, so a spec can swap it with `history.replaceState` and,
@@ -2182,9 +2183,11 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
         ? { ordinary: pool({ started: 6, adopted: 0, expired: 6, churnSkipped: 2, pausedSecs: 1740 }), lead: pool() }
         : query.has('warm-spares-stats-low-memory')
           ? { ordinary: pool({ memorySkipped: 2 }), lead: pool() }
-          : query.has('warm-spares-stats')
-            ? { ordinary: pool({ started: 7, adopted: 3, idleNow: 1, missed: 1, expired: 2, replaced: 1, coldWithoutSpare: 1 }), lead: pool({ started: 1, adopted: 1 }) }
-            : { ordinary: pool(), lead: pool() };
+          : query.has('warm-spares-stats-churn-only')
+            ? { ordinary: pool({ churnSkipped: 2 }), lead: pool() }
+            : query.has('warm-spares-stats')
+              ? { ordinary: pool({ started: 7, adopted: 3, idleNow: 1, missed: 1, expired: 2, replaced: 1, coldWithoutSpare: 1 }), lead: pool({ started: 1, adopted: 1 }) }
+              : { ordinary: pool(), lead: pool() };
       const root = document.documentElement;
       root.dataset.previewWarmStatsReads = String((Number(root.dataset.previewWarmStatsReads) || 0) + 1);
       break;

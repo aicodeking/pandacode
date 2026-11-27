@@ -2610,76 +2610,71 @@ async fn launch_operation_admitted(
     if let Some(title) = &title_run {
         config.prompt.push_str(&title.instruction());
     }
-    // The tool catalog rides the message note (first message, on change, a fresh
-    // conversation, every 8th), not the tool specs, which never depend on whether the project
-    // has tools: no save, the first included, changes the cached prompt prefix or the warm key.
-    // Managed team workers report to their lead and are never offered agent-made tools.
+    // Keep the harness and model for the run's health metrics after config is consumed.
+    let ran = (config.provider.clone(), config.model.clone());
+    let changes_root = config.cwd.clone();
+    let goal_control = matches!(
+        config.goal.as_ref(),
+        Some(goal_state::GoalRequest::Get | goal_state::GoalRequest::Pause | goal_state::GoalRequest::Clear)
+    );
     let (managed_worker, role) = launch_role(team.as_ref(), &session_id, config.worker);
-    // What this conversation may already hold: a family it holds stays listed (and refused)
-    // even when this turn does not want it (`app_instructions::catalog`).
-    let history = app_instructions::History::of(&session_id, &config.provider, config.resume_id.as_deref());
-    // The deny set is read from this history once: the launch, the warm key and
-    // `catalog_listing` below must not see two reads that agree only by determinism.
-    if providers::claude_family(&config.provider) {
-        config.disallowed_tools = Some(providers::claude_disallowed_tools(config.worker, &history));
-    }
-    let custom_offered = custom_tools_offered(cloud, managed_worker) && custom_tools::ipc::enabled_for(&app);
-    // Read once, so the instructions, the note and the host see the same tools this turn; the
-    // tool files are read on a blocking thread, off the async launch path.
-    let catalog = if custom_offered {
-        let (app, session_id) = (app.clone(), session_id.clone());
-        tauri::async_runtime::spawn_blocking(move || custom_tools::catalog(&app, &session_id)).await.unwrap_or_else(|error| {
-            eprintln!("PandaCode: reading agent-made tools failed: {error}");
-            None
-        })
-    } else {
-        None
-    };
-    // Set when this turn's message was reckoned against the catalog; recorded only once the
-    // run ends cleanly, so a turn that fails or is stopped carries its note again.
-    let mut note_mark = None;
-    // A slash command's message must reach the harness bare (`bare_command`): no note rides it
-    // and none is recorded as sent, so the next ordinary turn carries it.
-    let maintenance = restore_stage.is_some();
-    let bare = app_instructions::bare_command(maintenance, native_command);
-    if let Some(catalog) = catalog.as_ref().filter(|_| custom_offered && !bare) {
-        // Plan lists no way to save or run: that caveat rides the message, never the cached
-        // instructions, which say the same in every mode.
-        if let Some(note) = plan_tools_note(&config.mode) {
-            config.prompt.push_str(note);
-        } else {
-            note_mark = Some(catalog.note_mark());
-            if let Some(note) = custom_tools::message_note(catalog, &session_id, config.resume_id.is_none()) {
-                config.prompt.push_str(&note);
+    let launch = {
+        let (app, session_id, store) = (app.clone(), session_id.clone(), store.clone());
+        let is_team = team.is_some();
+        let maintenance = restore_stage.is_some();
+        blocking(move || {
+            // The launch and host share this history, including the deny set that keys warm spares.
+            let history = app_instructions::History::of(&session_id, &config.provider, config.resume_id.as_deref());
+            if providers::claude_family(&config.provider) {
+                config.disallowed_tools = Some(providers::claude_disallowed_tools(config.worker, &history));
             }
-        }
-    }
-    // Whether this run lists explore, and the name its instructions use for it.
-    let explore_on = explore::enabled_for_run(&app, &session_id, &config.provider, &config.cwd);
-    let explore = explore::run_name(cloud, explore_on, &config.provider);
-    let explore_offered = explore::run_name(cloud, true, &config.provider).is_some();
-    let host_plan = HostPlan::of(&config, team.is_some(), role, cloud, explore_offered, explore_on).custom_tools(custom_offered);
-    // What this turn's message said; recorded only once the run ends cleanly, so a turn that
-    // fails or is stopped says it again.
-    // A run with no catalog (a mirror, no app data) has no tools to mention.
-    let tools_said = custom_offered && catalog.is_some();
-    let instructed = instruct_launch(&store, &mut config, LaunchText { role, explore, offered: tools_said, maintenance: bare });
+            // The catalog changes the message note, never the cached tool specs. Managed workers
+            // report to their lead and are never offered agent-made tools.
+            let custom_offered = custom_tools_offered(cloud, managed_worker) && custom_tools::ipc::enabled_for(&app);
+            let catalog = if custom_offered {
+                // An unexpected failure reading the optional catalog still lets the turn run.
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| custom_tools::catalog(&app, &session_id)))
+                    .unwrap_or_else(|_| {
+                        eprintln!("PandaCode: reading agent-made tools failed");
+                        None
+                    })
+            } else {
+                None
+            };
+            // A native slash command goes to the harness bare. Record a note only if a regular
+            // turn was reckoned against the catalog and then ended cleanly.
+            let mut note_mark = None;
+            let bare = app_instructions::bare_command(maintenance, native_command);
+            if let Some(catalog) = catalog.as_ref().filter(|_| custom_offered && !bare) {
+                // In Plan mode, the caveat rides the message so the cached instructions stay stable.
+                if let Some(note) = plan_tools_note(&config.mode) {
+                    config.prompt.push_str(note);
+                } else {
+                    note_mark = Some(catalog.note_mark());
+                    if let Some(note) = custom_tools::message_note(catalog, &session_id, config.resume_id.is_none()) {
+                        config.prompt.push_str(&note);
+                    }
+                }
+            }
+            let explore_on = explore::enabled_for_run(&app, &session_id, &config.provider, &config.cwd);
+            let explore = explore::run_name(cloud, explore_on, &config.provider);
+            let explore_offered = explore::run_name(cloud, true, &config.provider).is_some();
+            let host_plan = HostPlan::of(&config, is_team, role, cloud, explore_offered, explore_on).custom_tools(custom_offered);
+            // Without a catalog (a mirror or no app data), the instructions have no tools to mention.
+            let tools_said = custom_offered && catalog.is_some();
+            let instructed = instruct_launch(&store, &mut config, LaunchText { role, explore, offered: tools_said, maintenance: bare });
+            Ok((config, history, catalog, host_plan, instructed, note_mark))
+        })
+    };
     tauri::async_runtime::spawn(async move {
-        let changes_root = config.cwd.clone();
+        let launch = launch.await;
         let changes_cache = app
             .path()
             .app_cache_dir()
             .unwrap_or_else(|_| std::env::temp_dir().join("pandacode"))
             .join("turn-captures");
         // Goal inspection/pause/clear are control operations, not model turns.
-        let tracker = if matches!(
-            config.goal.as_ref(),
-            Some(
-                goal_state::GoalRequest::Get
-                    | goal_state::GoalRequest::Pause
-                    | goal_state::GoalRequest::Clear
-            )
-        ) {
+        let tracker = if goal_control || launch.is_err() {
             None
         } else {
             tauri::async_runtime::spawn_blocking(move || {
@@ -2711,58 +2706,64 @@ async fn launch_operation_admitted(
             own_run, team_worker, errors: persistence_error.clone(), agents: agents.clone(), goal_reply: goal_reply.clone(), team: team.clone(), coalescer: coalescer.clone(),
         }
         .sink();
-        let custom_definitions = if let Some(catalog) = catalog.as_ref() {
-            catalog.definitions()
-        } else if custom_tools::offered(cloud)
-            && history.may_hold_any(&[custom_tools::TOOL_LIST, custom_tools::TOOL_SAVE, custom_tools::TOOL_RUN])
-        {
-            custom_tools::definitions()
-        } else {
-            Vec::new()
-        };
-        let custom = catalog.map(|catalog| {
-            let author = custom_tools::Author { session_id: session_id.clone(), harness: config.provider.clone(), model: config.model.clone() };
-            let (app, stopped, mode) = (app.clone(), stopped.clone(), config.mode.clone());
-            move |host| custom_tools::with_custom_tools(host, catalog, app, author, stopped, &mode)
-        });
-        let inputs = HostInputs { app: &app, session_id: &session_id, stopped: &stopped, team: team.as_ref(), custom_definitions: &custom_definitions };
-        let app_instructions::RunHost { host, refused, missing: team_tools_missing } = run_host(&host_plan, &inputs, &history, custom, tracker.clone(), title_run.as_ref());
-        // What the next turn's warm agent needs: this launch and the tools it listed.
-        // Team workers rarely get a follow-up, and their warm agents would push out the
-        // architect's, whose review turn starts as soon as they settle. The off switch (a file
-        // read) is checked once, by `launch_host::start_spare`, not here on the async runtime.
-        let warm_next = lead_spare::starts_spare(&config, managed_worker, cloud, compacts).then(|| {
-            let tools = host.as_ref().map(|host| (host.tools.clone(), host.approval_tools.clone())).unwrap_or_default();
-            (config.clone(), tools)
-        });
-        // The harness and model this run used, for model health.
-        let ran = (config.provider.clone(), config.model.clone());
         let reached_harness = Arc::new(AtomicBool::new(false));
         // Set by the run's own loop when it takes a stop (`providers::stop_taken`).
         let loop_took_stop = Arc::new(AtomicBool::new(false));
-        let result = if stopped.load(Ordering::SeqCst) {
-            Ok(())
-        } else if team_tools_missing {
-            Err(
-                "Team tools could not be initialized. No unrestricted tool fallback was used."
-                    .into(),
-            )
-        } else {
-            // The harness can persist tool references as soon as it starts.
-            let listed = app_instructions::catalog_listing(config.resume_id.as_deref(), host.as_ref(), &providers::claude_kept_natives(config.worker, &history));
-            let remembered = {
-                let session_id = session_id.clone();
-                blocking(move || app_instructions::remember_catalog_listed(&session_id, listed))
+        let mut launch_notes = None;
+        let mut warm_next = None;
+        // Preparation can fail after admission, so settle it through the usual run cleanup.
+        let result = async {
+            let (config, history, catalog, host_plan, instructed, note_mark) = launch?;
+            launch_notes = Some((instructed, note_mark));
+            let custom_definitions = if let Some(catalog) = catalog.as_ref() {
+                catalog.definitions()
+            } else if custom_tools::offered(cloud)
+                && history.may_hold_any(&[custom_tools::TOOL_LIST, custom_tools::TOOL_SAVE, custom_tools::TOOL_RUN])
+            {
+                custom_tools::definitions()
+            } else {
+                Vec::new()
             };
-            match remembered.await {
-                Ok(()) if stopped.load(Ordering::SeqCst) => Ok(()),
-                Ok(()) => providers::run_with_tools_reporting(config, sink, rx, providers::RunTools { host, refused }, reached_harness.clone(), loop_took_stop.clone()).await,
-                Err(error) => {
-                    eprintln!("PandaCode: could not record the tool listing of {session_id}: {error}");
-                    Err("Could not save the conversation's tool listing before starting the run. Try again.".into())
+            let custom = catalog.map(|catalog| {
+                let author = custom_tools::Author { session_id: session_id.clone(), harness: config.provider.clone(), model: config.model.clone() };
+                let (app, stopped, mode) = (app.clone(), stopped.clone(), config.mode.clone());
+                move |host| custom_tools::with_custom_tools(host, catalog, app, author, stopped, &mode)
+            });
+            let inputs = HostInputs { app: &app, session_id: &session_id, stopped: &stopped, team: team.as_ref(), custom_definitions: &custom_definitions };
+            let app_instructions::RunHost { host, refused, missing: team_tools_missing } = run_host(&host_plan, &inputs, &history, custom, tracker.clone(), title_run.as_ref());
+            // What the next turn's warm agent needs: this launch and the tools it listed.
+            // Team workers rarely get a follow-up, and their warm agents would push out the
+            // architect's, whose review turn starts as soon as they settle. The off switch (a file
+            // read) is checked once, by `launch_host::start_spare`, not here on the async runtime.
+            warm_next = lead_spare::starts_spare(&config, managed_worker, cloud, compacts).then(|| {
+                let tools = host.as_ref().map(|host| (host.tools.clone(), host.approval_tools.clone())).unwrap_or_default();
+                (config.clone(), tools)
+            });
+            if stopped.load(Ordering::SeqCst) {
+                Ok(())
+            } else if team_tools_missing {
+                Err(
+                    "Team tools could not be initialized. No unrestricted tool fallback was used."
+                        .into(),
+                )
+            } else {
+                // The harness can persist tool references as soon as it starts.
+                let listed = app_instructions::catalog_listing(config.resume_id.as_deref(), host.as_ref(), &providers::claude_kept_natives(config.worker, &history));
+                let remembered = {
+                    let session_id = session_id.clone();
+                    blocking(move || app_instructions::remember_catalog_listed(&session_id, listed))
+                };
+                match remembered.await {
+                    Ok(()) if stopped.load(Ordering::SeqCst) => Ok(()),
+                    Ok(()) => providers::run_with_tools_reporting(config, sink, rx, providers::RunTools { host, refused }, reached_harness.clone(), loop_took_stop.clone()).await,
+                    Err(error) => {
+                        eprintln!("PandaCode: could not record the tool listing of {session_id}: {error}");
+                        Err("Could not save the conversation's tool listing before starting the run. Try again.".into())
+                    }
                 }
             }
-        };
+        }
+        .await;
         // Approval snapshots and the tools' place live only as long as the run.
         custom_tools::run_ended(&session_id);
         flush_coalesced(&app, &coalescer);
@@ -2844,17 +2845,17 @@ async fn launch_operation_admitted(
         // request must not write into the next run while the team remains active.
         stopped.store(true, Ordering::SeqCst);
         let mut successful = result.is_ok() && !was_stopped;
-        // The run carrying this role's instructions ended cleanly (`instructions_due`). A failed
-        // or stopped run records nothing, even if the model read the message.
-        if let Some(role) = instructed.role.filter(|_| result.is_ok() && !was_stopped) {
-            app_instructions::instructed_as(&session_id, role);
-            if let Some(compaction) = instructed.compaction {
-                app_instructions::compaction_answered(&session_id, compaction);
+        // Failed or stopped runs record no instructions or tool notes as delivered.
+        if let Some((instructed, note_mark)) = launch_notes.filter(|_| result.is_ok() && !was_stopped) {
+            if let Some(role) = instructed.role {
+                app_instructions::instructed_as(&session_id, role);
+                if let Some(compaction) = instructed.compaction {
+                    app_instructions::compaction_answered(&session_id, compaction);
+                }
             }
-        }
-        // The run carrying this turn's tools note ended cleanly (`custom_tools::message_note`).
-        if let Some(mark) = note_mark.filter(|_| result.is_ok() && !was_stopped) {
-            mark.accepted(&session_id);
+            if let Some(mark) = note_mark {
+                mark.accepted(&session_id);
+            }
         }
         // Only the harness's own outcome counts for model health (Settings → Model routing): a stop
         // says nothing, and PandaCode's own failures before the harness (validation, attachments,
@@ -3476,7 +3477,7 @@ async fn git_stage(
 ) -> Result<()> {
     stage_files(&state, &project_id, session_id.as_deref(), paths, staged, workspace::Trust::Desktop).await
 }
-/// `git_stage`, and the phone's `git.stage` with its [`workspace::Trust`].
+/// Stages or unstages files for desktop Git with an explicit [`workspace::Trust`].
 pub(crate) async fn stage_files(state: &AppState, project_id: &str, session_id: Option<&str>, paths: Vec<String>, staged: bool, trust: workspace::Trust) -> Result<()> {
     let root = state.root(project_id, session_id)?;
     blocking(move || workspace::git_stage(&root, paths, staged, trust)).await
@@ -3757,7 +3758,7 @@ async fn git_switch_branch(
     switch_branch(&state, &project_id, session_id.as_deref(), branch, workspace::Trust::Desktop).await
 }
 
-/// `git_switch_branch`, and the phone's `git.switchBranch` with its [`workspace::Trust`].
+/// Switches branches for desktop Git with an explicit [`workspace::Trust`].
 pub(crate) async fn switch_branch(state: &AppState, project_id: &str, session_id: Option<&str>, branch: String, trust: workspace::Trust) -> Result<workspace::BranchList> {
     if let Some(id) = session_id {
         let store = state.store.lock().map_err(|e| e.to_string())?;
@@ -4795,6 +4796,7 @@ fn on_run_event(app: &tauri::AppHandle, event: tauri::RunEvent) {
             handle.exit(0);
         });
     } else if matches!(event, tauri::RunEvent::Exit) {
+        providers::warm_begin_quit();
         crash_guard::notify_exit();
         // The Dock's Quit and logout end here without ExitRequested; the page may not get it.
         if app.try_state::<AppState>().is_some_and(|state| state.shutdown.load(Ordering::SeqCst) == 0) {

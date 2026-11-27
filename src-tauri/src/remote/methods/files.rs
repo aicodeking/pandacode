@@ -787,13 +787,10 @@ impl Run for Write {
             // Saving can plant hooks (`.claude/settings.json`, `.husky/*`) that run later as the
             // user, so it needs the host's Full access like a shell does.
             super::terminal::require_full_access_to(ctx.full_access, super::terminal::EDIT_FILES)?;
-            let (_, root) = resolve(&ctx.state(), &self.target).await?;
-            refuse_running_in(&ctx, &root).await?;
-            let reservation = crate::checkout_busy::reserve_idle_checkouts(
-                &ctx.state(),
-                vec![root.clone()],
-                WRITE_RUNNING,
-            )
+            let state = ctx.state();
+            let (root, reservation) = reserve_current_target_checkout(&state, &self.target, |root| {
+                crate::checkout_busy::reserve_idle_checkouts(&state, vec![root], WRITE_RUNNING)
+            })
             .await?;
             let full = device_has_full(&ctx);
             let Write { path, text, base_hash, .. } = *self;
@@ -810,12 +807,27 @@ impl Run for Write {
     }
 }
 
-/// Refuses while an agent runs or is exiting in `root`: a task's worktree, or a main checkout a task works in.
-async fn refuse_running_in(ctx: &Ctx<'_>, root: &Path) -> Result<()> {
-    if running_in(ctx, root).await? {
-        return Err(WRITE_RUNNING.into());
+/// Worktree creation can move an unstarted task before we reserve its checkout.
+async fn reserve_current_target_checkout<F>(
+    state: &AppState,
+    target: &Target,
+    mut reserve: impl FnMut(PathBuf) -> F,
+) -> Result<(PathBuf, crate::checkout_busy::Reservation)>
+where
+    F: std::future::Future<Output = Result<crate::checkout_busy::Reservation>>,
+{
+    for _ in 0..4 {
+        let (_, root) = resolve(state, target).await?;
+        if running_in_state(state, &root).await? {
+            return Err(WRITE_RUNNING.into());
+        }
+        let reservation = reserve(root.clone()).await?;
+        if matches!(target, Target::Project(_)) || resolve(state, target).await?.1 == root {
+            return Ok((root, reservation));
+        }
+        drop(reservation);
     }
-    Ok(())
+    Err("This task's checkout changed while saving. Try again.".into())
 }
 
 /// Whether an agent runs or is still exiting in `root`, literally or canonically (`git.discard` asks too).
@@ -1707,6 +1719,67 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn write_reservation_follows_a_task_moved_to_a_worktree() {
+        let checkout = crate::checkout_busy::test_support::Checkout::new();
+        let store = crate::storage::Store::open(Path::new(":memory:")).unwrap();
+        let project = store.add_project(&checkout.root).unwrap();
+        let task = store.create_session(&project.id, "claude", "default", "full").unwrap();
+        let state = test_state(store);
+        let main = checkout.root.canonicalize().unwrap();
+        let worktree = checkout.nested.canonicalize().unwrap();
+        let mut attempts = 0;
+
+        let (root, reservation) = reserve_current_target_checkout(&state, &Target::Task(task.id.clone()), |root| {
+            attempts += 1;
+            if attempts == 1 {
+                assert_eq!(root, main);
+                state.store.lock().unwrap().attach_worktree(&task.id, &worktree, "pandacode/x").unwrap();
+            } else {
+                assert_eq!(root, worktree);
+                assert!(!crate::checkout_busy::checkout_reserved(&state.agents, &main));
+            }
+            crate::checkout_busy::reserve_idle_checkouts(&state, vec![root], WRITE_RUNNING)
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(attempts, 2);
+        assert_eq!(root, worktree);
+        assert!(crate::checkout_busy::checkout_reserved(&state.agents, &worktree));
+        drop(reservation);
+        assert!(!crate::checkout_busy::checkout_reserved(&state.agents, &worktree));
+    }
+
+    #[tokio::test]
+    async fn write_reservation_releases_every_checkout_when_the_task_keeps_moving() {
+        let checkout = crate::checkout_busy::test_support::Checkout::new();
+        let store = crate::storage::Store::open(Path::new(":memory:")).unwrap();
+        let project = store.add_project(&checkout.root).unwrap();
+        let task = store.create_session(&project.id, "claude", "default", "full").unwrap();
+        let state = test_state(store);
+        let main = checkout.root.canonicalize().unwrap();
+        let worktree = checkout.nested.canonicalize().unwrap();
+        let worktree_path = worktree.to_string_lossy();
+        let mut attempts = 0;
+
+        let result = reserve_current_target_checkout(&state, &Target::Task(task.id.clone()), |root| {
+            attempts += 1;
+            let next = if root == main { Some(worktree_path.as_ref()) } else { None };
+            state.store.lock().unwrap().db.execute(
+                "UPDATE sessions SET worktree_path=?2 WHERE id=?1",
+                rusqlite::params![task.id, next],
+            ).unwrap();
+            crate::checkout_busy::reserve_idle_checkouts(&state, vec![root], WRITE_RUNNING)
+        })
+        .await;
+
+        assert_eq!(attempts, 4);
+        assert_eq!(result.err().as_deref(), Some("This task's checkout changed while saving. Try again."));
+        assert!(!crate::checkout_busy::checkout_reserved(&state.agents, &main));
+        assert!(!crate::checkout_busy::checkout_reserved(&state.agents, &worktree));
+    }
+
+    #[tokio::test]
     async fn checkout_reservation_blocks_files_write_and_write_reservation_blocks_checkout_reserved() {
         let checkout = crate::checkout_busy::test_support::Checkout::new();
         let store = crate::storage::Store::open(Path::new(":memory:")).unwrap();
@@ -1747,15 +1820,15 @@ mod tests {
         drop(write_res);
         assert!(!crate::checkout_busy::checkout_reserved(&state.agents, &checkout.pkg_a));
 
-        // Write::run reserves the checkout and moves the reservation into `blocking`.
+        // Write::run revalidates the checkout and moves the reservation into `blocking`.
         let source = include_str!("files.rs").replace("\r\n", "\n");
         let body = &source[source.find("impl Run for Write").unwrap()..];
         let body = &body[..body.find("\n}\n").unwrap()];
-        let pre = body.find("refuse_running_in(&ctx, &root).await?").unwrap();
+        let revalidate = body.find("reserve_current_target_checkout(").unwrap();
         let reserve = body.find("reserve_idle_checkouts(").unwrap();
         let blocking = body.find("crate::blocking(move ||").unwrap();
         let hold = body[blocking..].find("let _reservation = reservation;").unwrap();
         let write = body[blocking..].find("write_text(").unwrap();
-        assert!(pre < reserve && reserve < blocking && hold < write);
+        assert!(revalidate < reserve && reserve < blocking && hold < write);
     }
 }
