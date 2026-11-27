@@ -69,7 +69,7 @@ macro_rules! legacy_prompt_cutoff_set {
 }
 macro_rules! legacy_prompt_cutoff_pred {
     () => {
-        "CASE WHEN json_valid(content) THEN COALESCE(json_type(content,'$.legacyPromptThroughId'),'null') END='null'"
+        "CASE WHEN json_valid(content,6) THEN COALESCE(json_type(content,'$.legacyPromptThroughId'),'null') END='null'"
     };
 }
 /// Through the `architect_team_meta_legacy_cutoff` partial index on the trigger-kept tracker
@@ -91,11 +91,18 @@ pub(super) const RESET_REMOTE_STARTS_SQL: &str = "UPDATE sessions SET remote_dev
 /// Through `sessions_active_goal`.
 pub(super) const PAUSE_GOALS_SQL: &str = "UPDATE sessions SET goal_state=json_set(goal_state,'$.status','paused')
             WHERE json_valid(goal_state) AND json_extract(goal_state,'$.status')='active'";
+macro_rules! interrupt_team_set {
+    () => {
+        "json_set(content,'$.status','interrupted','$.pendingTurn',NULL,'$.error','PandaCode restarted. Resume explicitly to continue.','$.generation',COALESCE(json_extract(content,'$.generation'),0)+1,'$.revision',COALESCE(json_extract(content,'$.revision'),0)+1"
+    };
+}
 macro_rules! interrupt_teams {
     ($candidates:literal) => {
-        concat!("UPDATE architect_teams SET content=json_set(content,'$.status','interrupted','$.pendingTurn',NULL,'$.error','PandaCode restarted. Resume explicitly to continue.','$.generation',COALESCE(json_extract(content,'$.generation'),0)+1,'$.revision',COALESCE(json_extract(content,'$.revision'),0)+1,
-            '$.workers',json((SELECT json_group_array(json(CASE WHEN json_extract(value,'$.status') IN ('running','waiting') THEN json_set(value,'$.status','stopped') ELSE value END)) FROM json_each(content,'$.workers') WHERE type='object')))
-            WHERE ", $candidates, "json_valid(content) AND json_extract(content,'$.status') IN ('running','waiting');")
+        concat!("UPDATE architect_teams SET content=CASE WHEN json_type(content,'$.workers')='array' THEN ",
+            interrupt_team_set!(),
+            ",'$.workers',json((SELECT json_group_array(json(CASE WHEN json_extract(value,'$.status') IN ('running','waiting') THEN json_set(value,'$.status','stopped') ELSE value END)) FROM json_each(content,'$.workers') WHERE type='object'))) ELSE ",
+            interrupt_team_set!(),
+            ") END WHERE ", $candidates, "json_valid(content,6) AND json_extract(content,'$.status') IN ('running','waiting');")
     };
 }
 /// Through the architect_team_meta_status index, with a status re-check on each snapshot.

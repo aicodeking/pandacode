@@ -98,14 +98,16 @@ fn upgrade_v38_rolls_back_partial_bot_upgrade_in_savepoint() {
     let directory = TempDir::new("bot-upgrade-savepoint");
     let path = directory.0.join("store.db");
     let store = Store::open(&path).unwrap();
-    // Bot upgrade recreates the shared-channel schema before its case-sensitive lookup
-    // misses COLOR and the attempt to add color fails with a duplicate-column error.
+    // Bot upgrade recreates the shared-channel schema before ALTER TABLE bots ADD COLUMN color
+    // fails because `bots` is a view, proving the savepoint rolls back the partial upgrade.
     store.db.execute_batch(
-        "DROP TABLE bot_shared_channel_deliveries;
+        "PRAGMA foreign_keys=OFF;
+         DROP TABLE bot_shared_channel_deliveries;
          DROP TABLE bot_shared_channel_messages;
          DROP TABLE bot_shared_channel_members;
          DROP TABLE bot_shared_channels;
-         ALTER TABLE bots RENAME COLUMN color TO COLOR;
+         DROP TABLE bots;
+         CREATE VIEW bots AS SELECT 'b' AS id;
          DROP INDEX bot_activity_model_switch;
          PRAGMA user_version=36;",
     ).unwrap();

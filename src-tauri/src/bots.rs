@@ -65,14 +65,15 @@ CREATE TABLE IF NOT EXISTS bot_tasks(
     };
 }
 
-pub(crate) const SCHEMA: &str = concat!(bots_table!(), "
+macro_rules! schema_tables {
+    () => {
+        concat!(bots_table!(), "
 CREATE TABLE IF NOT EXISTS bot_memories(
   id TEXT PRIMARY KEY,
   bot_id TEXT NOT NULL REFERENCES bots(id) ON DELETE CASCADE,
   content TEXT NOT NULL,
   source TEXT NOT NULL CHECK(source IN ('user','bot')),
   created_at INTEGER NOT NULL);
-CREATE INDEX IF NOT EXISTS bot_memories_bot ON bot_memories(bot_id,created_at);
 CREATE TABLE IF NOT EXISTS bot_threads(
   bot_id TEXT NOT NULL REFERENCES bots(id) ON DELETE CASCADE,
   channel_id TEXT NOT NULL,
@@ -88,7 +89,6 @@ CREATE TABLE IF NOT EXISTS bot_activity(
   summary TEXT NOT NULL,
   detail TEXT NOT NULL DEFAULT '{}' CHECK(json_valid(detail)),
   at INTEGER NOT NULL);
-CREATE INDEX IF NOT EXISTS bot_activity_bot ON bot_activity(bot_id,id);
 CREATE TABLE IF NOT EXISTS bot_schedules(
   id TEXT PRIMARY KEY,
   bot_id TEXT NOT NULL REFERENCES bots(id) ON DELETE CASCADE,
@@ -102,7 +102,6 @@ CREATE TABLE IF NOT EXISTS bot_schedules(
   enabled INTEGER NOT NULL DEFAULT 1 CHECK(enabled IN (0,1)),
   created_by TEXT NOT NULL CHECK(created_by IN ('user','bot')),
   created_at INTEGER NOT NULL);
-CREATE INDEX IF NOT EXISTS bot_schedules_due ON bot_schedules(enabled,next_run_at);
 CREATE TABLE IF NOT EXISTS bot_channels(
   id TEXT PRIMARY KEY,
   bot_id TEXT NOT NULL REFERENCES bots(id) ON DELETE CASCADE,
@@ -149,7 +148,6 @@ CREATE TABLE IF NOT EXISTS bot_shared_channel_messages(
   text TEXT NOT NULL,
   status TEXT CHECK(status IN ('queued','in_progress','completed','failed','stopped')),
   created_at INTEGER NOT NULL);
-CREATE INDEX IF NOT EXISTS bot_shared_channel_messages_channel ON bot_shared_channel_messages(channel_id,created_at,id);
 CREATE TABLE IF NOT EXISTS bot_shared_channel_deliveries(
   id TEXT PRIMARY KEY,
   channel_id TEXT NOT NULL REFERENCES bot_shared_channels(id) ON DELETE CASCADE,
@@ -160,7 +158,6 @@ CREATE TABLE IF NOT EXISTS bot_shared_channel_deliveries(
   depth INTEGER NOT NULL DEFAULT 0 CHECK(depth BETWEEN 0 AND 3),
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL);
-CREATE INDEX IF NOT EXISTS bot_shared_channel_deliveries_session ON bot_shared_channel_deliveries(session_id,status,created_at,id);
 CREATE TABLE IF NOT EXISTS bot_messages(
   id TEXT PRIMARY KEY,
   source_bot_id TEXT NOT NULL REFERENCES bots(id) ON DELETE CASCADE,
@@ -176,9 +173,26 @@ CREATE TABLE IF NOT EXISTS bot_messages(
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
   CHECK(source_bot_id<>target_bot_id));
+")
+    };
+}
+
+macro_rules! schema_indexes {
+    () => { "
+CREATE INDEX IF NOT EXISTS bot_memories_bot ON bot_memories(bot_id,created_at);
+CREATE INDEX IF NOT EXISTS bot_activity_bot ON bot_activity(bot_id,id);
+CREATE INDEX IF NOT EXISTS bot_schedules_due ON bot_schedules(enabled,next_run_at);
+CREATE INDEX IF NOT EXISTS bot_shared_channel_messages_channel ON bot_shared_channel_messages(channel_id,created_at,id);
+CREATE INDEX IF NOT EXISTS bot_shared_channel_deliveries_session ON bot_shared_channel_deliveries(session_id,status,created_at,id);
 CREATE INDEX IF NOT EXISTS bot_messages_target ON bot_messages(target_session_id,status,created_at,id);
 CREATE INDEX IF NOT EXISTS bot_messages_source ON bot_messages(source_session_id,created_at,id);
-");
+"
+    };
+}
+
+const SCHEMA_TABLES: &str = schema_tables!();
+const SCHEMA_INDEXES: &str = schema_indexes!();
+pub(crate) const SCHEMA: &str = concat!(schema_tables!(), schema_indexes!());
 
 /// Profile columns added after the bots table first shipped (schema 25). Fresh databases get
 /// them from `SCHEMA`; `upgrade` adds whichever are missing, so it is safe to run every start.
@@ -210,7 +224,7 @@ pub(crate) const PROJECT_INDEX: &str = "CREATE INDEX IF NOT EXISTS bots_project 
 
 fn has_bot_column(db: &rusqlite::Connection, name: &str) -> Result<bool> {
     db.query_row(
-        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('bots') WHERE name=?1)",
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('bots') WHERE name=?1 COLLATE NOCASE)",
         [name],
         |r| r.get(0),
     )
@@ -220,7 +234,7 @@ fn has_bot_column(db: &rusqlite::Connection, name: &str) -> Result<bool> {
 pub(crate) fn upgrade_schema(db: &rusqlite::Connection) -> Result<()> {
     // Bot databases at schema 27 already exist in the wild. Keep these tables idempotent
     // here instead of bumping the app-wide schema version for this bot-only feature.
-    db.execute_batch(SCHEMA).map_err(|e| e.to_string())?;
+    db.execute_batch(SCHEMA_TABLES).map_err(|e| e.to_string())?;
     for (name, definition) in ADDED_COLUMNS {
         if !has_bot_column(db, name)? {
             db.execute_batch(&format!("ALTER TABLE bots ADD COLUMN {name} {definition};"))
@@ -230,13 +244,35 @@ pub(crate) fn upgrade_schema(db: &rusqlite::Connection) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn upgrade(db: &rusqlite::Connection) -> Result<()> {
-    upgrade_schema(db)?;
-    db.execute_batch(INDEXES).map_err(|e| e.to_string())?;
-    if has_bot_column(db, "project_id")? {
-        db.execute_batch(PROJECT_INDEX).map_err(|e| e.to_string())?;
+fn create_optional_indexes(db: &rusqlite::Connection) -> Result<()> {
+    let guard = crate::storage::RollbackGuard::new(db);
+    let statements = SCHEMA_INDEXES
+        .split(';')
+        .chain(INDEXES.split(';'))
+        .map(str::trim)
+        .filter(|sql| !sql.is_empty());
+    let project_index = match has_bot_column(db, "project_id") {
+        Ok(has_column) => has_column.then_some(PROJECT_INDEX),
+        Err(error) if guard.rolled_back() => return Err(error),
+        Err(error) => {
+            eprintln!("Could not check for bots.project_id: {error}");
+            None
+        }
+    };
+    for sql in statements.chain(project_index) {
+        if let Err(error) = db.execute_batch(sql) {
+            eprintln!("Could not create optional bot index ({sql}): {error}");
+            if guard.rolled_back() {
+                return Err(error.to_string());
+            }
+        }
     }
     Ok(())
+}
+
+pub(crate) fn upgrade(db: &rusqlite::Connection) -> Result<()> {
+    upgrade_schema(db)?;
+    create_optional_indexes(db)
 }
 
 const MAX_TEXT: usize = 16 * 1024;
@@ -1402,37 +1438,17 @@ pub async fn bot_task_brief(
 /// Prepares the bot schema and recovers interrupted deliveries before startup.
 pub(crate) fn startup_prepare(store: &Store) -> Result<()> {
     let db = &store.db;
-    let upgrade = || {
+    let run_upgrade = || {
         let version: i64 = db
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .map_err(|error| format!("Could not read the schema version: {error}"))?;
         if version > crate::storage::SCHEMA_VERSION {
             return Ok(());
         }
-        upgrade_schema(db)?;
-
-        let guard = crate::storage::RollbackGuard::new(db);
-        let statements = INDEXES.split(';').map(str::trim).filter(|sql| !sql.is_empty());
-        let project_index = match has_bot_column(db, "project_id") {
-            Ok(has_column) => has_column.then_some(PROJECT_INDEX),
-            Err(error) if guard.rolled_back() => return Err(error),
-            Err(error) => {
-                eprintln!("Could not check for bots.project_id: {error}");
-                None
-            }
-        };
-        for sql in statements.chain(project_index) {
-            if let Err(error) = db.execute_batch(sql) {
-                eprintln!("Could not create optional bot index ({sql}): {error}");
-                if guard.rolled_back() {
-                    return Err(error.to_string());
-                }
-            }
-        }
-        Ok(())
+        upgrade(db)
     };
     let upgraded = crate::storage::with_migration_pragmas(db, true, || {
-        store.in_transaction_immediate(upgrade)
+        store.in_transaction_immediate(run_upgrade)
     });
     if let Err(error) = upgraded {
         eprintln!("Could not upgrade the bots table: {error}");
@@ -1641,7 +1657,10 @@ mod startup_tests {
         // and successful reconciliation against the surviving delivery tables.
         store.db.pragma_update(None, "user_version", crate::storage::SCHEMA_VERSION).unwrap();
         store.db.execute_batch(
-            "ALTER TABLE bots ADD COLUMN COLOR TEXT;
+            "PRAGMA foreign_keys=OFF;
+             DROP TABLE bots;
+             CREATE VIEW bots AS SELECT 'b' AS id;
+             PRAGMA foreign_keys=ON;
              DROP TABLE bot_memories;
              DROP INDEX IF EXISTS bot_activity_model_switch;
              UPDATE bot_shared_channel_deliveries SET status='in_progress';",
