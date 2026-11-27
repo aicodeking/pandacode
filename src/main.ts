@@ -1043,9 +1043,12 @@ const attachments = mountPromptAttachments({
   otherImages: taskId => (state.browserAttachments.get(taskId) ?? []).filter(item => item.kind === 'screenshot').length,
   // Grok Build's ACP agent advertises no image input; say so before a send fails.
   imagesUnsupported: taskId => {
-    const provider = state.sessions.find(s => s.id === taskId)?.provider;
-    if (provider === 'grok') return 'Grok Build does not accept images yet. Describe them, or attach documents and folders instead.';
-    if (provider === 'zcode') return 'ZCode does not accept images yet. Describe them, or attach documents and folders instead.';
+    const task = state.sessions.find(s => s.id === taskId);
+    if (!task) return null;
+    if (task.provider === 'grok') return 'Grok Build does not accept images yet. Describe them, or attach documents and folders instead.';
+    if (task.provider === 'zcode' && !zcodeModelAcceptsImages(task)) {
+      return 'This ZCode model does not accept images. Pick an image-capable model such as GLM-5.3-Flash, or describe them and attach documents and folders instead.';
+    }
     return null;
   },
   notify: message => notify(message),
@@ -1755,6 +1758,10 @@ function refreshQueueAgentNames(): void {
   patch('.btw-panel .queue-panel .queue-next', side, side ? provider(side.provider)?.name : undefined);
 }
 function provider(id?: ProviderId): Provider | undefined { return state.providers.find(p => p.id === (id ?? session()?.provider ?? state.defaultProvider)); }
+function zcodeModelAcceptsImages(task: Session): boolean {
+  const id = task.model || 'default';
+  return Boolean(provider('zcode')?.models.find(model => model.id === id)?.imageInput);
+}
 function isRunning(id = state.sessionId): boolean { return teamActive(teams.get(id)) || state.streams.has(id) || ['running', 'starting', 'waiting', 'waiting_approval'].includes(state.sessions.find(s => s.id === id)?.status ?? ''); }
 /** A team waiting out its lead's usage limit with nothing at work. It stays active (Stop works, prompts
  *  queue, it retries by itself), so `isRunning` holds; the sidebar and composer say limited, not working. */
@@ -2174,7 +2181,7 @@ function loadModels(id: ProviderId): Promise<ProviderModel[]> {
         entry.models = models;
         if (providersKnown) keepProviderCatalog(state.providers);
       }
-      if (session()?.provider === id) refreshModelLabels();
+      if (session()?.provider === id) { refreshModelLabels(); renderComposer(); }
       else refreshTeamProgress();
     }
     return models;
