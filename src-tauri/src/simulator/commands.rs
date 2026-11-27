@@ -118,7 +118,12 @@ pub async fn simulator_capture(app: AppHandle, udid: String) -> Result<Response>
 /// The saved Android emulator launch flags: a default plus per-AVD overrides.
 #[tauri::command]
 pub async fn simulator_emulator_flags() -> Result<super::emulator_flags::EmulatorFlags> {
-    crate::blocking(|| Ok(super::emulator_flags::read())).await
+    crate::blocking(|| {
+        let mut flags = super::emulator_flags::read();
+        // Storage uses AVD names; the Settings editor uses simulator device IDs.
+        flags.devices = flags.devices.into_iter().map(|(avd, text)| (format!("android:{avd}"), text)).collect();
+        Ok(flags)
+    }).await
 }
 
 /// Saves the Android emulator launch flags. Device keys are `android:<AVD>` udids;
