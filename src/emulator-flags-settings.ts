@@ -2,7 +2,7 @@ import { call } from './bridge';
 import { escape } from './dom';
 import { infoMark } from './tooltip';
 
-/* Settings → Tools & add-ons: launch flags for Android emulators. One default
+/* Settings → Tools → Add-ons: launch flags for Android emulators. One default
  * for every device plus per-device overrides, saved through the same simulator
  * IPC an emulator boot reads. */
 

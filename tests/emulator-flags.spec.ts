@@ -9,7 +9,7 @@ async function openFlags(page: Page): Promise<void> {
   await expect(prompt(page)).toBeEnabled();
   await page.keyboard.press('Meta+,');
   await expect(settings(page).getByRole('heading', { name: 'Settings', exact: true })).toBeVisible();
-  await settings(page).getByRole('tab', { name: 'Tools & add-ons', exact: true }).click();
+  await settings(page).getByRole('tab', { name: 'Tools', exact: true }).click();
   await settings(page).getByRole('button', { name: 'Set flags', exact: true }).click();
   await expect(dialog(page)).toBeVisible();
 }
