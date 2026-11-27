@@ -11,7 +11,7 @@ import { AccessNote } from '../ui/AccessNote.tsx';
 import { outdated } from '../connect/rpc.ts';
 import { elapsedLabel, glanceOf } from '../store/inbox.ts';
 import { taskKey, useConnect, useModels } from '../store/index.ts';
-import { cutNote, teamResumable, workerClockEnd, workerLabel, workerActive, workerRunning, workersTitle, type Team, type TeamWorker } from '../store/team.ts';
+import { councilNotice, councilSeats, councilView, cutNote, formatScore, teamResumable, teamWorkers, workerClockEnd, workerLabel, workerActive, workerRunning, workersTitle, type Team, type TeamWorker } from '../store/team.ts';
 import { describeTool, subagentActive, subagentName, summarizeTools, traceText, type Subagent } from '../store/trace.ts';
 import { useColors } from '../ui/theme.ts';
 import { alpha, Banner, Button, Card, Chip, crossFadeIn, FADE_MS, useMotion, EmptyState, geometry, InnerCard, PressScale, Skeleton, springs, StatusDot, type as text, useStagger } from '../ui/ds/index.ts';
@@ -165,7 +165,11 @@ function TeamStatus({ deviceId, sessionId, team }: { deviceId: string; sessionId
   const [refused, setRefused] = useState('');
   const canResume = useHostAllows(deviceId, 'task.teamResume');
   const resumable = teamResumable(team);
-  if (!team.error && !resumable && !refused) return null;
+  // With Council on, `team.error` is the refusal written for the lead, never for the user: its plain
+  // sentence (councilStatus.notice) says the same thing in the user's words.
+  const notice = councilNotice(team), worded = !!team.council && !!notice;
+  const reason = worded ? notice : team.error;
+  if (!reason && !resumable && !refused) return null;
   const resume = () => {
     setBusy(true);
     setRefused('');
@@ -174,7 +178,7 @@ function TeamStatus({ deviceId, sessionId, team }: { deviceId: string; sessionId
   return (
     <Card>
       <InnerCard style={styles.status}>
-        {!!team.error && <Text selectable style={[text.subhead, { color: team.status === 'failed' ? colors.danger : colors.muted }]}>{team.error}</Text>}
+        {!!reason && <Text selectable style={[text.subhead, { color: team.status === 'failed' && !worded ? colors.danger : colors.muted }]}>{reason}</Text>}
         {!!refused && <Text selectable style={[text.subhead, { color: colors.danger }]}>{refused}</Text>}
         {resumable && !canResume && <AccessNote device={deviceId} methods={['task.teamResume']} />}
         {resumable && canResume && <Button label={busy ? 'Resuming…' : 'Resume team'} icon={{ ios: 'play', android: 'play_arrow' }} loading={busy} onPress={resume} />}
@@ -206,7 +210,11 @@ export default function AgentsScreen() {
   const subagentsCut = useConnect(s => s.live[taskKey(device, session)]?.subagentsCut);
   const computer = useConnect(s => s.devices.find(d => d.id === device)?.name ?? 'that computer');
   const shown = team && team !== 'outdated' ? team : undefined;
-  const workers = shown?.workers ?? [];
+  // Council reviewers are drawn by their lens and score, not as ordinary worker rows (the desktop
+  // does the same), so the Workers section holds only the team's own workers.
+  const workers = teamWorkers(shown?.workers ?? []);
+  const seats = councilSeats(shown);
+  const council = councilView(shown);
   const now = useNow(workers.some(w => workerRunning(w, shown)) || subagents.some(subagentActive));
   const empty = !workers.length && !subagents.length;
   const failed = team === undefined && !!error;
@@ -226,8 +234,15 @@ export default function AgentsScreen() {
           </Section>
         </Animated.View>
       )}
-      {subagents.length > 0 && (
+      {!!(seats.length && council) && (
         <Animated.View entering={enter(1)}>
+          <Section title={`Council · ${council.line}`} footer={<Text style={[text.footnote, styles.note, { color: colors.muted }]}>{council.lowest === null ? `Target ${formatScore(council.target)}` : `Lowest ${formatScore(council.lowest)} of 10 · target ${formatScore(council.target)}`}</Text>}>
+            {seats.map(seat => <WorkerRow key={seat.id} deviceId={device} sessionId={session} worker={seat} team={shown!} now={now} />)}
+          </Section>
+        </Animated.View>
+      )}
+      {subagents.length > 0 && (
+        <Animated.View entering={enter(2)}>
           <Section title="Subagents">
             {subagents.map(a => <SubagentRow key={a.id} deviceId={device} sessionId={session} agent={a} now={now} />)}
           </Section>

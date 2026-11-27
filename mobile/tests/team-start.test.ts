@@ -13,7 +13,8 @@ const ROSTER = parseRoster({
 });
 
 test('team methods are registered', () => {
-  assert.deepEqual([...TEAM_METHODS], ['team.start', 'team.roster']);
+  // Council joined the group: the phone could see a team but not act on its reviewers.
+  assert.deepEqual([...TEAM_METHODS], ['team.start', 'team.roster', 'team.setCouncil', 'team.councilAccept']);
 });
 
 test('the roster keeps only well-formed rows', () => {

@@ -7,7 +7,7 @@ import { queueDemoMessage, takeQueuedDemoMessage } from './demo/composer.ts';
 import { SWITCH_METHODS, type Access } from './connect/api/hello.ts';
 import type { Bot, ConfigureParams, Message, StartParams, TaskSummary } from './connect/types.ts';
 import { demoChanges, demoDiff, demoPull, demoPullPatch } from './demo-pull.ts';
-import { DEMO_TEAM_TASK, demoTeam, demoWorkerMessages } from './demo-team.ts';
+import { DEMO_TEAM_TASK, demoTeam, demoTeamKey, demoWorkerMessages } from './demo-team.ts';
 import type { ConnectState } from './store/index.ts';
 import { idleLive, lastId } from './store/reduce.ts';
 
@@ -194,7 +194,9 @@ export async function demoCall(host: DemoHost, deviceId: string, method: Method,
     case 'task.changes': return demoChanges(params.sessionId, s.tasks[deviceId]?.tasks.find(t => t.sessionId === params.sessionId)?.branch);
     case 'task.diff': return { diff: demoDiff(params.sessionId, params.path), truncated: false };
     case 'task.teamResume': return {};
-    case 'task.team': return { team: params?.sessionId === DEMO_TEAM_TASK ? demoTeam(host.now()) : null };
+    // A Council change is kept in the demo store (demo/team-start.ts writes it), so the card follows
+    // Accept and the settings the way it follows native's snapshot.
+    case 'task.team': return { team: params?.sessionId === DEMO_TEAM_TASK ? (s.teams[demoTeamKey()] ?? demoTeam(host.now())) : null };
     case 'task.workerMessages': {
       const all = params?.sessionId === DEMO_TEAM_TASK ? demoWorkerMessages(String(params.workerId), host.now()) : [];
       return { messages: all.filter(m => m.id > (Number(params?.afterId) || 0)), hasMore: false, hasOlder: false };
@@ -217,6 +219,20 @@ export async function demoCall(host: DemoHost, deviceId: string, method: Method,
       host.set(next => withBot(next, deviceId, params.botId, { paused: !!params.paused, state: params.paused ? 'paused' : 'ready' }));
       return {};
     case 'host.hello': return demoHello();
+    // The computer's own app: the demo has a release waiting, so App Review sees Update and restart.
+    case 'host.updateStatus':
+    case 'host.checkUpdate':
+      return demoUpdateStatus(host.now());
+    case 'host.updateAndRestart': {
+      if (!demoUpdateStatus(host.now()).installable) throw new Error('There is no update to install.');
+      demoInstalledAt = host.now();
+      // As a real computer does: it goes down to install, then comes back on the new version. The
+      // offline moment is what the card's calm Restarting state and the reconnect reload are for.
+      const online = (up: boolean) => host.set(next => ({ devices: next.devices.map(d => (d.id === deviceId ? { ...d, online: up } : d)) }));
+      online(false);
+      host.later(() => online(true), DEMO_RESTART_MS);
+      return { restarting: true };
+    }
     default: {
       // Feature methods (src/demo/*.ts); projects.icons is unknown: the demo's one icon is seeded.
       const handler = DEMO_HANDLERS.get(method);
@@ -229,15 +245,18 @@ export async function demoCall(host: DemoHost, deviceId: string, method: Method,
 /** The core methods demoCall answers itself (the rest answer 'Unknown method.' there). */
 const DEMO_CORE: readonly Method[] = ['tasks.list', 'task.messages', 'subscribe', 'providers.list', 'providers.models', 'task.send', 'task.steer', 'task.stop',
   'approval.respond', 'input.respond', 'task.configure', 'task.start', 'task.pull', 'task.pullDetect', 'task.pullDiff', 'task.pullMerge', 'task.changes', 'task.diff',
-  'task.teamResume', 'task.team', 'task.workerMessages', 'bots.list', 'bot.thread', 'bot.message', 'bot.pause', 'image.put', 'host.hello'];
+  'task.teamResume', 'task.team', 'task.workerMessages', 'bots.list', 'bot.thread', 'bot.message', 'bot.pause', 'image.put', 'host.hello',
+  'host.updateStatus', 'host.checkUpdate', 'host.updateAndRestart'];
 
 /** Core methods any approved phone may call, and those only Full may (the rest need Control),
  * as src-tauri/src/remote/grants.rs classifies them. */
 const DEMO_VIEW: ReadonlySet<string> = new Set(['tasks.list', 'task.messages', 'subscribe', 'providers.list', 'providers.models', 'task.pull', 'task.pullDiff',
-  'task.changes', 'task.diff', 'task.team', 'task.workerMessages', 'bots.list', 'bot.thread', 'host.hello']);
+  'task.changes', 'task.diff', 'task.team', 'task.workerMessages', 'bots.list', 'bot.thread', 'host.hello', 'host.updateStatus']);
 const DEMO_FULL_ONLY: ReadonlySet<string> = new Set(['task.start', 'task.pullMerge', 'task.teamResume', ...SWITCH_METHODS,
+  // The computer's own update: installing restarts it and stops whatever runs there.
+  'host.checkUpdate', 'host.updateAndRestart',
   // Registry methods declared Access::Full in src-tauri/src/remote/methods/*.rs.
-  'bot.failoverDecide', 'bot.forget', 'bot.pairingDecide', 'bot.remember', 'bot.runSchedule', 'chat.start', 'checks.run', 'cloudAgents.start', 'files.write', 'git.commit', 'git.push', 'git.switchBranch', 'github.comment', 'github.startTask', 'moodboards.add', 'orchestration.respond', 'projects.clone', 'pull.create', 'pull.review', 'runScript.start', 'runScript.stop', 'schedules.create', 'schedules.delete', 'schedules.update', 'settings.setRouting', 'skills.activate', 'team.start', 'terminal.close', 'terminal.list', 'terminal.open', 'terminal.read', 'terminal.resize', 'terminal.write', 'thread.delete', 'vm.start', 'vm.stop', 'worktree.create', 'worktree.merge', 'worktree.remove']);
+  'bot.failoverDecide', 'bot.forget', 'bot.pairingDecide', 'bot.remember', 'bot.runSchedule', 'bot.edit', 'bot.reset', 'bot.delete', 'bot.ruleAdd', 'bot.ruleDelete', 'bot.scheduleCreate', 'bot.scheduleSetEnabled', 'bot.scheduleDelete', 'chat.start', 'checks.run', 'cloudAgents.start', 'files.write', 'git.commit', 'git.push', 'git.switchBranch', 'github.comment', 'github.startTask', 'moodboards.add', 'orchestration.respond', 'projects.clone', 'pull.create', 'pull.review', 'runScript.start', 'runScript.stop', 'schedules.create', 'schedules.delete', 'schedules.update', 'settings.setRouting', 'skills.activate', 'team.start', 'terminal.close', 'terminal.list', 'terminal.open', 'terminal.read', 'terminal.resize', 'terminal.write', 'thread.delete', 'vm.start', 'vm.stop', 'worktree.create', 'worktree.merge', 'worktree.remove']);
 /** Feature handlers that only read (a View phone may call them); others need Control. */
 const READS = /\.(list|get|detail|status|summary|search|read|messages|info|usage|log|branches|preview|tree|show|diff|frame)$/;
 
@@ -246,6 +265,29 @@ export function demoMethodAccess(method: string): Access {
   if (DEMO_FULL_ONLY.has(method)) return 'full';
   if (DEMO_VIEW.has(method) || (DEMO_HANDLERS.has(method) && READS.test(method))) return 'view';
   return 'control';
+}
+
+/** The demo computer's own version, and the release it has waiting (so Update and restart shows). */
+export const DEMO_VERSION = '0.3.161';
+export const DEMO_RELEASE = '0.3.162';
+/** How long the demo computer "restarts" after Update and restart, before it answers as the new
+ * version. Long enough to see the calm Restarting state, short enough for App Review to watch it end. */
+export const DEMO_RESTART_MS = 4_000;
+/** When Update and restart was asked, so the status can read as restarting, then updated. */
+let demoInstalledAt: number | null = null;
+
+/** host.updateStatus / host.checkUpdate's answer, shaped as src-tauri/src/remote/methods/host_methods.rs
+ * sends it: a release waiting, then (just after Update and restart) a restarted version. */
+export function demoUpdateStatus(now = Date.now()) {
+  const waiting = demoInstalledAt === null || now - demoInstalledAt < DEMO_RESTART_MS;
+  const restarting = demoInstalledAt !== null && waiting;
+  return {
+    currentVersion: waiting ? DEMO_VERSION : DEMO_RELEASE,
+    update: waiting ? { version: DEMO_RELEASE } : null,
+    installable: waiting,
+    restarting,
+    error: null,
+  };
 }
 
 /**

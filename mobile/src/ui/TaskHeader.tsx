@@ -18,6 +18,9 @@ import { router, Stack, useNavigation, useNavigationContainerRef } from 'expo-ro
 import { useEffect, useState, type ComponentProps } from 'react';
 import { Alert, Platform, Share, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 import { deployTargets } from '../connect/api/admin.ts';
+import { openCouncilSettings } from './Council.tsx';
+import { councilOn } from '../store/team.ts';
+import { useTeam } from './useTeam.ts';
 import { useHostCapabilities, useHostSupports } from '../connect/api/capabilities.ts';
 import { archiveThread, deleteThread, exportThread, forkThread, unarchiveThread } from '../connect/api/threads.ts';
 import { connect } from '../connect/client.ts';
@@ -288,7 +291,7 @@ export function TaskHeader({ deviceId, sessionId, title, pull, agents, bot, quie
   const can = {
     pause: gate('bot.pause'), rename: gate('thread.rename'), fork: gate('thread.fork'), export: gate('thread.export'),
     archive: gate('thread.archive'), delete: gate('thread.delete'), terminal: gate('terminal.list'), botSettings: gate('bot.detail'),
-    board: gate('thread.setStage'), deploy: gate('task.start'),
+    board: gate('thread.setStage'), deploy: gate('task.start'), council: gate('team.setCouncil'),
   };
   // The board lists project tasks; it opens on this task's project. Chats and bots have none.
   const boardProject = useConnect(s => { const task = s.tasks[deviceId]?.tasks.find(t => t.sessionId === sessionId); return task?.chat || task?.botId ? undefined : task?.projectId; });
@@ -296,6 +299,10 @@ export function TaskHeader({ deviceId, sessionId, title, pull, agents, bot, quie
   const press = (g: MenuGate, run: () => void) => gatedPress(g, run, explain);
   const terminal = () => router.push({ pathname: '/terminal', params });
   const botSettings = () => bot && router.push({ pathname: '/bot-admin', params: { device: deviceId, bot: bot.id } });
+  // Council's settings: on or off and the three values. `can.council.shown` is false only where the
+  // host lacks `team.setCouncil`, so an older computer shows no row at all.
+  const team = useTeam(deviceId, sessionId, false);
+  const council = () => openCouncilSettings(deviceId, sessionId, team, can.council.note);
   const lastId = useConnect(s => s.messages[taskKey(deviceId, sessionId)]?.at(-1)?.id);
   // The archive answers later: leave only if this task's screen is still the one shown, so a sheet or
   // screen opened over it meanwhile isn't closed instead. A covered task stays (an archived one stays
@@ -363,6 +370,7 @@ export function TaskHeader({ deviceId, sessionId, title, pull, agents, bot, quie
       { label: 'Changes', section: 'Work', android: 'difference', onPress: changes },
       ...(pull ? [{ label: 'Pull request', section: 'Work', android: 'merge', onPress: openPull } as const] : []),
       ...(agents ? [{ label: 'Agents', section: 'Work', android: 'groups', onPress: openAgents } as const] : []),
+      ...(can.council.shown ? [{ label: councilOn(team) ? 'Council settings' : 'Turn on Council', section: 'Work', android: 'balance', ...(can.council.note ? { subtitle: can.council.note } : {}), onPress: press(can.council, council) } as const] : []),
       ...(can.terminal.shown ? [{ label: 'Terminal', section: 'Work', android: 'terminal', onPress: press(can.terminal, terminal) } as const] : []),
       ...(showDeploy ? [{ label: 'Deploy', section: 'Work', android: 'upload', onPress: press(can.deploy, () => showActions('Deploy', deployRows.map(t => ({ label: t.label, subtitle: t.note ?? t.description, android: 'upload', onPress: () => (t.note ? explain(t.note) : deploy(t)) })))) } as const] : []),
       ...(settle && settled && can.archive.shown ? [{ label: 'Unarchive', section: 'Manage', android: 'unarchive', onPress: press(can.archive, unarchiveTask) } as const] : []),
@@ -409,6 +417,7 @@ export function TaskHeader({ deviceId, sessionId, title, pull, agents, bot, quie
             <Stack.Toolbar.MenuAction icon="arrow.triangle.branch" onPress={changes}>Changes</Stack.Toolbar.MenuAction>
             <Stack.Toolbar.MenuAction icon="arrow.triangle.pull" hidden={!pull} onPress={openPull}>Pull request</Stack.Toolbar.MenuAction>
             <Stack.Toolbar.MenuAction icon="person.2" hidden={!agents} onPress={openAgents}>Agents</Stack.Toolbar.MenuAction>
+            <Stack.Toolbar.MenuAction icon="scalemass" hidden={!can.council.shown} {...nativeGate(can.council)} onPress={council}>{councilOn(team) ? 'Council settings' : 'Turn on Council'}</Stack.Toolbar.MenuAction>
             <Stack.Toolbar.MenuAction icon="terminal" hidden={!can.terminal.shown} {...nativeGate(can.terminal)} onPress={terminal}>Terminal</Stack.Toolbar.MenuAction>
             <Stack.Toolbar.Menu icon="arrow.up.circle" title="Deploy" hidden={!showDeploy}>
               {deployRows.map(t => <Stack.Toolbar.MenuAction key={t.id} icon="arrow.up.circle" {...(can.deploy.note ? nativeGate(can.deploy) : t.note ? { disabled: true, subtitle: t.note } : { subtitle: t.description })} onPress={() => deploy(t)}>{t.label}</Stack.Toolbar.MenuAction>)}

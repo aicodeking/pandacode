@@ -4,6 +4,10 @@
 import type { Message, ToolActivity } from './connect/types.ts';
 
 export const DEMO_TEAM_TASK = 'team';
+/** Where the demo store keeps this task's team once Council changes it (the connected store's
+ * `taskKey` for the demo's online computer and its team task), so `task.team` answers the newest
+ * snapshot instead of rebuilding the fixture. */
+export const demoTeamKey = () => `studio/${DEMO_TEAM_TASK}`;
 const MIN = 60_000;
 const A = 'mcp__pandacode_architect__pandacode_';
 const json = (value: unknown) => JSON.stringify(value);
@@ -14,10 +18,17 @@ const ASSIGNMENTS = [
   { key: 'review', name: 'Review the protocol', provider: 'kimi', model: 'kimi-k2', files: ['docs/remote-access.md'], readOnly: true, prompt: 'Review the new methods for replay safety and size limits. Report findings only.' },
 ];
 
-/** The team as task.team sends it. */
+/** The team as task.team sends it. Council is on and the lead is asking, so demo mode shows the
+ * Council card with its Accept and finish button. */
 export function demoTeam(now: number) {
   return {
     mode: 'auto', status: 'running', rounds: { used: 2 },
+    council: { target: 9, maxRounds: 10, reviewers: 3 },
+    councilStatus: {
+      state: 'asking', round: 2, lowest: 8.25, target: 9, stale: false,
+      notice: 'The lead is asking how to continue: lowest score 8.3, target 9.0, after round 2.',
+    },
+    councilAccepted: false,
     workers: [
       { id: 'w-host', name: ASSIGNMENTS[0].name, provider: 'codex', model: 'gpt-6', status: 'completed', attempt: 1, sessionId: 'demo-w-host', files: ASSIGNMENTS[0].files, dependsOn: [], assignment: ASSIGNMENTS[0].prompt,
         summary: 'Added `task.team` and `task.workerMessages` with a live `team` event per changed worker. 14 host tests pass.', checkpoint: null, startedAt: now - 18 * MIN, updatedAt: now - 9 * MIN },
@@ -26,6 +37,13 @@ export function demoTeam(now: number) {
         startedAt: now - 8 * MIN, updatedAt: now - 20_000 },
       { id: 'w-review', name: ASSIGNMENTS[2].name, provider: 'kimi', model: 'kimi-k2', status: 'failed', attempt: 1, sessionId: 'demo-w-review', files: ASSIGNMENTS[2].files, dependsOn: [], readOnly: true, assignment: ASSIGNMENTS[2].prompt,
         summary: '', error: 'Kimi usage limit reached. Resets in 40 minutes.', checkpoint: null, startedAt: now - 17 * MIN, updatedAt: now - 12 * MIN },
+      // This round's Council reviewers: one at target, two below it, which is why the lead is asking.
+      { id: 'c-correctness', name: 'Correctness', provider: 'codex', model: 'gpt-6', status: 'completed', attempt: 1, sessionId: 'demo-c-correctness', files: [], dependsOn: [], readOnly: true, assignment: 'Review the team work for correctness.',
+        summary: 'Protocol handling and replay checks hold up.', checkpoint: null, startedAt: now - 6 * MIN, updatedAt: now - 5 * MIN, council: { round: 2, lens: 'Correctness', score: 9.5, startedAt: now - 6 * MIN } },
+      { id: 'c-security', name: 'Security', provider: 'claude', model: 'opus', status: 'completed', attempt: 1, sessionId: 'demo-c-security', files: [], dependsOn: [], readOnly: true, assignment: 'Review the team work for security.',
+        summary: 'The new methods reuse the existing gates.', checkpoint: null, startedAt: now - 6 * MIN, updatedAt: now - 5 * MIN, council: { round: 2, lens: 'Security', score: 8.25, startedAt: now - 6 * MIN } },
+      { id: 'c-ux', name: 'UX', provider: 'kimi', model: 'kimi-k2', status: 'completed', attempt: 1, sessionId: 'demo-c-ux', files: [], dependsOn: [], readOnly: true, assignment: 'Review the team work for UX.',
+        summary: 'The Agents screen needs a clearer empty state.', checkpoint: null, startedAt: now - 6 * MIN, updatedAt: now - 5 * MIN, council: { round: 2, lens: 'UX', score: 8.0, startedAt: now - 6 * MIN } },
     ],
   };
 }

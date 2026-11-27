@@ -19,9 +19,10 @@ import { sendOrQueue, useLocal } from '../../../store/local.ts';
 import { confirmedGone } from '../../../store/gone.ts';
 import type { TurnRow } from '../../../store/turns.ts';
 import { Composer, SpringIn } from '../../../ui/Composer.tsx';
+import { CouncilCard } from '../../../ui/Council.tsx';
 import { ConnectionNotice } from '../../../ui/ConnectionQuality.tsx';
 import { UsageResumeToggle } from '../../../ui/UsageResumeToggle.tsx';
-import { useHostSupports } from '../../../connect/api/capabilities.ts';
+import { useHostBlock, useHostSupports } from '../../../connect/api/capabilities.ts';
 import { Banner, CrossFadeText, crossFadeIn, crossFadeOut, geometry, haptic, PressScale, springs, StatusDot, type as textStyle, type Tone, useMotion } from '../../../ui/ds/index.ts';
 import { Glass, hasGlass } from '../../../ui/Glass.tsx';
 import { ApprovalCard, InputCard } from '../../../ui/requests.tsx';
@@ -233,8 +234,10 @@ export default function TaskScreen() {
   const liveStatus = useConnect(s => s.live[key]?.status ?? 'idle');
   const approvals = useConnect(s => s.live[key]?.approvals ?? NONE);
   const inputs = useConnect(s => s.live[key]?.inputs ?? NONE);
-  // Asked once (not polled here): names workers in tool sentences and shows the Agents item.
-  const team = useTeam(device, session, false);
+  // Polled while the team works or Council still has something to say: the host streams only changed
+  // worker rows, so a Council state that moves on its own (asking, passed) would otherwise never reach
+  // this screen and the Accept card would not appear (useTeam.ts stillMoving).
+  const team = useTeam(device, session);
   const names = useNames(team);
   const agents = useConnect(s => !!s.live[key]?.subagents?.length) || (!!team && team !== 'outdated' && team.workers.length > 0);
   const status = liveStatus === 'idle' && task && isActive(task.status) ? task.status : liveStatus;
@@ -290,6 +293,10 @@ export default function TaskScreen() {
     seenRequests.current = requestCount;
   }, [requestCount]);
   const settledStatus = useConnect(s => (liveStatus !== 'idle' ? liveStatus : s.tasks[device]?.tasks.find(t => t.sessionId === session)?.status ?? 'idle'));
+  // Council is Control access, so a View phone or an old host reads why instead of pressing a button
+  // that would be refused (the card and its menu item both use this).
+  const councilBlocked = useHostBlock(device, 'team.setCouncil');
+  const computer = useConnect(s => s.devices.find(d => d.id === device)?.name ?? 'that computer');
   // What the transcript keeps clear: from the top of the highest thing in the dock to the screen's bottom.
   const bottom = dockHeight && dockHeight - contentTop;
   // Request cards scroll in whatever the window leaves between the header and the composer.
@@ -321,6 +328,11 @@ export default function TaskScreen() {
           </Animated.View>
           <Animated.View layout={layout}>
             <RunNotice deviceId={device} sessionId={session} status={running ? 'running' : settledStatus} bot={!!bot} />
+          </Animated.View>
+          {/* Council above the requests: a lead's question and any approval are what the user must
+              answer first, and Council's card is the button it points them at. */}
+          <Animated.View layout={layout} entering={cardIn} exiting={crossFadeOut}>
+            <CouncilCard deviceId={device} sessionId={session} team={team} blocked={councilBlocked} computer={computer} running={running} />
           </Animated.View>
           {requests && (
             <Animated.View layout={layout} entering={cardIn} exiting={crossFadeOut}>

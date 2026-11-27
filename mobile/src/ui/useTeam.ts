@@ -10,12 +10,24 @@ const POLL_MS = 5000;
 
 type Loaded = Team | null | 'outdated' | undefined;
 
+/** Whether the team's state can still change without a worker row changing, so events alone would
+ * leave the screen stale. The host streams only changed worker rows (`changed_worker_rows`), so a
+ * Council state that moves on its own — asking, passed, accepted — sends nothing, and a resting
+ * team has no active worker to keep the poll going. Council on and not yet accepted is exactly the
+ * window where the Accept card must appear, so it is polled too. */
+const stillMoving = (team: Loaded): boolean => {
+  if (!team || team === 'outdated') return false;
+  if (teamActive(team) || team.workers.some(workerActive)) return true;
+  const council = team.councilStatus;
+  return !!team.council && !!council && !team.councilAccepted && council.state !== 'accepted';
+};
+
 /** team: undefined while loading, null for none, 'outdated' when the host lacks task.team.
  * error: why the last ask failed, for Retry while nothing is held. */
 export function useTeamLoad(deviceId: string, sessionId: string, poll = true): { team: Loaded; error: string; retry: () => void } {
   const team = useConnect(s => s.teams[taskKey(deviceId, sessionId)]);
   const [error, setError] = useState('');
-  const active = !!team && team !== 'outdated' && (teamActive(team) || team.workers.some(workerActive));
+  const active = stillMoving(team);
   const load = useCallback(() => connect.loadTeam(deviceId, sessionId).then(() => setError(''), (e: Error) => setError(e.message || 'Could not reach that computer.')), [deviceId, sessionId]);
   useEffect(() => { void load(); }, [load]);
   useEffect(() => {

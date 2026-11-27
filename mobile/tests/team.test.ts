@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { demoTeam } from '../src/demo-team.ts';
-import { applyTeamEvent, cutNote, decodeTeam, teamResumable, workerActive, workerClockEnd, workerLabel, workerNames, workersTitle } from '../src/store/team.ts';
+import { applyTeamEvent, councilSeats, cutNote, decodeTeam, teamResumable, teamWorkers, workerActive, workerClockEnd, workerLabel, workerNames, workersTitle } from '../src/store/team.ts';
 
 const row = (id: string, status: string, extra: Record<string, unknown> = {}) => ({ id, name: id.toUpperCase(), provider: 'codex', model: 'gpt-6', status, attempt: 1, summary: '', files: [], dependsOn: [], startedAt: 100, updatedAt: 200, sessionId: `s-${id}`, ...extra });
 
@@ -34,10 +34,14 @@ test('worker labels follow the desktop: Skipped, Paused when the team is idle', 
   assert.deepEqual(team.workers.map(w => workerLabel(w, team)), ['Paused', 'Skipped', 'Completed']);
 });
 
-test('the demo team decodes with three workers in different states and a checkpoint', () => {
+test('the demo team decodes its workers and its Council reviewers', () => {
   const team = decodeTeam({ team: demoTeam(Date.now()) });
-  assert.deepEqual(team?.workers.map(w => w.status), ['completed', 'running', 'failed']);
-  assert.ok(team?.workers.some(w => w.checkpoint));
+  const workers = teamWorkers(team?.workers ?? []);
+  assert.deepEqual(workers.map(w => w.status), ['completed', 'running', 'failed']);
+  assert.ok(workers.some(w => w.checkpoint));
+  // The reviewers ride the same array but are Council seats, each with a lens and a score.
+  assert.equal(councilSeats(team).length, 3);
+  assert.ok(councilSeats(team).every(s => !!s.council.lens && typeof s.council.score === 'number'));
 });
 
 test('a parked worker reads as waiting on its sub-workers and stays active', () => {
