@@ -350,6 +350,102 @@ test.describe('bots', () => {
     await expect(panel(page).getByText('No schedules yet.', { exact: false })).toBeVisible();
   });
 
+  test('webhooks show secrets once, rotate with confirmation, test, disable and delete', async ({ page }) => {
+    await captureOutside(page);
+    await newBot(page);
+    await openSettings(page, 'Webhooks');
+    const form = panel(page).locator('.bots-webhook');
+    await form.getByRole('textbox', { name: 'Webhook name' }).fill('Deploy');
+    await form.getByRole('textbox', { name: 'What should it do with an event?' }).fill('Summarize the deployment');
+    await form.getByRole('button', { name: 'Add webhook' }).click();
+    const row = panel(page).locator('[data-webhook]', { hasText: 'Deploy' });
+    await expect(row.getByLabel('Webhook URL')).toHaveValue(/^http:\/\/127\.0\.0\.1:47321\/hook\/[\w-]+$/);
+    const url = await row.getByLabel('Webhook URL').inputValue();
+    await row.getByRole('button', { name: 'Copy URL', exact: true }).click();
+    await expect.poll(() => copied(page)).toEqual([url]);
+    const secret = row.getByLabel('Signing secret', { exact: true });
+    await expect(secret).toHaveValue(/^[a-f0-9]{64}$/);
+    const first = await secret.inputValue();
+    await expect(row).toContainText('Shown once.');
+    await row.getByRole('button', { name: 'Copy secret', exact: true }).click();
+    await expect.poll(() => copied(page)).toEqual([url, first]);
+    await row.getByRole('button', { name: 'Done', exact: true }).click();
+    await expect(secret).toHaveCount(0);
+    await tab(page, 'Memory').click();
+    await tab(page, 'Webhooks').click();
+    await expect(secret).toHaveCount(0);
+    await row.getByRole('button', { name: 'Rotate secret', exact: true }).click();
+    const confirm = panel(page).getByRole('alertdialog', { name: 'Rotate signing secret?' });
+    await expect(confirm).toBeVisible();
+    await expect(secret).toHaveCount(0);
+    await confirm.getByRole('button', { name: 'Rotate secret', exact: true }).click();
+    await expect(secret).toHaveValue(/^[a-f0-9]{64}$/);
+    expect(await secret.inputValue()).not.toBe(first);
+    await row.getByRole('button', { name: 'Done', exact: true }).click();
+    await row.getByRole('button', { name: 'Send test event', exact: true }).click();
+    await expect(page.getByText('Test event accepted (HTTP 202)', { exact: true })).toBeVisible();
+    await row.getByRole('checkbox', { name: 'Deploy webhook on' }).uncheck();
+    await expect(row).toHaveClass(/off/);
+    await row.getByRole('button', { name: 'Send test event', exact: true }).click();
+    await expect(page.getByText('Test event failed (HTTP 403): This webhook is disabled.', { exact: true })).toBeVisible();
+    await row.getByRole('button', { name: 'Delete Deploy webhook', exact: true }).click();
+    await expect(panel(page).getByText('No webhooks yet.', { exact: true })).toBeVisible();
+  });
+
+  test('webhook auth settings: token, IP allowlist, and the refusal when no method is left', async ({ page }) => {
+    await captureOutside(page);
+    await newBot(page);
+    await openSettings(page, 'Webhooks');
+    const form = panel(page).locator('.bots-webhook');
+    await form.getByRole('textbox', { name: 'Webhook name' }).fill('Deploy');
+    await form.getByRole('textbox', { name: 'What should it do with an event?' }).fill('Summarize the deployment');
+    await form.getByRole('button', { name: 'Add webhook' }).click();
+    const row = panel(page).locator('[data-webhook]', { hasText: 'Deploy' });
+    const methods = row.locator('[data-webhook-methods]');
+    await expect(row.getByLabel('Signing secret', { exact: true })).toBeVisible();
+    await row.getByRole('button', { name: 'Done', exact: true }).click();
+    await expect(methods).toHaveText('Required: signature', { useInnerText: true });
+
+    // A token becomes a second required method, revealed once like the secret.
+    await row.getByRole('checkbox', { name: /Require an API token/ }).check();
+    await expect(methods).toContainText('signature, API token');
+    await row.getByRole('button', { name: 'Rotate token', exact: true }).click();
+    const confirm = panel(page).getByRole('alertdialog', { name: 'Rotate API token?' });
+    await expect(confirm).toBeVisible();
+    await confirm.getByRole('button', { name: 'Rotate token', exact: true }).click();
+    const token = row.getByLabel('API token', { exact: true });
+    await expect(token).toHaveValue(/^[a-f0-9]{64}$/);
+    await expect(row).toContainText('Shown once.');
+    await row.getByRole('button', { name: 'Copy token', exact: true }).click();
+    await expect.poll(() => copied(page)).toHaveLength(1);
+    await row.getByRole('button', { name: 'Done', exact: true }).click();
+    await expect(token).toHaveCount(0);
+
+    // An allowlist is a third method; blank lines and commas are dropped.
+    await row.getByRole('textbox', { name: 'Allowed IP addresses' }).fill('10.0.0.0/8\n\n203.0.113.7, 2001:db8::/32');
+    await row.getByRole('button', { name: 'Save addresses', exact: true }).click();
+    await expect(methods).toContainText('IP allowlist');
+    await expect(row.getByRole('textbox', { name: 'Allowed IP addresses' })).toHaveValue('10.0.0.0/8\n203.0.113.7\n2001:db8::/32');
+
+    // Taking every method away is refused, and the saved settings stay.
+    await row.getByRole('checkbox', { name: /Require a signature/ }).uncheck();
+    await row.getByRole('checkbox', { name: /Require an API token/ }).uncheck();
+    await row.getByRole('textbox', { name: 'Allowed IP addresses' }).fill('');
+    await row.getByRole('button', { name: 'Save addresses', exact: true }).click();
+    await expect(page.getByText('A webhook needs a signing secret, an API token or an IP allowlist, so anyone who finds the URL cannot start work.', { exact: true })).toBeVisible();
+    await expect(row.getByRole('checkbox', { name: /Require a signature/ })).not.toBeChecked();
+    await expect(methods).toContainText('IP allowlist');
+    await expect(row.getByRole('textbox', { name: 'Allowed IP addresses' })).toHaveValue('10.0.0.0/8\n203.0.113.7\n2001:db8::/32');
+
+    // The proxy and public-URL switches persist.
+    await row.getByRole('checkbox', { name: /Trust X-Forwarded-For/ }).check();
+    await row.getByRole('checkbox', { name: /Accept requests through a public URL/ }).check();
+    await expect(row.getByRole('checkbox', { name: /Trust X-Forwarded-For/ })).toBeChecked();
+    await expect(row.getByRole('checkbox', { name: /Accept requests through a public URL/ })).toBeChecked();
+    await row.getByRole('button', { name: 'Send test event', exact: true }).click();
+    await expect(page.getByText('Test event accepted (HTTP 202)', { exact: true })).toBeVisible();
+  });
+
   test('Telegram setup walks through BotFather, catches a bad token, and pairs the first sender', async ({ page }) => {
     await captureOutside(page);
     await newBot(page);
@@ -516,7 +612,7 @@ test.describe('bots', () => {
     await expect(tab(page, 'Profile')).toHaveAttribute('aria-selected', 'true');
     // Sections are a vertical list, like Settings, and arrow keys move through it.
     await expect(panel(page).getByRole('tablist', { name: 'Bot settings' })).toHaveAttribute('aria-orientation', 'vertical');
-    await expect(panel(page).getByRole('tab')).toHaveText([/^Profile/, /^Connections/, /^Schedules/, /^Memory/, /^Skills/, /^Activity/]);
+    await expect(panel(page).getByRole('tab')).toHaveText([/^Profile/, /^Connections/, /^Schedules/, /^Webhooks/, /^Memory/, /^Skills/, /^Activity/]);
     await tab(page, 'Profile').focus();
     await page.keyboard.press('ArrowDown');
     await expect(tab(page, 'Connections')).toHaveAttribute('aria-selected', 'true');

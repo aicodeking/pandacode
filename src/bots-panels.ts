@@ -1,10 +1,10 @@
 import { escape, icon } from './dom';
 import { infoMark } from './tooltip';
-import type { Activity, BotDetail, Channel, Schedule } from './bots';
+import type { Activity, BotDetail, Channel, Schedule, Webhook, WebhookTestResult } from './bots';
 import { channelGuide, connectChange, connectClick, connectSection, connectSubmit, kindLabel } from './bots-connect';
 import { errorText } from './error-text';
 
-export type Tab = 'skills' | 'conversations' | 'memory' | 'schedules' | 'channels' | 'rules' | 'activity';
+export type Tab = 'skills' | 'conversations' | 'memory' | 'schedules' | 'webhooks' | 'channels' | 'rules' | 'activity';
 export interface PanelContext {
   call<T>(command: string, args?: Record<string, unknown>): Promise<T>;
   notify(text: string): void;
@@ -38,6 +38,7 @@ let activity: { botId: string; items: Activity[]; done: boolean; loading: boolea
 function threadLabel(detail: BotDetail, channelId: string, externalId: string): string {
   if (channelId === 'desktop') return 'This app';
   if (channelId === 'schedule') return 'Scheduled work';
+  if (channelId.startsWith('webhook-')) return detail.webhooks?.find(hook => channelId === `webhook-${hook.id}`)?.title ?? 'Removed webhook';
   const channel = detail.channels.find(item => item.id === channelId);
   const kind = channel ? kindLabel(channel.kind) : 'Removed channel';
   return channel?.kind === 'web' ? kind : `${kind} · ${externalId.length > 14 ? `…${externalId.slice(-8)}` : externalId}`;
@@ -83,6 +84,53 @@ function schedulesPanel(detail: BotDetail): string {
       <input type="checkbox" class="bots-switch" data-schedule-toggle="${escape(schedule.id)}" ${schedule.enabled ? 'checked' : ''} aria-label="${escape(schedule.title)} on">
       <button type="button" class="icon-button" data-run-schedule="${escape(schedule.id)}" aria-label="Run ${escape(schedule.title)} now" title="Run now">${icon('play')}</button>
       <button type="button" class="icon-button" data-delete-schedule="${escape(schedule.id)}" aria-label="Delete ${escape(schedule.title)}" title="Delete">${icon('trash')}</button></li>`).join('')}</ul>` : '<p class="bots-empty-note">No schedules yet. The bot can also schedule work for itself.</p>'}`;
+}
+
+let webhookReveal: { id: string; kind: 'secret' | 'token'; value: string } | null = null;
+export function clearWebhookSecret(): void { webhookReveal = null; }
+
+/** Which auth methods a webhook requires, for the row's summary line. */
+function methodsOf(hook: Webhook): string {
+  const methods = [hook.requireSignature ? 'signature' : '', hook.requireToken ? 'API token' : '', hook.allowedIps.length ? 'IP allowlist' : ''].filter(Boolean);
+  return methods.length ? methods.join(', ') : 'nothing: add a method above';
+}
+
+function webhooksPanel(detail: BotDetail): string {
+  const hooks = detail.webhooks ?? [];
+  return `<h4>Webhooks ${infoMark('Events from services start work in a conversation per webhook, and busy conversations queue them. Give each webhook at least one way to prove a caller is allowed: a signing secret, an API token or an IP allowlist.', 'About webhooks')}</h4>
+    <form class="bots-webhook">
+      <label class="bots-field"><span>Webhook name</span><input name="title" maxlength="120" autocomplete="off"></label>
+      <label class="bots-field"><span>What should it do with an event?</span><textarea name="prompt" rows="2" maxlength="8000" required></textarea></label>
+      <div class="dialog-footer"><button type="submit" class="secondary-button">${icon('plus')}Add webhook</button></div>
+    </form>
+    ${hooks.length ? `<ul class="bots-items bots-webhooks">${hooks.map(hook => {
+      const id = escape(hook.id), title = escape(hook.title);
+      // The listener may not be running (every webhook disabled since boot), so the
+      // shown URL falls back to the preferred port like the web chat guide does.
+      const url = `http://127.0.0.1:${detail.serverPort || 47321}/hook/${hook.id}`;
+      const reveal = webhookReveal?.id === hook.id ? webhookReveal : null;
+      const revealed = reveal?.kind === 'token' ? 'API token' : 'Signing secret';
+      return `<li class="bots-channel ${hook.enabled ? '' : 'off'}" data-webhook="${id}">
+        <div class="bots-channel-row"><span class="bots-item-main"><b>${title}</b><small>${escape(hook.prompt)}</small></span>
+          <input type="checkbox" class="bots-switch" data-webhook-toggle="${id}" ${hook.enabled ? 'checked' : ''} aria-label="${title} webhook on">
+          <button type="button" class="icon-button" data-delete-webhook="${id}" aria-label="Delete ${title} webhook" title="Delete">${icon('trash')}</button></div>
+        <label class="bots-field"><span>Webhook URL</span><input readonly value="${escape(url)}"></label>
+        <p class="bots-empty-note" data-webhook-methods="${id}">Required: ${escape(methodsOf(hook))}</p>
+        <label class="bots-switch-row"><input type="checkbox" class="bots-switch" data-webhook-signature="${id}" ${hook.requireSignature ? 'checked' : ''}><span><b>Require a signature</b><small>Callers sign each event with the signing secret.</small></span></label>
+        <label class="bots-switch-row"><input type="checkbox" class="bots-switch" data-webhook-token="${id}" ${hook.requireToken ? 'checked' : ''}><span><b>Require an API token</b><small>Callers send the token in a header.</small></span></label>
+        <label class="bots-field"><span>Allowed IP addresses</span><textarea data-webhook-ips="${id}" rows="2" placeholder="Any address, or one IP or range per line: 203.0.113.7, 10.0.0.0/8, 2001:db8::/32" spellcheck="false">${escape(hook.allowedIps.join('\n'))}</textarea></label>
+        <div class="dialog-footer"><button type="button" class="secondary-button" data-save-webhook-ips="${id}">Save addresses</button></div>
+        <label class="bots-switch-row"><input type="checkbox" class="bots-switch" data-webhook-forwarded="${id}" ${hook.trustForwarded ? 'checked' : ''}><span><b>Trust X-Forwarded-For from a proxy</b><small>Only when a proxy you control forwards to this computer; otherwise a caller could name any address.</small></span></label>
+        <label class="bots-switch-row"><input type="checkbox" class="bots-switch" data-webhook-public="${id}" ${hook.allowPublicHost ? 'checked' : ''}><span><b>Accept requests through a public URL or tunnel</b><small>Allow a tunnel or public address to reach this webhook. The URL above still points at this computer.</small></span></label>
+        <div class="dialog-footer"><button type="button" class="secondary-button" data-copy="${escape(url)}">Copy URL</button>
+          <button type="button" class="secondary-button" data-rotate-webhook="${id}">Rotate secret</button>
+          <button type="button" class="secondary-button" data-rotate-webhook-token="${id}">Rotate token</button>
+          <button type="button" class="secondary-button" data-test-webhook="${id}">Send test event</button></div>
+        ${reveal ? `<div class="bots-webhook-secret"><label class="bots-field"><span>${revealed}</span><input readonly value="${escape(reveal.value)}"></label>
+          <p class="bots-empty-note">Shown once. Copy it now; it cannot be revealed again.</p>
+          <div class="dialog-footer"><button type="button" class="secondary-button" data-copy-webhook-secret="${id}">Copy ${reveal.kind === 'token' ? 'token' : 'secret'}</button><button type="button" class="secondary-button" data-dismiss-webhook-secret="${id}">Done</button></div></div>` : ''}
+      </li>`;
+    }).join('')}</ul>` : '<p class="bots-empty-note">No webhooks yet.</p>'}`;
 }
 
 function channelCard(detail: BotDetail, channel: Channel): string {
@@ -190,6 +238,7 @@ export function renderPanel(tab: Tab, detail: BotDetail, context: PanelContext):
     case 'conversations': return conversationsPanel(detail, context);
     case 'memory': return memoryPanel(detail);
     case 'schedules': return schedulesPanel(detail);
+    case 'webhooks': return webhooksPanel(detail);
     case 'channels': return channelsPanel(detail);
     case 'rules': return rulesPanel(detail);
     case 'activity': return activityPanel(detail, context);
@@ -207,7 +256,30 @@ export function panelClick(target: HTMLElement, _tab: Tab, context: PanelContext
   const data = target.dataset;
   const done = async (text: string) => { invalidateActivity(); context.notify(text); await context.reload(); };
   if (connectClick(target, context)) return;
-  if (data.openTask) context.openTask(data.openTask);
+  if (data.copyWebhookSecret && webhookReveal?.id === data.copyWebhookSecret) void context.work(async () => { await navigator.clipboard.writeText(webhookReveal!.value); context.notify('Copied'); });
+  else if (data.dismissWebhookSecret) { clearWebhookSecret(); context.rerender(); }
+  else if (data.deleteWebhook) void context.work(async () => { await context.call('bot_webhook_delete', { id: data.deleteWebhook }); if (webhookReveal?.id === data.deleteWebhook) clearWebhookSecret(); await done('Webhook deleted'); });
+  else if (data.rotateWebhook) context.confirm('Rotate signing secret?', 'Callers using the current secret stop working right away. Copy the new secret when it is shown.', 'Rotate secret', async () => {
+    const value = await context.call<string>('bot_webhook_rotate_secret', { id: data.rotateWebhook });
+    webhookReveal = { id: data.rotateWebhook!, kind: 'secret', value }; await done('Signing secret rotated');
+  });
+  else if (data.rotateWebhookToken) context.confirm('Rotate API token?', 'Callers using the current token stop working right away. Copy the new token when it is shown.', 'Rotate token', async () => {
+    const value = await context.call<string>('bot_webhook_rotate_token', { id: data.rotateWebhookToken });
+    webhookReveal = { id: data.rotateWebhookToken!, kind: 'token', value }; await done('API token rotated');
+  });
+  else if (data.saveWebhookIps) void context.work(async () => {
+    const field = target.closest('[data-webhook]')?.querySelector<HTMLTextAreaElement>(`[data-webhook-ips="${data.saveWebhookIps}"]`);
+    // One address or range per line; commas are accepted too, and blanks are dropped.
+    const allowedIps = (field?.value ?? '').split(/[\n,]/).map(entry => entry.trim()).filter(Boolean);
+    await context.call('bot_webhook_update', { id: data.saveWebhookIps, settings: { allowedIps } });
+    await done('Addresses saved');
+  });
+  else if (data.testWebhook) void context.work(async () => {
+    const result = await context.call<WebhookTestResult>('bot_webhook_test', { id: data.testWebhook });
+    context.notify(result.status === 202 ? 'Test event accepted (HTTP 202)' : `Test event failed (HTTP ${result.status}): ${result.error || 'Request refused'}`);
+    await context.reload();
+  });
+  else if (data.openTask) context.openTask(data.openTask);
   else if (data.forget) void context.work(async () => { await context.call('bot_forget', { botId: bot.id, memoryId: data.forget }); await done('Forgotten'); });
   else if (data.runSchedule) void context.work(async () => { await context.call('bot_run_schedule_now', { scheduleId: data.runSchedule }); await done('Started'); });
   else if (data.deleteSchedule) void context.work(async () => { await context.call('bot_schedule_delete', { botId: bot.id, scheduleId: data.deleteSchedule }); await done('Schedule deleted'); });
@@ -229,6 +301,11 @@ export function panelChange(target: HTMLElement, _tab: Tab, context: PanelContex
     scheduleKind = (target as HTMLSelectElement).value as Schedule['kind'];
     target.closest('form')?.querySelectorAll<HTMLElement>('.bots-when').forEach(element => { element.hidden = !element.dataset.kinds!.split(' ').includes(scheduleKind); });
   } else if (input.dataset.scheduleToggle) void context.work(async () => { await context.call('bot_schedule_set_enabled', { scheduleId: input.dataset.scheduleToggle, enabled: input.checked }); invalidateActivity(); await context.reload(); });
+  else if (input.dataset.webhookToggle) void context.work(async () => { await context.call('bot_webhook_set_enabled', { id: input.dataset.webhookToggle, enabled: input.checked }); await context.reload(); });
+  else if (input.dataset.webhookSignature) void context.work(async () => { await context.call('bot_webhook_update', { id: input.dataset.webhookSignature, settings: { requireSignature: input.checked } }); await context.reload(); });
+  else if (input.dataset.webhookToken) void context.work(async () => { await context.call('bot_webhook_update', { id: input.dataset.webhookToken, settings: { requireToken: input.checked } }); await context.reload(); });
+  else if (input.dataset.webhookForwarded) void context.work(async () => { await context.call('bot_webhook_update', { id: input.dataset.webhookForwarded, settings: { trustForwarded: input.checked } }); await context.reload(); });
+  else if (input.dataset.webhookPublic) void context.work(async () => { await context.call('bot_webhook_update', { id: input.dataset.webhookPublic, settings: { allowPublicHost: input.checked } }); await context.reload(); });
   else if (input.dataset.channelToggle) void context.work(async () => { await context.call('bot_channel_set_enabled', { channelId: input.dataset.channelToggle, enabled: input.checked }); invalidateActivity(); await context.reload(); });
 }
 
@@ -250,5 +327,12 @@ export function panelSubmit(form: HTMLFormElement, _tab: Tab, context: PanelCont
     if (kind === 'once' && !Number.isFinite(runAt)) { context.notify('Choose when it should run.'); return; }
     const input = { title: text('title'), prompt: text('prompt'), kind, intervalMinutes: kind === 'interval' ? Number(text('intervalMinutes')) : null, timeOfDay: kind === 'daily' || kind === 'weekdays' ? text('timeOfDay') : null, runAt };
     void context.work(async () => { await context.call('bot_schedule_create', { botId: bot.id, input }); await done('Schedule added'); });
+  } else if (form.matches('.bots-webhook')) {
+    void context.work(async () => {
+      const hook = await context.call<Webhook>('bot_webhook_create', { botId: bot.id, title: text('title'), prompt: text('prompt') });
+      const secret = await context.call<string>('bot_webhook_rotate_secret', { id: hook.id });
+      webhookReveal = { id: hook.id, kind: 'secret', value: secret };
+      await done('Webhook added');
+    });
   } else connectSubmit(form, context);
 }

@@ -14,6 +14,7 @@ mod secrets;
 #[cfg(test)]
 mod tests;
 pub(crate) mod tools;
+pub(crate) mod webhooks;
 
 use crate::{storage::Store, AppState, Result};
 use rusqlite::{params, OptionalExtension};
@@ -173,6 +174,20 @@ CREATE TABLE IF NOT EXISTS bot_messages(
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
   CHECK(source_bot_id<>target_bot_id));
+CREATE TABLE IF NOT EXISTS bot_webhooks(
+  id TEXT PRIMARY KEY,
+  bot_id TEXT NOT NULL REFERENCES bots(id) ON DELETE CASCADE,
+  title TEXT NOT NULL,
+  prompt TEXT NOT NULL,
+  enabled INTEGER NOT NULL DEFAULT 1 CHECK(enabled IN (0,1)),
+  last_timestamp INTEGER NOT NULL DEFAULT 0,
+  require_signature INTEGER NOT NULL DEFAULT 1 CHECK(require_signature IN (0,1)),
+  require_token INTEGER NOT NULL DEFAULT 0 CHECK(require_token IN (0,1)),
+  allowed_ips TEXT NOT NULL DEFAULT '[]' CHECK(json_valid(allowed_ips)),
+  trust_forwarded INTEGER NOT NULL DEFAULT 0 CHECK(trust_forwarded IN (0,1)),
+  allow_public_host INTEGER NOT NULL DEFAULT 0 CHECK(allow_public_host IN (0,1)),
+  last_delivery TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL);
 ")
     };
 }
@@ -186,6 +201,7 @@ CREATE INDEX IF NOT EXISTS bot_shared_channel_messages_channel ON bot_shared_cha
 CREATE INDEX IF NOT EXISTS bot_shared_channel_deliveries_session ON bot_shared_channel_deliveries(session_id,status,created_at,id);
 CREATE INDEX IF NOT EXISTS bot_messages_target ON bot_messages(target_session_id,status,created_at,id);
 CREATE INDEX IF NOT EXISTS bot_messages_source ON bot_messages(source_session_id,created_at,id);
+CREATE INDEX IF NOT EXISTS bot_webhooks_bot ON bot_webhooks(bot_id);
 "
     };
 }
@@ -231,6 +247,21 @@ fn has_bot_column(db: &rusqlite::Connection, name: &str) -> Result<bool> {
     .map_err(|e| e.to_string())
 }
 
+/// Webhook columns added after `bot_webhooks` first shipped. `upgrade_schema` adds whichever
+/// are missing, so a database from an older build gains them on the next start.
+const WEBHOOK_COLUMNS: [(&str, &str); 6] = [
+    ("require_signature", "INTEGER NOT NULL DEFAULT 1 CHECK(require_signature IN (0,1))"),
+    ("require_token", "INTEGER NOT NULL DEFAULT 0 CHECK(require_token IN (0,1))"),
+    ("allowed_ips", "TEXT NOT NULL DEFAULT '[]' CHECK(json_valid(allowed_ips))"),
+    ("trust_forwarded", "INTEGER NOT NULL DEFAULT 0 CHECK(trust_forwarded IN (0,1))"),
+    ("allow_public_host", "INTEGER NOT NULL DEFAULT 0 CHECK(allow_public_host IN (0,1))"),
+    ("last_delivery", "TEXT NOT NULL DEFAULT ''"),
+];
+
+fn has_webhook_column(db: &rusqlite::Connection, name: &str) -> Result<bool> {
+    db.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('bot_webhooks') WHERE name=?1 COLLATE NOCASE)", [name], |r| r.get(0)).map_err(|e| e.to_string())
+}
+
 pub(crate) fn upgrade_schema(db: &rusqlite::Connection) -> Result<()> {
     // Bot databases at schema 27 already exist in the wild. Keep these tables idempotent
     // here instead of bumping the app-wide schema version for this bot-only feature.
@@ -238,6 +269,13 @@ pub(crate) fn upgrade_schema(db: &rusqlite::Connection) -> Result<()> {
     for (name, definition) in ADDED_COLUMNS {
         if !has_bot_column(db, name)? {
             db.execute_batch(&format!("ALTER TABLE bots ADD COLUMN {name} {definition};"))
+                .map_err(|e| e.to_string())?;
+        }
+    }
+    // `bot_webhooks` comes from the same batch, so it always exists by now.
+    for (name, definition) in WEBHOOK_COLUMNS {
+        if !has_webhook_column(db, name)? {
+            db.execute_batch(&format!("ALTER TABLE bot_webhooks ADD COLUMN {name} {definition};"))
                 .map_err(|e| e.to_string())?;
         }
     }
@@ -732,7 +770,7 @@ pub(crate) fn reset(store: &Store, id: &str) -> Result<Bot> {
 
 /// Deletes the bot and its records. Its workspace folder stays on disk.
 pub(crate) fn delete(store: &Store, id: &str) -> Result<()> {
-    let channels: Vec<String> = store.in_transaction_immediate(|| {
+    let (channels, hooks) = store.in_transaction_immediate(|| {
         let open = shared_channels::open_posts(store, id)?;
         store.db.prepare_cached("DELETE FROM sessions WHERE id IN (SELECT session_id FROM bot_threads WHERE bot_id=?1)").and_then(|mut statement| statement.execute([id])).map_err(|e| e.to_string())?;
         let channels: Vec<String> = {
@@ -740,13 +778,23 @@ pub(crate) fn delete(store: &Store, id: &str) -> Result<()> {
             let rows = statement.query_map([id], |r| r.get(0)).map_err(|e| e.to_string())?;
             rows.collect::<rusqlite::Result<_>>().map_err(|e| e.to_string())?
         };
+        // Webhook rows cascade with the bot, but their signing secrets and API tokens
+        // live in the secure store and must be removed by id.
+        let hooks: Vec<String> = {
+            let mut statement = store.db.prepare_cached("SELECT id FROM bot_webhooks WHERE bot_id=?1").map_err(|e| e.to_string())?;
+            let rows = statement.query_map([id], |r| r.get(0)).map_err(|e| e.to_string())?;
+            rows.collect::<rusqlite::Result<_>>().map_err(|e| e.to_string())?
+        };
         store.db.prepare_cached("DELETE FROM bots WHERE id=?1").and_then(|mut statement| statement.execute([id])).map_err(|e| e.to_string())?;
         shared_channels::settle_posts(store, &open)?;
-        Ok(channels)
+        Ok((channels, hooks))
     })?;
     // Secrets go once the records are: a failed delete leaves the bot whole.
     for channel in channels {
         secrets::remove_all(&channel);
+    }
+    for hook in hooks {
+        secrets::remove_all(&hook);
     }
     Ok(())
 }
@@ -1689,6 +1737,7 @@ pub(crate) fn start(app: &tauri::AppHandle) {
     }
     schedule::start(app.clone());
     channels::start_all(app.clone());
+    webhooks::start(app);
 }
 
 /// Called when any task's run ends; replies for bot conversations go back to their channel.
