@@ -65,6 +65,79 @@ export function normalizeDetail(raw: RawBotDetail | null | undefined): BotDetail
 }
 
 const count = (value: unknown): number => (typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : 0);
+
+// ---- Managing a bot (the `bots` group; every write needs full access for remote tasks) ----
+
+/** One audit-trail row (`bot.activity`): what the bot did, and the payload it logged. */
+export interface BotActivity { id: number; kind: string; summary: string; detail: unknown; at: number }
+/** A page of the trail, newest first; `truncated` means the host cut rows to fit — page with `before`. */
+export interface BotActivityPage { activity: BotActivity[]; truncated: boolean }
+
+/** A row as the screen shows it, or null for one too malformed to place. */
+function activityRow(raw: unknown): BotActivity | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const row = raw as Record<string, unknown>;
+  if (typeof row.id !== 'number' || !Number.isFinite(row.id)) return null;
+  return {
+    id: row.id,
+    kind: typeof row.kind === 'string' ? row.kind.slice(0, 80) : '',
+    summary: typeof row.summary === 'string' ? row.summary.slice(0, 2000) : '',
+    detail: row.detail ?? null,
+    at: typeof row.at === 'number' && Number.isFinite(row.at) && row.at > 0 ? row.at : 0,
+  };
+}
+
+/** `bot.activity`'s reply, dropping malformed rows rather than failing the screen. */
+export function normalizeActivity(reply: unknown): BotActivityPage {
+  const raw = (reply && typeof reply === 'object' ? reply : {}) as { activity?: unknown; truncated?: unknown };
+  const activity = (Array.isArray(raw.activity) ? raw.activity : []).map(activityRow).filter((row): row is BotActivity => !!row);
+  return { activity, truncated: raw.truncated === true };
+}
+
+/**
+ * The settings a phone may change. Deliberately NOT the brief (`instructions`, `goals`, `soul`):
+ * those are edited on the computer, and the host refuses them from here.
+ */
+export interface BotEditPatch {
+  name?: string; role?: string; provider?: string; model?: string; mode?: string; reasoningEffort?: string;
+  heartbeatMinutes?: number; notify?: boolean; whileWorking?: 'queue' | 'steer'; showPlan?: boolean;
+  color?: string; fallbackMode?: 'ask' | 'auto';
+}
+
+/** The patch with only the keys that actually differ, so an edit never rewrites what the user did not touch. */
+export function changedPatch(before: BotProfile, after: BotEditPatch): BotEditPatch {
+  const patch: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(after)) {
+    if (value === undefined || value === '') continue;
+    if (before[key as keyof BotProfile] !== value) patch[key] = value;
+  }
+  return patch as BotEditPatch;
+}
+
+/** Whether there is anything to send (an empty patch is refused by the host). */
+export const patchEmpty = (patch: BotEditPatch) => Object.keys(patch).length === 0;
+
+/** A one-line description of an audit row for a card, e.g. "Schedule · Removed a schedule". */
+export function activityLine(row: BotActivity): string {
+  const kind = row.kind.trim();
+  const summary = row.summary.trim().replace(/\s+/g, ' ');
+  if (!kind) return summary || 'Activity';
+  return summary ? `${kind} · ${summary}` : kind;
+}
+
+/** The activity's tone by kind, so a failure reads as one at a glance. */
+export const activityTone = (row: BotActivity): Tone => (row.kind === 'error' ? 'danger' : row.kind === 'approval' || row.kind === 'rule' ? 'warning' : 'muted');
+
+/** The modes a phone may pick from for a bot (the desktop's permission modes). */
+export const BOT_MODES: readonly { value: string; label: string }[] = [
+  { value: 'ask', label: 'Ask first' },
+  { value: 'edit', label: 'Allow edits' },
+  { value: 'full', label: 'Full access' },
+];
+
+/** Why changing a bot's mode to `full` is refused from a phone without the switch, or null. */
+export const fullModeNote = (mode: string, fullAccess: boolean): string | null =>
+  mode === 'full' && !fullAccess ? 'Turn on Full access for remote tasks on the computer to give a bot full access.' : null;
 const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
 
 /** A limited detail's counts as rows ("3 memories"), in the screen's section order. */

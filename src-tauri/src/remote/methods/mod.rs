@@ -21,6 +21,7 @@ use std::pin::Pin;
 use tauri::Manager;
 
 pub(crate) mod admin;
+pub(crate) mod bots;
 pub(crate) mod composer;
 pub(crate) mod design;
 pub(crate) mod files;
@@ -197,7 +198,7 @@ impl PartialEq for Parsed {
 
 /// Every feature group, in the order `host.hello` lists them. A new feature file adds
 /// itself here (and its `mod` line above) once.
-const GROUPS: [(&str, &[Method]); 17] = [
+const GROUPS: [(&str, &[Method]); 18] = [
     ("hello", HELLO),
     ("threads", threads::METHODS),
     ("composer", composer::METHODS),
@@ -215,6 +216,7 @@ const GROUPS: [(&str, &[Method]); 17] = [
     ("rewind", rewind::METHODS),
     ("search", search::METHODS),
     ("rooms", rooms::METHODS),
+    ("bots", bots::METHODS),
 ];
 
 /// Every registry method.
