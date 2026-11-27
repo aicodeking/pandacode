@@ -26,7 +26,8 @@ embedded editor engine.
   <a href="https://github.com/aicodeking/pandacode/releases/latest/download/PandaCode-Linux-x86_64.AppImage">Linux x64</a> ·
   <a href="https://github.com/aicodeking/pandacode/releases/latest/download/PandaCode-Linux-aarch64.AppImage">Linux arm64</a> ·
   <a href="https://github.com/aicodeking/pandacode/releases">All releases</a> ·
-  <a href="https://testflight.apple.com/join/TpY9PjJe">iPhone (TestFlight)</a>
+  <a href="https://testflight.apple.com/join/TpY9PjJe">iPhone (TestFlight)</a> ·
+  <a href="docs/app-store/sideloading.md">iPhone (SideStore/AltStore)</a>
 </p>
 
 <p align="center">
@@ -153,7 +154,8 @@ embedded editor engine.
   [remote access](docs/remote-access.md).
 - **Mobile app.** Watch, steer and approve tasks from an iPhone or Android phone; tasks
   never run on the phone. Join the iPhone beta on
-  [TestFlight](https://testflight.apple.com/join/TpY9PjJe), or build it from [`mobile/`](mobile/README.md).
+  [TestFlight](https://testflight.apple.com/join/TpY9PjJe), install the unsigned IPA with
+  [SideStore or AltStore](docs/app-store/sideloading.md), or build it from [`mobile/`](mobile/README.md).
 - **Headless server.** `pandacode serve` runs PandaCode on an always-on machine with no
   window, as one more computer in Connect. See [headless](docs/headless.md).
 - **Machine orchestration.** Let agents launch and wait on threads on computers you
