@@ -34,6 +34,10 @@ pub(super) const SIGN_IN: &str = "Command Code is not signed in. Run `command-co
 /// and "Cancel". Matching the CLI's exact question text keeps those on the generic
 /// path; an unrecognised shape stays a cancel, so a real plan is never approved by
 /// a request this code did not understand.
+///
+/// ACP carries no provenance for this prompt, so a model that reproduces the exact
+/// header, question and labels is indistinguishable from the CLI asking — and that
+/// question is a plan approval either way, so the approval answer is still correct.
 const PLAN_QUESTIONS: [&str; 2] = [
     "Exit plan mode and begin implementation?",
     "Plan ready for review. Begin implementation?",
@@ -337,6 +341,14 @@ mod tests {
         assert!(!is_plan_approval(&request("Exit plan mode and begin implementation?", json!([cancel]))), "no yes option");
         assert!(!is_plan_approval(&request("Something else entirely?", json!([yes, cancel]))), "not the canonical question");
         assert!(!is_plan_approval(&json!({"params":{"toolCall":{"title":"Exit Plan: Exit plan mode and begin implementation?"},"options":[yes, cancel]}})), "no question text");
+        assert!(
+            !is_plan_approval(&json!({"params":{"toolCall":{"title":"Host: Exit plan mode and begin implementation?","rawInput":{"question":"Exit plan mode and begin implementation?"}},"options":[yes.clone(), cancel.clone()]}})),
+            "canonical question and options with the wrong header"
+        );
+        assert!(
+            !is_plan_approval(&json!({"params":{"toolCall":{"rawInput":{"question":"Exit plan mode and begin implementation?"}},"options":[yes, cancel]}})),
+            "canonical question and options with no header"
+        );
     }
 
     /// `plan_decision` itself refuses to guess when the expected option is absent.
