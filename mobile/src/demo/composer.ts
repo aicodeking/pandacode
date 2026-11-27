@@ -3,7 +3,7 @@
 // demo-host.ts imports this module through ./index.ts: `sent` is only used inside a handler body.
 import { sent } from '../demo-host.ts';
 import type { QueuedEntry, SlashCommand } from '../store/slash.ts';
-import type { DemoHandlers } from './index.ts';
+import type { DemoContext, DemoHandlers } from './index.ts';
 
 const HOUR = 3_600_000;
 
@@ -86,6 +86,15 @@ export function takeQueuedDemoMessage(deviceId: string, sessionId: string): Queu
   return next;
 }
 
+/** Sends a taken entry in the demo: it leaves the queue, counts as a delivery (so a stale Undo is
+ * refused, exactly as on the host), and lands in the transcript as a user prompt. */
+function deliverDemo(host: DemoContext['host'], deviceId: string, sessionId: string, entry: QueuedEntry, now: number) {
+  takeQueuedDemoMessage(deviceId, sessionId);
+  const key = `${deviceId}/${sessionId}`;
+  const message = { id: now, role: 'user', content: entry.text, createdAt: now, turnDurationMs: null };
+  host.set(next => ({ messages: { ...next.messages, [key]: [...(next.messages[key] ?? []), message] } }));
+}
+
 function hold(deviceId: string, sessionId: string, held: Held) {
   const key = `${deviceId}/${sessionId}`;
   const kept = (holding.get(key) ?? []).filter(other => other.entry.id !== held.entry.id && held.at - other.at < DEMO_HOLD_MS);
@@ -162,6 +171,20 @@ export const handlers: DemoHandlers = {
     markRestored(deviceId, p.sessionId, held.entry.id);
     const at = Math.min(held.index, entries.length);
     return setQueue(deviceId, p.sessionId, [...entries.slice(0, at), held.entry, ...entries.slice(at)]);
+  },
+  // Send now (composer.rs `queue.take`): on an idle task it sends that entry straight away, and on a
+  // running one it would steer — the demo has no harness to steer, so it reports the same sentence the
+  // host uses for an entry it cannot steer mid-run, which exercises the phone's "Stop run & send" step.
+  'queue.take': ({ deviceId, host }, p) => {
+    const entries = queueOf(deviceId, p.sessionId);
+    const index = entries.findIndex(e => e.id === p.id);
+    if (index < 0) throw new Error(GONE);
+    const busy = Boolean(host.get().live[`${deviceId}/${p.sessionId}`]?.status === 'running');
+    if (busy) throw new Error('Messages with attachments are sent after the run; stop the run first to send this one now.');
+    // Idle: only the head, as the host refuses to send a message ahead of the ones before it.
+    if (index > 0) throw new Error('Move this message up first; the task sends its queue in order.');
+    deliverDemo(host, deviceId, p.sessionId, entries[index], host.now());
+    return { entries: queueOf(deviceId, p.sessionId) };
   },
   'queue.reorder': ({ deviceId }, p) => {
     const entries = queueOf(deviceId, p.sessionId);

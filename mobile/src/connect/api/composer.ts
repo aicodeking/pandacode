@@ -10,7 +10,7 @@ import { runOnce } from './github.ts';
 import { taskKey } from '../../store/index.ts';
 import { decodeQueue, type ProviderUsage, type QueuedEntry, type SlashCommand, type SlashResolution, type UsageOverview } from '../../store/slash.ts';
 
-registerMethods(['slash.list', 'slash.resolve', 'btw.ask', 'queue.list', 'queue.update', 'queue.remove', 'queue.reorder', 'queue.restore', 'usage.get', 'usage.limits', 'usage.resumeAtReset', 'usage.clearLimit'] as const);
+registerMethods(['slash.list', 'slash.resolve', 'btw.ask', 'queue.list', 'queue.update', 'queue.remove', 'queue.reorder', 'queue.restore', 'queue.take', 'usage.get', 'usage.limits', 'usage.resumeAtReset', 'usage.clearLimit'] as const);
 
 // ---- Once per call ----
 
@@ -96,6 +96,12 @@ export const removeQueued = (deviceId: string, sessionId: string, id: string) =>
  * attachments) at its old place. The host holds removals briefly; a retry is harmless. */
 export const restoreRemoved = (deviceId: string, sessionId: string, id: string) =>
   hostCall<unknown>(deviceId, 'queue.restore', { sessionId, id }).then(keep(deviceId, sessionId));
+/** Takes one queued message out and sends it now: on an idle task it starts that turn, on a running
+ * one it steers the text into the turn. The host answers with the queue, so the screen re-renders
+ * from the reply rather than guessing what left. */
+export const takeQueued = (deviceId: string, sessionId: string, id: string) =>
+  hostCall<unknown>(deviceId, 'queue.take', { sessionId, id }).then(keep(deviceId, sessionId));
+
 export function reorderQueue(deviceId: string, sessionId: string, ids: string[]) {
   // Shown at once; the host's answer (or a reload after a refusal) settles it.
   const key = taskKey(deviceId, sessionId);

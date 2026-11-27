@@ -45,6 +45,7 @@ pub(crate) const METHODS: &[Method] = &[
     Method { name: "queue.remove", access: Access::Control, read_only: false, parse: parse_queue_remove },
     Method { name: "queue.reorder", access: Access::Control, read_only: false, parse: parse_queue_reorder },
     Method { name: "queue.restore", access: Access::Control, read_only: false, parse: parse_queue_restore },
+    Method { name: "queue.take", access: Access::Control, read_only: false, parse: parse_queue_take },
     Method { name: "usage.get", access: Access::View, read_only: true, parse: parse_usage_get },
     Method { name: "usage.limits", access: Access::View, read_only: true, parse: parse_usage_limits },
     Method { name: "usage.resumeAtReset", access: Access::Control, read_only: false, parse: parse_resume_at_reset },
@@ -606,6 +607,125 @@ impl Run for QueueUpdate {
             let entry = queued_in(store, &session, &id)?;
             message_queue::update(store, &id, &text, &entry.attachments).map(|_| ())
         }))
+    }
+}
+
+// ---- queue.take ----
+
+/// A phone's Send now: take one queued message and send it ahead of its position — the desktop
+/// composer's Send now (src/main.ts `sendQueuedNow`), minus the part that stops the user's run.
+///
+/// Two paths, chosen from the host's own state:
+/// - The task is idle: send THAT entry now, through the same delivery the headless drain uses, so
+///   this works on a desktop host too. The webview drains its own queue, but only on a run end or a
+///   `queue-changed` Tauri event, and a phone's edit raises neither.
+/// - The task is running: steer the entry's text into the running turn (the `task.steer` path) and
+///   take it out as delivered.
+///
+/// Deliberate divergence: the desktop's Send now STOPS a running task when it cannot steer (a team,
+/// or an entry with attachments). A button in a phone's queue list must not silently kill a run, so
+/// this refuses instead and the phone offers Stop as its own explicit step.
+#[derive(Debug, PartialEq)]
+struct QueueTake {
+    session_id: String,
+    id: String,
+}
+
+fn parse_queue_take(params: &Value) -> Result<Box<dyn Run>> {
+    Ok(Box::new(QueueTake { session_id: id_param(params, "sessionId")?, id: id_param(params, "id")? }))
+}
+
+/// Why this entry cannot be sent now, or `None` when it can. Split out so the refusals are one
+/// readable list and a test can drive them without a store write.
+fn take_refusal(entries: &[message_queue::QueuedMessage], id: &str, running: bool, leads_team: bool) -> Result<usize> {
+    let index = entries.iter().position(|entry| entry.id == id).ok_or("This queued message was already sent or removed.")?;
+    let entry = &entries[index];
+    if running {
+        // Steering is text only; the running turn has no way to take files in mid-flight.
+        if entry.attachments.as_array().is_some_and(|items| !items.is_empty()) {
+            return Err("Messages with attachments are sent after the run; stop the run first to send this one now.".into());
+        }
+        if leads_team {
+            return Err("This task leads a team; stop the run first to send this one now.".into());
+        }
+    } else if index > 0 {
+        // Sending a different message than the one the user tapped would be worse than an error,
+        // and reordering behind their back is their call (`queue.reorder`).
+        return Err("Move this message up first; the task sends its queue in order.".into());
+    }
+    Ok(index)
+}
+
+impl Run for QueueTake {
+    fn run<'a>(self: Box<Self>, ctx: Ctx<'a>) -> Reply<'a> {
+        Box::pin(async move {
+            let QueueTake { session_id, id } = *self;
+            let (full_access, device_full) = (ctx.full_access, super::files::device_from_has_full(ctx.app, ctx.from));
+            let store = ctx.state().store.clone();
+            // One blocking read for every decision that needs the database, so the checks and the
+            // entry they describe cannot disagree.
+            let plan = crate::blocking({
+                let (store, session) = (store.clone(), session_id.clone());
+                move || {
+                    let store = store.lock().map_err(|e| e.to_string())?;
+                    let task = drivable_session_from(&store, &session, device_full, full_access)?;
+                    queue_edit_allowed(&store, &task, full_access)?;
+                    // The same reasons the drain waits for: an archived task or a usage limit takes
+                    // no new turn, so there is nothing to send into.
+                    if task.archived {
+                        return Err("This task is archived.".into());
+                    }
+                    let now = crate::storage::now();
+                    if task.limited_at.is_some() && task.limited_until.is_none_or(|until| until > now) {
+                        return Err("This task is at its usage limit; it sends its queue once the limit resets.".into());
+                    }
+                    if message_queue::is_queue_held(&session) {
+                        return Err("This task's queue is held; resume it first.".into());
+                    }
+                    let entries = message_queue::list(&store, Some(&session))?;
+                    let leads_team = crate::architect::leads_team(&store, &session)?;
+                    Ok((entries, leads_team))
+                }
+            })
+            .await?;
+            let (entries, leads_team) = plan;
+            // Read the live agent set last, so a run that started or stopped since decides which path
+            // this takes rather than a stale answer.
+            let running = crate::run_requests::lock_agents(&ctx.state().agents).map_err(|e| e.to_string())?.contains_key(&session_id);
+            let index = take_refusal(&entries, &id, running, leads_team)?;
+            let text = entries[index].text.clone();
+            if running {
+                // The `task.steer` path: same validation, same refusals, and it reports a run that
+                // ended first. The entry stays queued when the steer fails.
+                message_queue::steer_task(ctx.app.clone(), ctx.state(), session_id.clone(), text).await?;
+                // As delivered, not removed: the queue's delivery count moves, so a stale Undo is
+                // refused, exactly as the desktop's own steer of a queued entry does.
+                crate::blocking(move || {
+                    let store = store.lock().map_err(|e| e.to_string())?;
+                    message_queue::remove_delivered(&store, &id)
+                })
+                .await?;
+            } else {
+                let store = ctx.state().store.clone();
+                // The queue's own claim decides: a racing drain loses rather than sending twice.
+                let taken = crate::blocking(move || {
+                    let store = store.lock().map_err(|e| e.to_string())?;
+                    message_queue::take(&store, &id)
+                })
+                .await?;
+                // Restores the entry and holds the queue if the launch fails, so it is never lost.
+                crate::headless::send_queued(ctx.app, &session_id, &taken).await?;
+            }
+            let store = ctx.state().store.clone();
+            let listed = session_id.clone();
+            let after = crate::blocking(move || {
+                let store = store.lock().map_err(|e| e.to_string())?;
+                message_queue::list(&store, Some(&listed))
+            })
+            .await?;
+            let _ = ctx.app.emit("queue-changed", json!({ "sessionId": session_id }));
+            Ok(queue_reply(&after))
+        })
     }
 }
 
@@ -1267,6 +1387,62 @@ mod tests {
 
     fn queue_ids(store: &crate::storage::Store, session: &str) -> Vec<String> {
         message_queue::list(store, Some(session)).unwrap().into_iter().map(|entry| entry.id).collect()
+    }
+
+    /// `queue.take` is a queue edit with a send: Control, and it never takes a start or the
+    /// background lane, so it cannot hold a Stop up.
+    #[test]
+    fn queue_take_is_a_control_write_on_the_ordered_lane() {
+        let method = super::super::find("queue.take").unwrap();
+        assert_eq!(method.access, Access::Control);
+        assert!(!method.read_only);
+        assert_eq!(super::super::lane_for("queue.take"), None);
+        assert_eq!(super::super::parse("queue.take", &json!({"sessionId": "s1", "id": "q1"})).unwrap().map(|p| format!("{:?}", p.call)), Ok("QueueTake { session_id: \"s1\", id: \"q1\" }".into()));
+        assert!(super::super::parse("queue.take", &json!({"sessionId": "s1"})).unwrap().is_err(), "no id");
+        assert!(super::super::parse("queue.take", &json!({"id": "q1"})).unwrap().is_err(), "no session");
+        assert!(super::super::parse("queue.take", &json!({"sessionId": "a b", "id": "q1"})).unwrap().is_err(), "bad session");
+    }
+
+    /// The refusals, one table: which message, and why. Split out of the run so this needs no store.
+    #[test]
+    fn a_send_now_is_refused_for_the_reasons_the_queue_cannot_be_sent() {
+        let entry = |id: &str, attachments: Value| message_queue::QueuedMessage {
+            id: id.into(), session_id: "s1".into(), position: 0, text: "hi".into(), attachments, created_at: 1, updated_at: 1,
+        };
+        let plain = vec![entry("a", json!([])), entry("b", json!([]))];
+        // Idle: only the head, because sending a different message than the one tapped would be wrong.
+        assert_eq!(take_refusal(&plain, "a", false, false), Ok(0));
+        assert_eq!(take_refusal(&plain, "b", false, false).unwrap_err(), "Move this message up first; the task sends its queue in order.");
+        // Running: the head is steerable, so position does not matter.
+        assert_eq!(take_refusal(&plain, "b", true, false), Ok(1));
+        // Gone: the entry another client already sent.
+        assert_eq!(take_refusal(&plain, "zz", false, false).unwrap_err(), "This queued message was already sent or removed.");
+        // Running with attachments: a running turn cannot take files in mid-flight.
+        let with_file = vec![entry("a", json!([{"kind": "path", "path": "a.ts"}]))];
+        assert_eq!(take_refusal(&with_file, "a", true, false).unwrap_err(), "Messages with attachments are sent after the run; stop the run first to send this one now.");
+        // Running with a team: its workers run in full access, so a queue button never starts that.
+        assert_eq!(take_refusal(&plain, "a", true, true).unwrap_err(), "This task leads a team; stop the run first to send this one now.");
+        // Idle ignores the two running-only refusals, but still wants the head.
+        assert_eq!(take_refusal(&with_file, "a", false, true), Ok(0));
+    }
+
+    /// The gates come before anything is taken or sent, and a refusal leaves the queue untouched.
+    #[test]
+    fn a_send_now_checks_before_it_touches_the_queue() {
+        let source = include_str!("composer.rs");
+        let body = &source[source.find("impl Run for QueueTake").unwrap()..];
+        let body = &body[..body.find("\n}\n").unwrap()];
+        let gate = body.find("drivable_session_from(").expect("the task gate");
+        let policy = body.find("queue_edit_allowed(").expect("the mode and team gate");
+        let refusal = body.find("take_refusal(").expect("the entry refusals");
+        let take = body.find("message_queue::take(").expect("the take");
+        let send = body.find("crate::headless::send_queued(").expect("the send");
+        assert!(gate < policy && policy < refusal, "gates first");
+        assert!(refusal < take && refusal < send, "refusals before any send");
+        // A queue button never stops a run: the desktop's Send now does, and this deliberately does not.
+        assert!(!body.contains("stop_session") && !body.contains("architect_control"), "never stops the agent");
+        // The host drains itself rather than leaning on the webview's `queue-changed` handler.
+        assert!(!body.contains("headless::queue_changed"), "sends natively");
     }
 
     /// Round 21: a phone's queue edit drains a headless host's idle task only when that device

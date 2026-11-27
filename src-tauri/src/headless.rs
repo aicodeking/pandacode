@@ -458,28 +458,8 @@ pub(crate) fn drain_queue(app: tauri::AppHandle, session_id: String) {
         loop {
             if let Some(entry) = claim_next_queued(&app.state::<AppState>(), &session_id) {
                 let _ = app.emit("queue-changed", serde_json::json!({ "sessionId": session_id }));
-                let (context, image_ids) = crate::bots::gateway::queued_prompt(&entry.attachments);
-                let images = (!image_ids.is_empty()).then_some(image_ids);
                 println!("serve: sending the next queued message to {session_id}");
-                if let Err(error) = crate::send_message(
-                    app.clone(),
-                    app.state::<AppState>(),
-                    session_id.clone(),
-                    format!("{}{context}", entry.text),
-                    images,
-                    None,
-                )
-                .await
-                {
-                    // A failed launch puts the entry back first; no run ends, so the queue holds.
-                    let state = app.state::<AppState>();
-                    if let Ok(store) = state.store.lock() {
-                        if let Err(lost) = message_queue::restore(&store, &entry) {
-                            // The id, never the text: after a crash restart this goes to serve-restart.log.
-                            eprintln!("serve: queued message {} for {session_id} lost after a failed launch: {lost}", entry.id);
-                        }
-                    }
-                    hold_queue(&app, &session_id, "failed");
+                if let Err(error) = send_queued(&app, &session_id, &entry).await {
                     eprintln!("serve: couldn't send the next queued message: {error}");
                 }
             }
@@ -488,6 +468,26 @@ pub(crate) fn drain_queue(app: tauri::AppHandle, session_id: String) {
             }
         }
     });
+}
+
+/// Starts a run with one queued entry, its attachments folded in as the composer's Document and
+/// image context. A failed launch puts the entry back and holds the queue: no run end follows, so
+/// nothing else would ever retry it. Shared by the drain above and a phone's `queue.take`, so both
+/// deliver an entry exactly the same way.
+pub(crate) async fn send_queued(app: &tauri::AppHandle, session_id: &str, entry: &message_queue::QueuedMessage) -> crate::Result<()> {
+    let (context, image_ids) = crate::bots::gateway::queued_prompt(&entry.attachments);
+    let images = (!image_ids.is_empty()).then_some(image_ids);
+    if let Err(error) = crate::send_message(app.clone(), app.state::<AppState>(), session_id.to_owned(), format!("{}{context}", entry.text), images, None).await {
+        if let Ok(store) = app.state::<AppState>().store.lock() {
+            if let Err(lost) = message_queue::restore(&store, entry) {
+                // The id, never the text: after a crash restart this goes to serve-restart.log.
+                eprintln!("serve: queued message {} for {session_id} lost after a failed launch: {lost}", entry.id);
+            }
+        }
+        hold_queue(app, session_id, "failed");
+        return Err(error.to_string());
+    }
+    Ok(())
 }
 
 fn claim_next_queued(state: &AppState, session_id: &str) -> Option<message_queue::QueuedMessage> {
