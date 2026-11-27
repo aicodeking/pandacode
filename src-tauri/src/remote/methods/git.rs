@@ -851,7 +851,11 @@ async fn open_pull(ctx: Ctx<'_>, this: PullCreate) -> Result<Value> {
     let pin_root = root.clone();
     crate::blocking(move || crate::github::pull_create_repo(&pin_root, trust)).await?;
     let (title, body, draft) = (this.title, this.body, this.draft);
-    let link = crate::blocking(move || crate::push_and_open_pull(&root, &title, &body, &base, draft, trust)).await?;
+    let project = task.project_id.clone();
+    let link = crate::blocking(move || {
+        let token = crate::github_token(&project)?;
+        crate::push_and_open_pull(&root, &title, &body, &base, draft, trust, token.as_deref())
+    }).await?;
     let store = ctx.state().store.clone();
     let session_id = this.session_id;
     let saved = link.clone();
@@ -1292,7 +1296,7 @@ mod tests {
         let marker = root.parent().unwrap().join("filter-ran");
         std::fs::write(root.join(".gitattributes"), "* filter=x\n").unwrap();
         assert!(Command::new("git").args(["config", "filter.x.clean", &format!("touch '{}'; cat", marker.display())]).current_dir(&root).output().unwrap().status.success());
-        let refused = crate::push_and_open_pull(&root, "T", "", "main", false, Trust::phone(false)).unwrap_err();
+        let refused = crate::push_and_open_pull(&root, "T", "", "main", false, Trust::phone(false), None).unwrap_err();
         assert!(refused.contains("filter.x.clean") && refused.contains("Full access"), "{refused}");
         assert!(!marker.exists(), "no filter ran");
         // The phone's status view switches the filter off instead of refusing.

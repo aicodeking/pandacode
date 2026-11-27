@@ -8,13 +8,15 @@ use std::{
 };
 
 /// Writes the login files `harness` needs and returns environment variables for the agent
-/// process. `program` is the harness executable installed on the machine. Called before
-/// every run. Never logs secret values.
+/// process. `program` is the harness executable installed on the machine. `github_pin`
+/// pins the GitHub account a project uses (`login@host`); None keeps gh's active
+/// account. Called before every run. Never logs secret values.
 pub(crate) fn push(
     sandbox: &dyn Sandbox,
     native: &str,
     harness: &str,
     program: &str,
+    github_pin: Option<&str>,
 ) -> Result<Vec<(String, String)>> {
     if !["claude", "glm", "mimo", "codex", "opencode"].contains(&harness) {
         return Err(format!("Unsupported cloud agent harness '{harness}'."));
@@ -29,9 +31,11 @@ pub(crate) fn push(
         "opencode" => push_opencode(sandbox, native, &home, &remote_home, program, &export_host_opencode)?,
         _ => return Err(format!("Unsupported cloud agent harness '{harness}'.")),
     }
-    if let Some(token) = local_gh_token() {
-        configure_github_helper(sandbox, native)?;
-        env.push(("GH_TOKEN".into(), token));
+    if let Some(token) = local_gh_token(github_pin) {
+        env.push(("GH_TOKEN".into(), token.clone()));
+        // gh reads GH_TOKEN for github.com only; the twin covers Enterprise hosts.
+        env.push(("GH_ENTERPRISE_TOKEN".into(), token.clone()));
+        credential_helper(helper_host(github_pin), &mut env);
     }
     if let Some(value) = global_git_config("user.name") {
         env.push(("GIT_AUTHOR_NAME".into(), value.clone()));
@@ -295,7 +299,13 @@ fn export_host_opencode() -> Option<String> {
     )
 }
 
-fn local_gh_token() -> Option<String> {
+/// The pinned account's own token, or gh's active one. A pin names `login@host` and
+/// resolves through the shared fail-closed path (so a stale pin skips the export
+/// instead of another account's token); None keeps gh's default resolution.
+fn local_gh_token(pin: Option<&str>) -> Option<String> {
+    if let Some(pin) = pin {
+        return crate::github_accounts::token_for(Some(pin)).ok().flatten();
+    }
     let mut command = Command::new("gh");
     command.args(["auth", "token"]);
     let output = crate::workspace::run_process(
@@ -315,17 +325,28 @@ fn local_gh_token() -> Option<String> {
     (!token.is_empty()).then_some(token)
 }
 
-fn configure_github_helper(sandbox: &dyn Sandbox, native: &str) -> Result<()> {
-    let helper = "!f() { [ \"$1\" = get ] || exit 0; host=; while IFS= read -r line; do case \"$line\" in host=*) host=${line#host=};; esac; done; [ \"$host\" = github.com ] || exit 0; printf 'username=x-access-token\\npassword=%s\\n' \"$GH_TOKEN\"; }; f";
-    let command = format!(
-        "git config --global --replace-all credential.helper {}",
-        crate::cloud::shell_quote(helper)
+/// The host a pinned project's git credential helper answers for. A pin names its host
+/// (`login@host`); anything else keeps github.com. Only hostname characters pass, so a
+/// malformed pin can never carry shell syntax into the helper script.
+fn helper_host(pin: Option<&str>) -> &str {
+    let Some((_, Some(host))) = pin.map(crate::github_accounts::split_pin) else { return "github.com" };
+    let sane = !host.is_empty() && host.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-'));
+    if sane { host } else { "github.com" }
+}
+
+/// A git credential helper that answers `host` with the run's own `$GH_TOKEN`, carried
+/// in the run's environment (`GIT_CONFIG_KEY_0`, git 2.31+). Nothing is written to the
+/// machine's global git config, so overlapping runs can never rewrite each other's
+/// helper, and the helper always matches the token this run exported.
+fn credential_helper(host: &str, env: &mut Vec<(String, String)>) {
+    let helper = format!(
+        "!f() {{ [ \"$1\" = get ] || exit 0; host=; while IFS= read -r line; do case \"$line\" in host=*) host=${{line#host=}};; esac; done; [ \"$host\" = {host} ] || exit 0; printf 'username=x-access-token\\npassword=%s\\n' \"$GH_TOKEN\"; }}; f"
     );
-    if command.len() >= 64 * 1024 {
-        return Err("Cloud GitHub credential helper command exceeded the sandbox limit.".into());
-    }
-    crate::cloud::sandbox::checked(sandbox.exec(native, &command, Duration::from_secs(30))?)?;
-    Ok(())
+    // The only GIT_CONFIG_* entries the run env carries; another would raise
+    // GIT_CONFIG_COUNT with the next index.
+    env.push(("GIT_CONFIG_COUNT".into(), "1".into()));
+    env.push(("GIT_CONFIG_KEY_0".into(), "credential.helper".into()));
+    env.push(("GIT_CONFIG_VALUE_0".into(), helper));
 }
 
 fn global_git_config(key: &str) -> Option<String> {
@@ -349,6 +370,16 @@ mod tests {
     use super::*;
     use crate::cloud::{sandbox::Info, Machine};
     use std::{fs, os::unix::fs::PermissionsExt, path::PathBuf, process::Command, time::Duration};
+
+    #[test]
+    fn the_credential_helper_answers_the_pinned_host_only() {
+        assert_eq!(helper_host(None), "github.com");
+        assert_eq!(helper_host(Some("alice")), "github.com", "a bare pin names the default host");
+        assert_eq!(helper_host(Some("corp@ghe.acme.dev")), "ghe.acme.dev");
+        assert_eq!(helper_host(Some("x@bad host")), "github.com", "non-hostname characters never reach the script");
+        assert_eq!(helper_host(Some("x@$(touch /tmp/pwned)")), "github.com");
+        assert_eq!(helper_host(Some("x@")), "github.com");
+    }
 
     struct TempDir(PathBuf);
     impl TempDir {

@@ -216,6 +216,7 @@ fn soft_instructions_are_idempotent_on_resumes_and_claude_uses_only_tools() {
             skill: None,
             goal: None,
             codex_settings: None,
+            github_pin: None,
             images: Vec::new(),
             no_fresh_resume_fallback: false,
         };

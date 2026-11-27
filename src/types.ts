@@ -12,7 +12,9 @@ export interface WorktreeStatus { exists: boolean; branch: string; changes: numb
 export interface WorktreeMerge { branch: string; target: string; commits: number; switchedFrom: string | null; }
 export interface WorktreeRemoval { removed: boolean; branch: string; branchDeleted: boolean; note: string; }
 export interface GithubRepository { nameWithOwner: string; defaultBranch: string; url: string; }
-export interface GithubStatus { installed: boolean; version: string; authenticated: boolean; login: string | null; repo: GithubRepository | null; error: string | null; }
+export interface GithubStatus { installed: boolean; version: string; authenticated: boolean; login: string | null; repo: GithubRepository | null; error: string | null; accounts?: GithubAccount[]; }
+export interface GithubAccount { login: string; host: string; active: boolean; }
+export interface GithubAccounts { accounts: GithubAccount[]; pinned: string | null; }
 export interface GithubItem { kind: 'issue' | 'pull'; number: number; title: string; state: string; url: string; author: string; }
 export interface GithubIssue { number: number; title: string; body: string; state: string; url: string; labels: string[]; assignees: string[]; updatedAt: string; }
 export interface GithubReference { kind: 'issue' | 'pull'; number: number; title: string; state: string; url: string; author: string; body: string; labels: string[]; truncated: boolean; }

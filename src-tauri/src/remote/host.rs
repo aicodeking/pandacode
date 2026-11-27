@@ -846,7 +846,13 @@ pub(crate) async fn task_root(state: &AppState, session_id: &str) -> Result<Path
     .await
 }
 
-pub(crate) async fn linked_pull(state: &AppState, session_id: &str) -> Result<(PathBuf, i64)> {
+/// The task's project's pinned GitHub account token. A pin that cannot resolve fails
+/// the call instead of switching identity; None keeps gh's active account.
+fn pinned_token(project: &str) -> Result<Option<String>> {
+    crate::github_accounts::token_for(crate::github_accounts::pinned_login(project).as_deref())
+}
+
+pub(crate) async fn linked_pull(state: &AppState, session_id: &str) -> Result<(PathBuf, i64, String)> {
     let store = state.store.clone();
     let session_id = session_id.to_owned();
     crate::blocking(move || {
@@ -854,7 +860,7 @@ pub(crate) async fn linked_pull(state: &AppState, session_id: &str) -> Result<(P
         let task = workspace_session_from(&store, &session_id)?;
         let number = task.pull_request.as_ref().map(|link| link.number).ok_or("This task has no linked pull request.")?;
         let root = store.workspace_root(&task.project_id, Some(&session_id))?;
-        Ok((root, number))
+        Ok((root, number, task.project_id))
     })
     .await
 }
@@ -870,7 +876,7 @@ async fn pull_repo(state: &AppState, session_id: &str, root: &Path) -> Result<St
     .await
 }
 
-pub(crate) async fn optional_pull(state: &AppState, session_id: &str) -> Result<Option<(PathBuf, i64)>> {
+pub(crate) async fn optional_pull(state: &AppState, session_id: &str) -> Result<Option<(PathBuf, i64, String)>> {
     let store = state.store.clone();
     let session_id = session_id.to_owned();
     crate::blocking(move || {
@@ -878,7 +884,7 @@ pub(crate) async fn optional_pull(state: &AppState, session_id: &str) -> Result<
         let task = workspace_session_from(&store, &session_id)?;
         let Some(number) = task.pull_request.map(|link| link.number) else { return Ok(None) };
         let root = store.workspace_root(&task.project_id, Some(&session_id))?;
-        Ok(Some((root, number)))
+        Ok(Some((root, number, task.project_id)))
     })
     .await
 }
@@ -1715,14 +1721,16 @@ async fn run_one(app: &tauri::AppHandle, from: &str, call: Call, full_access: bo
             Ok(json!({}))
         }
         Call::Pull { session_id } => {
-            let Some((root, number)) = optional_pull(&state, &session_id).await? else { return Ok(json!({"pull": null })) };
+            let Some((root, number, project)) = optional_pull(&state, &session_id).await? else { return Ok(json!({"pull": null })) };
             let repo = pull_repo(&state, &session_id, &root).await?;
-            let pull = pull_detail_cached(&session_id, root, repo, number, crate::workspace::Trust::phone(full_access)).await?;
+            let token = crate::blocking(move || pinned_token(&project)).await?;
+            let pull = pull_detail_cached(&session_id, root, repo, number, crate::workspace::Trust::phone(full_access), token).await?;
             Ok(json!({"pull": pull}))
         }
         Call::PullDiff { session_id, path } => {
-            let (root, number) = linked_pull(&state, &session_id).await?;
+            let (root, number, project) = linked_pull(&state, &session_id).await?;
             let repo = pull_repo(&state, &session_id, &root).await?;
+            let token = crate::blocking(move || pinned_token(&project)).await?;
             if let Some(path) = path {
                 // Secret files stay hidden below Full, as in `task.diff`.
                 let full = super::grants::scope_name(app, from) == Some("full");
@@ -1736,29 +1744,30 @@ async fn run_one(app: &tauri::AppHandle, from: &str, call: Call, full_access: bo
                     // Hard-linked locally (Round 12): left out for every device, as in `task.diff`.
                     return Ok(hard_linked_pull_patch());
                 }
-                let reply = pull_diff_cached(&session_id, root.clone(), repo, number, path, crate::workspace::Trust::phone(full_access)).await?;
+                let reply = pull_diff_cached(&session_id, root.clone(), repo, number, path, crate::workspace::Trust::phone(full_access), token).await?;
                 if full {
                     Ok(reply)
                 } else {
                     crate::blocking(move || Ok(without_secret_pull_patch(&root, reply))).await
                 }
             } else {
-                let pull = pull_detail_cached(&session_id, root, repo, number, crate::workspace::Trust::phone(full_access)).await?;
+                let pull = pull_detail_cached(&session_id, root, repo, number, crate::workspace::Trust::phone(full_access), token).await?;
                 Ok(fit_pull_files(pull["files"].clone()))
             }
         }
         Call::PullMerge { session_id, method } => {
             // Round 23: background lane, so a retry may arrive while the first merge runs.
             let _merging = claim_merge(&session_id)?;
-            let (root, number) = linked_pull(&state, &session_id).await?;
+            let (root, number, project) = linked_pull(&state, &session_id).await?;
             crate::github_pull::merge_flag(&method)?;
             let repo = pull_repo(&state, &session_id, &root).await?;
             let store = state.store.clone();
             let cache_session_id = session_id.clone();
             let trust = crate::workspace::Trust::phone(full_access);
             crate::blocking(move || {
+                let token = pinned_token(&project)?;
                 // `merge_as` refuses a checkout whose config names a program while the switch is off.
-                let link = crate::github_pull::merge_as(&root, Some(&repo), number, &method, trust)?;
+                let link = crate::github_pull::merge_as(&root, Some(&repo), token.as_deref(), number, &method, trust)?;
                 store.lock().map_err(|e| e.to_string())?.set_task_link(&session_id, "pull", Some(&link)).map(|_| ())
             })
             .await?;
@@ -2680,7 +2689,7 @@ fn pull_flight(key: PullFlightKey) -> Arc<tokio::sync::Mutex<()>> {
     })
 }
 
-async fn pull_detail_cached(session_id: &str, root: PathBuf, repo: String, number: i64, trust: crate::workspace::Trust) -> Result<Value> {
+async fn pull_detail_cached(session_id: &str, root: PathBuf, repo: String, number: i64, trust: crate::workspace::Trust, token: Option<String>) -> Result<Value> {
     let key = (session_id.to_owned(), number);
     if let Some(value) = with_pull_cache(|cache| cached_pull_entry(&mut cache.details, &key)) {
         return Ok(value);
@@ -2692,7 +2701,7 @@ async fn pull_detail_cached(session_id: &str, root: PathBuf, repo: String, numbe
         Ok(value) => return Ok(value),
         Err(started) => started,
     };
-    let mut value = serde_json::to_value(crate::blocking(move || crate::github_pull::detail_as(&root, Some(&repo), number, trust)).await?)
+    let mut value = serde_json::to_value(crate::blocking(move || crate::github_pull::detail_as(&root, Some(&repo), token.as_deref(), number, trust)).await?)
         .map_err(|error| error.to_string())?;
     fit_pull_detail(&mut value);
     with_pull_cache(|cache| {
@@ -2703,7 +2712,7 @@ async fn pull_detail_cached(session_id: &str, root: PathBuf, repo: String, numbe
     Ok(value)
 }
 
-async fn pull_diff_cached(session_id: &str, root: PathBuf, repo: String, number: i64, path: String, trust: crate::workspace::Trust) -> Result<Value> {
+async fn pull_diff_cached(session_id: &str, root: PathBuf, repo: String, number: i64, path: String, trust: crate::workspace::Trust, token: Option<String>) -> Result<Value> {
     let key = (session_id.to_owned(), number, path.clone());
     if let Some(value) = with_pull_cache(|cache| cached_pull_entry(&mut cache.diffs, &key)) {
         return Ok(value);
@@ -2715,7 +2724,7 @@ async fn pull_diff_cached(session_id: &str, root: PathBuf, repo: String, number:
         Err(started) => started,
     };
     let value = crate::blocking(move || {
-        let diff = crate::github_pull::diff_as(&root, Some(&repo), number, trust)?;
+        let diff = crate::github_pull::diff_as(&root, Some(&repo), token.as_deref(), number, trust)?;
         let (patch, truncated) = pull_file_patch(&diff.patch, &path, diff.truncated);
         let (patch, truncated) = bounded_diff(patch, truncated);
         Ok(json!({"patch": patch, "truncated": truncated}))
@@ -2778,10 +2787,10 @@ async fn detect_pull(app: &tauri::AppHandle, state: &AppState, session_id: &str,
         if repos.is_empty() {
             return Ok(None);
         }
-        Ok(Some((root, repos, turn, started, task.pull_request.map(|link| link.number), latest_message_id)))
+        Ok(Some((root, task.project_id, repos, turn, started, task.pull_request.map(|link| link.number), latest_message_id)))
     })
     .await?;
-    let Some((root, repos, turn, started, existing_number, latest_message_id)) = context else { return Ok(json!({"pull": null })) };
+    let Some((root, project, repos, turn, started, existing_number, latest_message_id)) = context else { return Ok(json!({"pull": null })) };
     if let Some(value) = cached_pull_detect(session_id, latest_message_id, existing_number) {
         return Ok(value);
     }
@@ -2790,12 +2799,14 @@ async fn detect_pull(app: &tauri::AppHandle, state: &AppState, session_id: &str,
     if let Some(value) = cached_pull_detect(session_id, latest_message_id, existing_number) {
         return Ok(value);
     }
+    let token = crate::blocking(move || pinned_token(&project)).await?;
     let detect_root = root.clone();
+    let detect_token = token.clone();
     let detection = crate::blocking(move || {
         // The branch alone: a full status would run the checkout's filters and enter submodules.
         let branch = crate::workspace::current_branch(&detect_root, trust).unwrap_or_default();
         // Each lookup is pinned to the repository in its link (never `gh repo view`).
-        crate::github_pull::detect_in_as(&detect_root, &repos, &turn, &branch, started, trust)
+        crate::github_pull::detect_in_as(&detect_root, &repos, &turn, &branch, started, detect_token.as_deref(), trust)
     })
     .await?;
     let Some(link) = detection else {
@@ -2809,7 +2820,7 @@ async fn detect_pull(app: &tauri::AppHandle, state: &AppState, session_id: &str,
         return Ok(value);
     }
     let repo = crate::github_pull::pinned_repo(&root, Some(&link.url)).map_err(|error| error.to_string())?;
-    let pull = pull_detail_cached(session_id, root, repo, link.number, trust).await?;
+    let pull = pull_detail_cached(session_id, root, repo, link.number, trust, token).await?;
     let store = state.store.clone();
     let session_id_owned = session_id.to_owned();
     let saved_link = link.clone();

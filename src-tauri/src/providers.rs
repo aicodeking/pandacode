@@ -170,6 +170,9 @@ pub struct RunConfig {
     pub goal: Option<crate::goal_state::GoalRequest>,
     /// Validated per-task settings applied before any new Codex turn.
     pub codex_settings: Option<Value>,
+    /// The project's GitHub account pin (`login@host`): the harness runs gh and git as
+    /// that account. None keeps gh's active account.
+    pub github_pin: Option<String>,
     /// Only native-validated, managed screenshot paths; never arbitrary web content.
     pub images: Vec<PathBuf>,
     /// Set when an account-pool rotation rewrites the prompt into a resume.
@@ -4634,6 +4637,14 @@ async fn run_inner(
     } else {
         None
     };
+    // Apply the project pin after provider and connection environment overrides.
+    // A stale pin retains gh's active account, as warm agents and terminals do.
+    if let Some(pin) = &config.github_pin {
+        if let Ok(Some(token)) = crate::github_accounts::token_for(Some(pin)) {
+            command.env("GH_TOKEN", &token);
+            command.env("GH_ENTERPRISE_TOKEN", &token);
+        }
+    }
     run_process_with_tools(
         config,
         sink,
@@ -5674,6 +5685,7 @@ mod tests {
             skill: None,
             goal: None,
             codex_settings: None,
+            github_pin: None,
             images: Vec::new(),
             no_fresh_resume_fallback: false,
         }
@@ -8133,6 +8145,7 @@ sleep 0.3; echo "$$" > "$1"; exit 0"#;
                 skill: None,
                 goal: None,
                 codex_settings: None,
+                github_pin: None,
                 images: Vec::new(),
                 no_fresh_resume_fallback: false,
             };

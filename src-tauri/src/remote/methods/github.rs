@@ -31,7 +31,7 @@
 //! `github.startTask` passes the caller's trust to `remote::start`, which refuses an untrusted
 //! checkout before its first Git call. `github.comment` changes no checkout.
 use super::{bounded_text, id_param, linked_pull, name_param, text_param, Access, Ctx, Method, Reply, Run, PAGE_BUDGET};
-use crate::github::{flag, names, review_pull_as, run_gh_as, state_of, text, ReviewEvent, TIMEOUT};
+use crate::github::{flag, names, review_pull_as, run_gh_token_as, state_of, text, ReviewEvent, TIMEOUT};
 use crate::github_hub;
 use crate::workspace::{Capture, Trust};
 use crate::{AppState, Result};
@@ -105,17 +105,19 @@ fn comment_args(repo: &str, pull: bool, number: i64, body: &str) -> Vec<String> 
     vec![command.to_owned(), "comment".to_owned(), number.to_string(), flag("repo", repo), flag("body", body)]
 }
 
-/// `gh` in the project's checkout (`root`) through [`crate::github::run_gh_as`], with
+/// `gh` in the project's checkout (`root`) through [`crate::github::run_gh_token_as`], with
 /// [`workspace::tool_git_env`] for the `git` it runs there when `trust` is an untrusted phone.
-fn gh_in(root: &Path, args: &[&str], trust: Trust) -> Result<Capture> {
-    run_gh_as(root, args, TIMEOUT, trust)
+fn gh_in(root: &Path, project: &str, args: &[&str], trust: Trust) -> Result<Capture> {
+    let token = crate::github_token(project)?;
+    run_gh_token_as(root, token.as_deref(), args, TIMEOUT, trust)
 }
 
 /// `crate::github::view` in the project's repository (`--repo=…`, see [`base_repo`])
 /// with the caller's trust.
-fn view(root: &Path, kind: &str, number: i64, fields: &str, trust: Trust) -> Result<Value> {
+fn view(root: &Path, project: &str, kind: &str, number: i64, fields: &str, trust: Trust) -> Result<Value> {
     let repo = base_repo(root)?;
-    crate::github::view_in_as(root, Some(&repo), kind, number, fields, trust)
+    let token = crate::github_token(project)?;
+    crate::github::view_in_as(root, Some(&repo), token.as_deref(), kind, number, fields, trust)
 }
 
 fn positive(params: &Value, key: &str) -> Result<i64> {
@@ -193,12 +195,15 @@ impl Run for List {
     fn run<'a>(self: Box<Self>, ctx: Ctx<'a>) -> Reply<'a> {
         Box::pin(async move {
             let repo = project_repo(&ctx, &self.project_id).await?;
+            let project = self.project_id.clone();
             let kind = self.kind;
             let items: Vec<Value> = crate::blocking(move || {
+                // The project's pinned GitHub account; a pin that cannot resolve fails the call.
+                let token = crate::github_accounts::token_for(crate::github_accounts::pinned_login(&project).as_deref())?;
                 let values = match kind {
-                    ListKind::Issues => github_hub::issues(&repo)?.into_iter().map(|item| serde_json::to_value(item).unwrap_or_default()).collect(),
-                    ListKind::Pulls => github_hub::pulls(&repo)?.into_iter().map(|item| serde_json::to_value(item).unwrap_or_default()).collect(),
-                    ListKind::Runs => github_hub::runs(&repo)?.into_iter().map(|item| serde_json::to_value(item).unwrap_or_default()).collect(),
+                    ListKind::Issues => github_hub::issues(&repo, token.as_deref())?.into_iter().map(|item| serde_json::to_value(item).unwrap_or_default()).collect(),
+                    ListKind::Pulls => github_hub::pulls(&repo, token.as_deref())?.into_iter().map(|item| serde_json::to_value(item).unwrap_or_default()).collect(),
+                    ListKind::Runs => github_hub::runs(&repo, token.as_deref())?.into_iter().map(|item| serde_json::to_value(item).unwrap_or_default()).collect(),
                 };
                 Ok(values)
             })
@@ -371,18 +376,23 @@ impl Run for ItemCall {
             match self.item {
                 Item::Run(id) => {
                     let repo = project_repo(&ctx, &self.project_id).await?;
-                    let details = crate::blocking(move || github_hub::run_details(&repo, id)).await?;
+                    let project = self.project_id.clone();
+                    let details = crate::blocking(move || {
+                        let token = crate::github_accounts::token_for(crate::github_accounts::pinned_login(&project).as_deref())?;
+                        github_hub::run_details(&repo, id, token.as_deref())
+                    })
+                    .await?;
                     Ok(run_detail(id, details))
                 }
                 Item::Issue(number) => {
                     let (root, trust) = (project_root(&ctx, &self.project_id).await?, Trust::phone(ctx.full_access));
-                    let value = crate::blocking(move || view(&root, "issue", number, "number,title,state,url,author,body,labels,assignees,comments,createdAt,updatedAt", trust)).await?;
+                    let value = crate::blocking(move || view(&root, &self.project_id, "issue", number, "number,title,state,url,author,body,labels,assignees,comments,createdAt,updatedAt", trust)).await?;
                     Ok(issue_detail("issue", &value))
                 }
                 Item::Pull(number) => {
                     let (root, trust) = (project_root(&ctx, &self.project_id).await?, Trust::phone(ctx.full_access));
                     let fields = "number,title,state,isDraft,url,author,body,labels,assignees,comments,createdAt,updatedAt,mergedAt,headRefName,baseRefName,reviewDecision,statusCheckRollup,additions,deletions";
-                    let value = crate::blocking(move || view(&root, "pull", number, fields, trust)).await?;
+                    let value = crate::blocking(move || view(&root, &self.project_id, "pull", number, fields, trust)).await?;
                     Ok(issue_detail("pull", &value))
                 }
             }
@@ -434,11 +444,12 @@ impl Run for Search {
     fn run<'a>(self: Box<Self>, ctx: Ctx<'a>) -> Reply<'a> {
         Box::pin(async move {
             let (root, trust) = (project_root(&ctx, &self.project_id).await?, Trust::phone(ctx.full_access));
+            let project = self.project_id;
             let query = self.query;
             let items = crate::blocking(move || {
                 // Only the project's own repository's results, whatever the query matched.
                 let repo = github_hub::base_repo(&root).ok_or("This project has no GitHub remote.")?;
-                let items = crate::github::search_as(&root, &query, SEARCH_LIMIT, trust)?;
+                let items = crate::github::search_as(&root, crate::github_token(&project)?.as_deref(), &query, SEARCH_LIMIT, trust)?;
                 Ok(items.into_iter().filter(|item| in_repo(&item.url, &repo)).collect::<Vec<_>>())
             })
             .await?;
@@ -482,7 +493,7 @@ impl Run for Comment {
             super::once_per_action(ctx.from, "github.comment", &target, send_id.as_deref(), async move {
                 let url = crate::blocking(move || {
                     let args = comment_args(&base_repo(&root)?, pull, number, &body);
-                    let capture = gh_in(&root, &args.iter().map(String::as_str).collect::<Vec<_>>(), trust)?;
+                    let capture = gh_in(&root, &project_id, &args.iter().map(String::as_str).collect::<Vec<_>>(), trust)?;
                     Ok(String::from_utf8_lossy(&capture.bytes).lines().map(str::trim).find(|line| line.starts_with("https://")).unwrap_or_default().to_owned())
                 })
                 .await?;
@@ -527,8 +538,8 @@ impl Run for Review {
             let trust = Trust::phone(ctx.full_access);
             super::once_per_action(ctx.from, "pull.review", &session_id, send_id.as_deref(), async {
                 // The task's linked pull request, in the task's checkout, as `task.pull` reads it.
-                let (root, number) = linked_pull(&ctx.state(), &session_id).await?;
-                crate::blocking(move || review_pull_as(&root, &base_repo(&root)?, number, event, &body, trust)).await?;
+                let (root, number, project) = linked_pull(&ctx.state(), &session_id).await?;
+                crate::blocking(move || review_pull_as(&root, &base_repo(&root)?, crate::github_token(&project)?.as_deref(), number, event, &body, trust)).await?;
                 // The 30 s pull cache would otherwise show the timeline from before the review.
                 super::invalidate_pull_cache(&session_id);
                 Ok(json!({"number": number}))
@@ -612,7 +623,8 @@ async fn solve_issue(app: &tauri::AppHandle, from: &str, full_access: bool, task
     let root = project_root_in(app, &task.project_id).await?;
     let number = task.issue;
     let trust = Trust::phone(full_access);
-    let issue = crate::blocking(move || view(&root, "issue", number, "number,title,state,url", trust)).await?;
+    let project = task.project_id.clone();
+    let issue = crate::blocking(move || view(&root, &project, "issue", number, "number,title,state,url", trust)).await?;
     let title = text(&issue, "title");
     let mut params = task.start;
     params["prompt"] = json!(solve_prompt(number, &title));
@@ -743,12 +755,12 @@ mod tests {
         assert!(!code.contains("crate::github::view_as("), "no unpinned view");
         assert!(!code.contains("\"comment\", &number"), "comments go through comment_args");
         assert!(code.contains("comment_args(&base_repo(&root)?, pull, number, &body)"));
-        assert!(code.contains("review_pull_as(&root, &base_repo(&root)?, number, event, &body, trust)"));
+        assert!(code.contains("review_pull_as(&root, &base_repo(&root)?, crate::github_token(&project)?.as_deref(), number, event, &body, trust)"));
         // The issue and pull views and the Solve lookup all go through `view`.
         assert_eq!(code.matches("crate::blocking(move || view(&root, ").count(), 3);
         // Every other `gh` run in the checkout is `gh_in`'s comment, and `search_as` filters by the base repository.
         assert_eq!(code.matches("gh_in(&root").count(), 1);
-        assert_eq!(code.matches("run_gh_as(").count(), 1, "only gh_in itself");
+        assert_eq!(code.matches("run_gh_token_as(").count(), 1, "only gh_in itself");
         // `--repo=` reaches gh as one flag, ahead of user text, in both builders.
         let lib = include_str!("../../github.rs");
         let review = &lib[lib.find("fn pr_review_args(").unwrap()..];
@@ -785,7 +797,7 @@ mod tests {
         let source = include_str!("github.rs");
         let body = &source[source.find("impl Run for Review {").unwrap()..];
         let body = &body[..body.find("\n}\n").unwrap()];
-        assert!(body.contains("review_pull_as(&root, &base_repo(&root)?, number, event, &body, trust)"));
+        assert!(body.contains("review_pull_as(&root, &base_repo(&root)?, crate::github_token(&project)?.as_deref(), number, event, &body, trust)"));
         assert!(body.contains("Trust::phone(ctx.full_access)"));
         assert!(body.contains("once_per_action(ctx.from, \"pull.review\", &session_id, send_id.as_deref()"));
         assert!(!body.contains("run_gh("));

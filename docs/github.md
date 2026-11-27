@@ -9,6 +9,21 @@ connected as *you* with the repository and its default branch) and has one
 switch. Off means no `gh` process runs and no GitHub control appears. Projects
 whose remote is not on GitHub simply show nothing.
 
+A project can also pin one GitHub account of its own. When more than one account
+is signed in to `gh`, the GitHub view's header shows a chip listing every one of
+them, and the account you pick is the one that project's issues, pull requests
+and searches run as. The pin stores the account's login and host only (an
+Enterprise account pins with its host): each call resolves that account's token
+from your own `gh` keyring and hands it to the one `gh` process it starts, so
+PandaCode still stores no tokens. Default follows gh's own default account,
+including a GH_TOKEN exported into PandaCode's environment; a project pin
+always overrides it. That account also runs the project's listings in the
+GitHub view (its pull requests, issues and workflow runs) and every harness
+process a task of the project starts, so the agent's own `gh` and `git`
+calls and its terminal console act as the pinned account too. Only the
+repository browser (and cloning from it) keeps using `gh`'s active account,
+since what it lists belongs to that account.
+
 ## GitHub view
 
 The header's **GitHub** view (beside Conversation and Board) lists the repositories your
@@ -73,5 +88,6 @@ being on the base branch. The new pull request is linked to the task.
 `github.rs` runs `gh` with argument arrays, `--flag=value` for user text, a null
 stdin, prompts disabled, a 2 MiB output limit, and timeouts. `github_status`,
 `github_search`, `github_issues`, `github_resolve`, `github_refresh_links`,
-`github_create_pull_request`, and `set_task_link` are the only commands; links
-live in the `task_links` table beside the task.
+`github_create_pull_request`, `set_task_link`, and the account-pin pair
+`github_accounts`/`github_set_account` are the only commands; links live in the
+`task_links` table beside the task.

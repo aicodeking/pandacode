@@ -35,6 +35,7 @@ mod progress;
 mod file_preview;
 mod run_script;
 mod github;
+mod github_accounts;
 mod github_pull;
 mod github_hub;
 mod project_icon;
@@ -2294,6 +2295,7 @@ fn prepare_task_run_in_project(
         skill,
         goal: admission.goal,
         codex_settings: session.codex_settings,
+        github_pin: github_accounts::pinned_login(&session.project_id),
         no_fresh_resume_fallback: false,
     };
     // Read before `mark_started`, and restored like it, so a failure leaves no started mark.
@@ -2358,6 +2360,8 @@ fn prepare_cloud_attach(
         goal: None,
         codex_settings: session.codex_settings,
         no_fresh_resume_fallback: false,
+        // A cloud run's environment is pinned on its machine (credentials.rs), never here.
+        github_pin: None,
     };
     let mut agent = RunningAgent::new(tx, stopped);
     // A re-attached run has no team admission: whether it is a worker's comes from the store.
@@ -3984,21 +3988,46 @@ async fn project_icon(state: State<'_, AppState>, project_id: String) -> Result<
 async fn github_repos() -> Result<Vec<github_hub::HubRepo>> {
     blocking(github_hub::repos).await
 }
+/// The token for an optional project pin: None (no local project) keeps gh's active
+/// account, and a pin that cannot resolve fails the call instead of switching identity.
+fn optional_pin(project_id: Option<&str>) -> std::result::Result<Option<String>, String> {
+    match project_id {
+        Some(project) => github_token(project),
+        None => Ok(None),
+    }
+}
+
 #[tauri::command]
-async fn github_repo_pulls(repo: String) -> Result<Vec<github_hub::HubPull>> {
-    blocking(move || github_hub::pulls(&repo)).await
+async fn github_repo_pulls(repo: String, project_id: Option<String>) -> Result<Vec<github_hub::HubPull>> {
+    blocking(move || {
+        let token = optional_pin(project_id.as_deref())?;
+        github_hub::pulls(&repo, token.as_deref())
+    })
+    .await
 }
 #[tauri::command]
-async fn github_repo_issues(repo: String) -> Result<Vec<github_hub::HubIssue>> {
-    blocking(move || github_hub::issues(&repo)).await
+async fn github_repo_issues(repo: String, project_id: Option<String>) -> Result<Vec<github_hub::HubIssue>> {
+    blocking(move || {
+        let token = optional_pin(project_id.as_deref())?;
+        github_hub::issues(&repo, token.as_deref())
+    })
+    .await
 }
 #[tauri::command]
-async fn github_repo_runs(repo: String) -> Result<Vec<github_hub::HubRun>> {
-    blocking(move || github_hub::runs(&repo)).await
+async fn github_repo_runs(repo: String, project_id: Option<String>) -> Result<Vec<github_hub::HubRun>> {
+    blocking(move || {
+        let token = optional_pin(project_id.as_deref())?;
+        github_hub::runs(&repo, token.as_deref())
+    })
+    .await
 }
 #[tauri::command]
-async fn github_run_details(repo: String, id: i64) -> Result<github_hub::RunDetails> {
-    blocking(move || github_hub::run_details(&repo, id)).await
+async fn github_run_details(repo: String, id: i64, project_id: Option<String>) -> Result<github_hub::RunDetails> {
+    blocking(move || {
+        let token = optional_pin(project_id.as_deref())?;
+        github_hub::run_details(&repo, id, token.as_deref())
+    })
+    .await
 }
 /// Which local projects check out which GitHub repositories, by their `origin` remote.
 #[tauri::command]
@@ -4015,6 +4044,20 @@ async fn github_clone_repo(state: State<'_, AppState>, repo: String, parent: Str
     project
 }
 
+/// The token of the account a project is pinned to, resolved fresh from the user's own
+/// gh keyring; None keeps gh on its active account. The token never leaves the child env.
+fn github_token(project_id: &str) -> std::result::Result<Option<String>, String> {
+    github_accounts::token_for(github_accounts::pinned_login(project_id).as_deref())
+}
+
+/// The pinned account's token for a task's project, for surfaces that know only the
+/// session (the terminal console). None keeps gh's active account.
+pub(crate) fn session_github_token(app: &tauri::AppHandle, session_id: &str) -> Option<String> {
+    let state = app.try_state::<AppState>()?;
+    let project = state.store.lock().ok()?.session(session_id).ok()?.project_id;
+    github_accounts::token_for(github_accounts::pinned_login(&project).as_deref()).ok().flatten()
+}
+
 #[tauri::command]
 async fn github_status(
     state: State<'_, AppState>,
@@ -4022,7 +4065,22 @@ async fn github_status(
     session_id: Option<String>,
 ) -> Result<github::GithubStatus> {
     let root = state.root(&project_id, session_id.as_deref())?;
-    blocking(move || Ok(github::status(&root))).await
+    blocking(move || {
+        // An unresolvable pin is the status, not a failed command: the message names the
+        // account, so the rest of the report still shows and `gh auth login` fixes it.
+        Ok(match github_token(&project_id) {
+            Ok(token) => github::status(&root, token.as_deref()),
+            Err(error) => {
+                let mut status = github::status(&root, None);
+                // A missing CLI already has its own, more accurate error.
+                if status.installed {
+                    status.error = Some(error);
+                }
+                status
+            }
+        })
+    })
+    .await
 }
 
 #[tauri::command]
@@ -4033,7 +4091,12 @@ async fn github_search(
     query: String,
 ) -> Result<Vec<github::Item>> {
     let root = state.root(&project_id, session_id.as_deref())?;
-    blocking(move || github::search(&root, &query, 10)).await
+    let project = project_id.clone();
+    blocking(move || {
+        let token = github_token(&project)?;
+        github::search(&root, token.as_deref(), &query, 10)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -4043,7 +4106,12 @@ async fn github_issues(
     filter: Option<github::IssueFilter>,
 ) -> Result<Vec<github::Issue>> {
     let root = state.root(&project_id, None)?;
-    blocking(move || github::issues(&root, &filter.unwrap_or_default())).await
+    let project = project_id.clone();
+    blocking(move || {
+        let token = github_token(&project)?;
+        github::issues(&root, token.as_deref(), &filter.unwrap_or_default())
+    })
+    .await
 }
 
 #[tauri::command]
@@ -4054,7 +4122,12 @@ async fn github_resolve(
     numbers: Vec<i64>,
 ) -> Result<Vec<github::Reference>> {
     let root = state.root(&project_id, session_id.as_deref())?;
-    blocking(move || github::resolve(&root, &numbers)).await
+    let project = project_id.clone();
+    blocking(move || {
+        let token = github_token(&project)?;
+        github::resolve(&root, token.as_deref(), &numbers)
+    })
+    .await
 }
 
 #[derive(serde::Serialize)]
@@ -4070,11 +4143,12 @@ async fn github_refresh_links(state: State<'_, AppState>, project_id: String) ->
     let root = state.root(&project_id, None)?;
     let store = state.store.clone();
     blocking(move || {
+        let token = github_token(&project_id)?;
         let links = store.lock().map_err(|e| e.to_string())?.project_links(&project_id)?;
         if !links.is_empty() {
-            let repo = github::repository(&root).map_err(|error| if error.is_empty() { "This project has no GitHub remote.".to_string() } else { error })?;
+            let repo = github::repository(&root, token.as_deref()).map_err(|error| if error.is_empty() { "This project has no GitHub remote.".to_string() } else { error })?;
             let wanted: Vec<(String, i64)> = links.iter().map(|(_, link)| (link.kind.clone(), link.number)).collect();
-            let states: Vec<(String, i64, String, String)> = github::link_states(&root, &repo, &wanted)?
+            let states: Vec<(String, i64, String, String)> = github::link_states(&root, token.as_deref(), &repo, &wanted)?
                 .into_iter()
                 .map(|state| (state.kind, state.number, state.state, state.title))
                 .collect();
@@ -4115,22 +4189,23 @@ async fn github_create_pull_request(
     base: String,
     draft: Option<bool>,
 ) -> Result<Session> {
-    let root = {
+    let (root, project_id) = {
         let store = state.store.lock().map_err(|e| e.to_string())?;
         let task = store.session(&session_id)?;
-        store.workspace_root(&task.project_id, Some(&session_id))?
+        (store.workspace_root(&task.project_id, Some(&session_id))?, task.project_id)
     };
     let store = state.store.clone();
     blocking(move || {
-        let link = push_and_open_pull(&root, &title, &body, &base, draft.unwrap_or(false), workspace::Trust::Desktop)?;
+        let token = github_token(&project_id)?;
+        let link = push_and_open_pull(&root, &title, &body, &base, draft.unwrap_or(false), workspace::Trust::Desktop, token.as_deref())?;
         store.lock().map_err(|e| e.to_string())?.set_task_link(&session_id, "pull", Some(&link))
     })
     .await
 }
-
 /// Pushes a clean checkout on a branch other than `base` (its hooks as `trust` says) and opens a
-/// pull request for it: `github_create_pull_request`, and the phone's `pull.create`. Blocking.
-pub(crate) fn push_and_open_pull(root: &std::path::Path, title: &str, body: &str, base: &str, draft: bool, trust: workspace::Trust) -> Result<storage::TaskLink> {
+/// pull request for it as the project's pinned account: `github_create_pull_request`, and the
+/// phone's `pull.create`. Blocking.
+pub(crate) fn push_and_open_pull(root: &std::path::Path, title: &str, body: &str, base: &str, draft: bool, trust: workspace::Trust, token: Option<&str>) -> Result<storage::TaskLink> {
     // Before the status below: for an untrusted phone, a status refresh may already run the
     // checkout's filters (docs/remote-access.md, Round-6 gates).
     workspace::refuse_untrusted_programs(root, trust)?;
@@ -4145,37 +4220,46 @@ pub(crate) fn push_and_open_pull(root: &std::path::Path, title: &str, body: &str
         return Err(format!("Create a branch other than {base} before opening a pull request."));
     }
     workspace::git_push(root, trust)?;
-    let pull = github::create_pull_request_as(root, title, body, base, &status.branch, draft, trust)?;
+    let pull = github::create_pull_request_as(root, token, title, body, base, &status.branch, draft, trust)?;
     Ok(storage::TaskLink { kind: "pull".into(), number: pull.number, url: pull.url, title: pull.title, state: pull.state, checked_at: 0 })
 }
-/// The task's checkout and its linked pull request number.
-fn linked_pull(state: &AppState, session_id: &str) -> Result<(PathBuf, i64)> {
+/// The task's checkout, its linked pull request number, and its project.
+fn linked_pull(state: &AppState, session_id: &str) -> Result<(PathBuf, i64, String)> {
     let store = state.store.lock().map_err(|e| e.to_string())?;
     let task = store.session(session_id)?;
     let number = task.pull_request.as_ref().map(|link| link.number).ok_or("This task has no linked pull request.")?;
-    Ok((store.workspace_root(&task.project_id, Some(session_id))?, number))
+    Ok((store.workspace_root(&task.project_id, Some(session_id))?, number, task.project_id))
 }
 
 #[tauri::command]
 async fn github_pull_request(state: State<'_, AppState>, session_id: String) -> Result<github_pull::PullDetail> {
-    let (root, number) = linked_pull(&state, &session_id)?;
-    blocking(move || github_pull::detail(&root, number)).await
+    let (root, number, project_id) = linked_pull(&state, &session_id)?;
+    blocking(move || {
+        let token = github_token(&project_id)?;
+        github_pull::detail(&root, token.as_deref(), number)
+    })
+    .await
 }
 
 #[tauri::command]
 async fn github_pull_request_diff(state: State<'_, AppState>, session_id: String) -> Result<github_pull::PullDiff> {
-    let (root, number) = linked_pull(&state, &session_id)?;
-    blocking(move || github_pull::diff(&root, number)).await
+    let (root, number, project_id) = linked_pull(&state, &session_id)?;
+    blocking(move || {
+        let token = github_token(&project_id)?;
+        github_pull::diff(&root, token.as_deref(), number)
+    })
+    .await
 }
 
 /// Merge the task's linked pull request with the chosen method; returns the task with its link updated.
 #[tauri::command]
 async fn github_merge_pull_request(state: State<'_, AppState>, session_id: String, method: String) -> Result<Session> {
-    let (root, number) = linked_pull(&state, &session_id)?;
+    let (root, number, project_id) = linked_pull(&state, &session_id)?;
     github_pull::merge_flag(&method)?;
     let store = state.store.clone();
     blocking(move || {
-        let link = github_pull::merge(&root, number, &method)?;
+        let token = github_token(&project_id)?;
+        let link = github_pull::merge(&root, token.as_deref(), number, &method)?;
         store.lock().map_err(|e| e.to_string())?.set_task_link(&session_id, "pull", Some(&link))
     })
     .await
@@ -4184,7 +4268,7 @@ async fn github_merge_pull_request(state: State<'_, AppState>, session_id: Strin
 /// After a turn, link the pull request the agent opened, if any. Returns the task only when it changed.
 #[tauri::command]
 async fn github_detect_pull_request(state: State<'_, AppState>, session_id: String) -> Result<Option<Session>> {
-    let (root, turn, started) = {
+    let (root, project_id, turn, started) = {
         let store = state.store.lock().map_err(|e| e.to_string())?;
         let task = store.session(&session_id)?;
         // An open link stays: the user or an earlier turn chose it.
@@ -4203,17 +4287,18 @@ async fn github_detect_pull_request(state: State<'_, AppState>, session_id: Stri
         if !turn.iter().any(|text| text.contains("/pull/")) {
             return Ok(None);
         }
-        (store.workspace_root(&task.project_id, Some(&session_id))?, turn, started)
+        (store.workspace_root(&task.project_id, Some(&session_id))?, task.project_id, turn, started)
     };
     let store = state.store.clone();
     blocking(move || {
-        let repo = match github::repository(&root) {
+        let token = github_token(&project_id)?;
+        let repo = match github::repository(&root, token.as_deref()) {
             Ok(repo) => repo,
             Err(error) if error.is_empty() => return Ok(None),
             Err(error) => return Err(error),
         };
         let branch = workspace::git_status(&root, workspace::Trust::Desktop).map(|status| status.branch).unwrap_or_default();
-        let Some(link) = github_pull::detect(&root, &repo, &turn, &branch, started)? else { return Ok(None) };
+        let Some(link) = github_pull::detect(&root, token.as_deref(), &repo, &turn, &branch, started)? else { return Ok(None) };
         let store = store.lock().map_err(|e| e.to_string())?;
         if store.session(&session_id)?.pull_request.is_some_and(|current| current.number == link.number) {
             return Ok(None);
@@ -4229,18 +4314,42 @@ async fn github_link_pull_request(state: State<'_, AppState>, session_id: String
     if reference.len() > 512 {
         return Err("Enter a pull request number or its GitHub URL.".into());
     }
-    let root = {
+    let (root, project_id) = {
         let store = state.store.lock().map_err(|e| e.to_string())?;
         let task = store.session(&session_id)?;
-        store.workspace_root(&task.project_id, Some(&session_id))?
+        (store.workspace_root(&task.project_id, Some(&session_id))?, task.project_id)
     };
     let store = state.store.clone();
     blocking(move || {
-        let repo = github::repository(&root).map_err(|error| if error.is_empty() { "This project has no GitHub remote.".to_string() } else { error })?;
-        let link = github_pull::lookup(&root, github_pull::parse_reference(&reference, &repo.name_with_owner)?)?;
+        let token = github_token(&project_id)?;
+        let repo = github::repository(&root, token.as_deref()).map_err(|error| if error.is_empty() { "This project has no GitHub remote.".to_string() } else { error })?;
+        let link = github_pull::lookup(&root, token.as_deref(), github_pull::parse_reference(&reference, &repo.name_with_owner)?)?;
         store.lock().map_err(|e| e.to_string())?.set_task_link(&session_id, "pull", Some(&link))
     })
     .await
+}
+
+/// Every account signed in to the user's gh, and which one this project pins.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GithubAccountsView {
+    accounts: Vec<github_accounts::Account>,
+    pinned: Option<String>,
+}
+
+#[tauri::command]
+async fn github_accounts(state: State<'_, AppState>, project_id: String) -> Result<GithubAccountsView> {
+    let root = state.root(&project_id, None)?;
+    let report = blocking(move || github::auth_report(&root)).await?;
+    Ok(GithubAccountsView { accounts: github_accounts::parse_status(&report), pinned: github_accounts::pinned_login(&project_id) })
+}
+
+/// Pin the account a project's GitHub calls run as; None (or an empty string) goes back
+/// to gh's active account. Only the login is stored; the token stays in the user's keyring.
+#[tauri::command]
+async fn github_set_account(project_id: String, login: Option<String>) -> Result<()> {
+    let login = login.filter(|login| !login.trim().is_empty());
+    github_accounts::set_pinned_login(&project_id, login.as_deref())
 }
 #[tauri::command]
 async fn manage_workspace_entry(
@@ -5260,6 +5369,8 @@ pub(crate) fn main_invoke_handler(invoke: tauri::ipc::Invoke<tauri::Wry>) -> boo
         github_merge_pull_request,
         github_detect_pull_request,
         github_link_pull_request,
+        github_accounts,
+        github_set_account,
         simulator::commands::simulator_status,
         simulator::commands::simulator_select,
         simulator::commands::simulator_create_duo,
