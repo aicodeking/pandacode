@@ -22,11 +22,11 @@ html[data-native-platform=macos] .settings-nav-head{padding-left:72px}
 .settings-nav-list>button:focus-visible{outline:2px solid var(--focus);outline-offset:-2px}
 .settings-nav-list>button:focus:not(:focus-visible){outline:0}
 .settings-content{min-width:0;min-height:0;overflow-y:auto;scrollbar-gutter:stable;margin:var(--inset,0px) var(--inset,0px) var(--inset,0px) 0;border-radius:var(--inset-radius);background:var(--panel-surface,var(--bg))}
-.settings-panel{width:min(720px,calc(100% - 64px));margin:0 auto;padding:44px 0 72px}
+.settings-panel{width:min(var(--reading-width),calc(100% - 64px));margin:0 auto;padding:44px 0 72px}
 .settings-panel-head{margin:0 0 24px;padding:0 var(--ds-row-pad-x)}
 .settings-panel-head h2{margin:0;font-size:var(--type-title);font-weight:var(--type-title-weight);letter-spacing:var(--tracking-tight);line-height:var(--type-title-leading);color:var(--ds-title-ink)}
 /* A section's pages: the segmented control takes the title's place (each page keeps an sr-only heading). */
-.settings-subnav{width:min(720px,calc(100% - 64px));margin:0 auto;padding-top:36px}
+.settings-subnav{width:min(var(--reading-width),calc(100% - 64px));margin:0 auto;padding-top:36px}
 /* Wrapping keeps every page reachable with the tab handler's preventScroll focus. */
 .settings-subnav .ds-seg{width:fit-content;max-width:100%;flex-wrap:wrap}
 .settings-subnav .ds-seg>button{flex:0 0 auto;height:32px;white-space:nowrap;font-size:var(--type-body)}

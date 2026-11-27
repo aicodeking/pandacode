@@ -2,7 +2,18 @@ import { expect, test, type Page } from '@playwright/test';
 
 const token = (page: Page, name: string) => page.locator('html').evaluate((node, property) => getComputedStyle(node).getPropertyValue(property).trim(), name);
 const maxWidth = (page: Page, selector: string) => page.locator(selector).first().evaluate(node => getComputedStyle(node).maxWidth);
+const width = (page: Page, selector: string) => page.locator(selector).first().evaluate(node => getComputedStyle(node).width);
 const saved = (page: Page) => page.evaluate(() => localStorage.getItem('pandacode.readingWidth'));
+
+async function usageWidth(page: Page): Promise<string> {
+  await page.locator('.sidebar-bottom > #agent-usage-button').click();
+  const dialog = page.locator('dialog.agent-usage-dialog');
+  await expect(dialog).toBeVisible();
+  const value = await width(page, 'dialog.agent-usage-dialog');
+  await page.getByRole('button', { name: 'Close dialog' }).click();
+  await expect(dialog).toBeHidden();
+  return value;
+}
 
 async function open(page: Page): Promise<void> {
   await page.goto('/', { waitUntil: 'domcontentloaded' });
@@ -22,6 +33,7 @@ test('reading width widens the thread and composer from Appearance and remembers
   expect(await token(page, '--composer-width')).toBe('950px');
   expect(await maxWidth(page, '#composer-area')).toBe('950px');
   expect(await maxWidth(page, '#transcript > .turn-card')).toBe('830px');
+  expect(await usageWidth(page)).toBe('950px');
 
   const control = await openAppearance(page);
   const comfortable = control.getByRole('button', { name: 'Comfortable', exact: true });
@@ -29,6 +41,7 @@ test('reading width widens the thread and composer from Appearance and remembers
   await expect(comfortable).toHaveAttribute('aria-pressed', 'true');
   await expect(wide).toHaveAttribute('aria-pressed', 'false');
   await expect(control.locator('.segment-thumb')).toHaveCount(1);
+  expect(await width(page, '#settings-panel-appearance')).toBe('830px');
 
   await wide.click();
   await expect(wide).toHaveAttribute('aria-pressed', 'true');
@@ -37,12 +50,14 @@ test('reading width widens the thread and composer from Appearance and remembers
   await expect.poll(() => page.evaluate(() => document.documentElement.dataset.readingWidth)).toBe('wide');
   await expect.poll(() => token(page, '--reading-width')).toBe('1040px');
   await expect.poll(() => token(page, '--composer-width')).toBe('1160px');
+  await expect.poll(() => width(page, '#settings-panel-appearance')).toBe('1040px');
 
   // Back in the workspace the new measure is in force for the thread and the composer.
   await page.getByRole('button', { name: 'Back to the workspace', exact: true }).click();
   await expect(page.locator('#transcript > .turn-card').first()).toBeVisible();
   expect(await maxWidth(page, '#composer-area')).toBe('1160px');
   expect(await maxWidth(page, '#transcript > .turn-card')).toBe('1040px');
+  expect(await usageWidth(page)).toBe('1160px');
 
   // A saved preference: the next launch opens wide, before Settings is ever mounted.
   await page.reload({ waitUntil: 'domcontentloaded' });
@@ -56,4 +71,5 @@ test('reading width widens the thread and composer from Appearance and remembers
   await expect.poll(() => saved(page)).toBe('comfortable');
   await expect.poll(() => page.evaluate(() => document.documentElement.dataset.readingWidth)).toBeUndefined();
   await expect.poll(() => token(page, '--reading-width')).toBe('830px');
+  await expect.poll(() => width(page, '#settings-panel-appearance')).toBe('830px');
 });
