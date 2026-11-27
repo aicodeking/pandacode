@@ -148,10 +148,10 @@ test('every historical unpublished note is excluded even without a bundledIn fie
   }
 });
 
-test('repository notes match the published release totals through 0.3.163', async () => {
+test('repository notes match the published release totals through 0.3.164', async () => {
   const compare = (a, b) => a.localeCompare(b, 'en', { numeric: true });
   const versions = (await releaseNoteVersions()).sort((a, b) => compare(b, a));
-  for (const [version, publishedCount] of [['0.3.162', 143], ['0.3.163', 144]]) {
+  for (const [version, publishedCount] of [['0.3.162', 143], ['0.3.163', 144], ['0.3.164', 145]]) {
     const releases = versions.filter(note => compare(note, version) <= 0).map(version => ({ version }));
     assert.deepEqual(publishedReleaseSummary(releases), { latest: { version }, publishedCount });
   }
