@@ -357,6 +357,17 @@ pub mod mock {
     /// Serve real HTTPS over loopback using rustls, writing the exact response bytes and then
     /// dropping the TCP socket without sending a TLS `close_notify` alert.
     pub fn serve_https_raw(route: impl Fn(&Request, &str) -> Vec<u8> + Send + Sync + 'static) -> (String, Seen) {
+        serve_https(move |request, base| (route(request, base), false))
+    }
+
+    /// For selected replies, corrupt the TLS stream after sending the HTTP headers and partial body.
+    pub fn serve_https_mid_body_tls_alert(
+        route: impl Fn(&Request, &str) -> (Vec<u8>, bool) + Send + Sync + 'static,
+    ) -> (String, Seen) {
+        serve_https(route)
+    }
+
+    fn serve_https(route: impl Fn(&Request, &str) -> (Vec<u8>, bool) + Send + Sync + 'static) -> (String, Seen) {
         let cert = rustls::pki_types::CertificateDer::from(loopback_leaf_cert_der());
         let key = rustls::pki_types::PrivateKeyDer::Pkcs8(
             rustls::pki_types::PrivatePkcs8KeyDer::from(loopback_leaf_key_der()),
@@ -388,11 +399,19 @@ pub mod mock {
                     let Ok(conn) = rustls::ServerConnection::new(config) else { return };
                     let mut tls = rustls::StreamOwned::new(conn, stream);
                     let Some(request) = read_request(&mut tls) else { return };
-                    let reply = route(&request, &own);
+                    let (reply, corrupt_body) = route(&request, &own);
                     log.lock().unwrap().push(request);
                     if !reply.is_empty() {
                         let _ = tls.write_all(&reply);
                         let _ = tls.flush();
+                    }
+                    if corrupt_body {
+                        // Give Hyper a separate read for the headers before corrupting the body.
+                        thread::sleep(Duration::from_millis(100));
+                        // TLS application-data record with an invalid authentication tag.
+                        let mut record = [0; 37];
+                        record[..5].copy_from_slice(&[23, 3, 3, 0, 32]);
+                        let _ = tls.sock.write_all(&record);
                     }
                     // Intentionally drop without calling send_close_notify() to reproduce
                     // unclean HTTPS EOFs (rustls ErrorKind::UnexpectedEof).
@@ -466,6 +485,25 @@ mod tests {
         });
         assert!(!is_tls_error(&error));
         assert_eq!(body_transport_error("Sandbox", 200, &error), "Sandbox request failed (connection closed while reading response).");
+    }
+
+    #[test]
+    fn https_mid_body_corruption_is_a_tls_error() {
+        let (base, _) = mock::serve_https_mid_body_tls_alert(|_, _| {
+            (b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 200\r\nConnection: close\r\n\r\npartial".to_vec(), true)
+        });
+        let error = block(async {
+            let response = client_with_root(Duration::from_secs(5), mock::loopback_root_cert())
+                .unwrap()
+                .get(base)
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status().as_u16(), 502);
+            response.bytes().await.unwrap_err()
+        });
+        assert!(is_tls_error(&error));
+        assert_eq!(body_transport_error("Sandbox", 502, &error), "Sandbox request failed (TLS error).");
     }
 
     #[test]

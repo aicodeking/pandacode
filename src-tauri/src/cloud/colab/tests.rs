@@ -425,7 +425,7 @@ fn repeated_assign_drops_exhaust_retries_without_leaking_credentials() {
     }
     let log = seen.lock().unwrap();
     assert_eq!(log.iter().filter(|r| r.method == "POST").count(), ASSIGN_RETRIES as usize + 1);
-    assert_eq!(log.len(), 1 + 2 * (ASSIGN_RETRIES as usize + 1));
+    assert_eq!(log.len(), 2 + 2 * (ASSIGN_RETRIES as usize + 1));
     assert_eq!(log.last().unwrap().method, "GET");
     assert!(log.iter().all(|r| r.path == log[0].path));
 }
@@ -453,17 +453,23 @@ fn final_dropped_post_can_recover_the_runtime() {
 
 #[test]
 fn budget_preserves_reconciliation_after_backoff_leaves_no_time_to_post() {
-    let (base, seen) = mock::serve_raw(|request, _| {
-        if request.method == "POST" { Vec::new() } else { raw_reply(r#"{"token":"xsrf"}"#) }
+    let requests = AtomicUsize::new(0);
+    let (base, seen) = mock::serve_raw(move |_, _| {
+        match requests.fetch_add(1, Ordering::SeqCst) {
+            0 => raw_reply(r#"{"token":"initial"}"#),
+            1 => Vec::new(),
+            2 => raw_reply(r#"{"token":"fresh"}"#),
+            _ => raw_reply(ASSIGNMENT),
+        }
     });
     let client = Colab::with(Urls::mock(&base), Auth::Token("tok".into()), sessions(), Duration::from_millis(550));
-    let error = block(async {
+    let reply = block(async {
         let deadline = tokio::time::Instant::now() + RECONCILE_RESERVE + MIN_POST_BUDGET + Duration::from_millis(450);
-        client.assign_until("T4", false, deadline).await.unwrap_err()
+        client.assign_until("T4", false, deadline).await.unwrap()
     });
-    assert_eq!(error, "Google Colab request failed (connection closed before response).");
+    assert_eq!(reply["endpoint"], "gpu-t4-s-new");
     let log = seen.lock().unwrap();
-    assert_eq!(log.iter().map(|r| r.method.as_str()).collect::<Vec<_>>(), ["GET", "POST", "GET"]);
+    assert_eq!(log.iter().map(|r| r.method.as_str()).collect::<Vec<_>>(), ["GET", "POST", "GET", "GET"]);
     assert!(log.iter().all(|r| r.path == log[0].path));
 }
 
@@ -626,4 +632,116 @@ fn retryable_fails_closed_on_tls_and_non_retryable_statuses() {
     for status in [502, 503, 504] {
         assert!(retryable(&fail(Some(status), false, false, false)));
     }
+}
+
+#[test]
+fn close_delimited_truncated_success_reconciles_without_replay() {
+    reconciles_unusable_post(
+        b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n)]}'\n{\"endpoint\":\"m-cut".to_vec(),
+    );
+}
+
+#[test]
+fn complete_success_without_runtime_reconciles_without_replay() {
+    reconciles_unusable_post(raw_reply(")]}'\n{}"));
+}
+
+fn reconciles_unusable_post(post_reply: Vec<u8>) {
+    let requests = AtomicUsize::new(0);
+    let (base, seen) = mock::serve_raw(move |_, _| {
+        match requests.fetch_add(1, Ordering::SeqCst) {
+            0 => raw_reply(r#"{"token":"initial"}"#),
+            1 => post_reply.clone(),
+            _ => raw_reply(ASSIGNMENT),
+        }
+    });
+    let machine = colab(&base, &sessions()).create_with("pc-train", "T4", false).unwrap();
+    assert_eq!(machine.id, "colab:gpu-t4-s-new");
+    let log = seen.lock().unwrap();
+    assert_eq!(log.iter().map(|r| r.method.as_str()).collect::<Vec<_>>(), ["GET", "POST", "GET"]);
+    assert!(log.iter().all(|r| r.path == log[0].path));
+}
+
+#[test]
+fn colab_and_oauth_errors_only_report_allowlisted_identifiers() {
+    for status in [400, 401, 403, 500] {
+        for (body, code) in [
+            (r#"{"message":"pin spaced secret","error":"key spaced secret","error_description":"pwd spaced secret"}"#, None),
+            ("pin key pwd spaced secret", None),
+            (r#"{"error":"invalid_grant","error_description":"pin spaced secret"}"#, Some("invalid_grant")),
+            (r#"{"error":{"status":"RESOURCE_EXHAUSTED","message":"pin spaced secret"}}"#, Some("RESOURCE_EXHAUSTED")),
+            (r#"{"error":{"status":"PERMISSION_DENIED","message":"pin spaced secret"}}"#, Some("PERMISSION_DENIED")),
+        ] {
+            let (base, _) = mock::serve(move |_, _| (status, format!(")]}}'\n{body}")));
+            let client = colab(&base, &sessions());
+            let oauth = Urls::mock(&base);
+            let with_code = code.map_or_else(String::new, |code| format!(" ({code})"));
+            let suffix = code.map_or_else(String::new, |code| format!(", {code}"));
+            let expected = |service: &str| {
+                if matches!(status, 401 | 403) {
+                    format!("{service} refused the credentials (HTTP {status}{suffix}). Check them in Settings → Cloud.")
+                } else {
+                    format!("{service} returned HTTP {status}{with_code}.")
+                }
+            };
+            block(async {
+                assert_eq!(client.assignments().await.unwrap_err(), expected("Google Colab"));
+                let oauth_error = token_request(&oauth, String::new()).await.unwrap_err();
+                if code == Some("invalid_grant") {
+                    assert_eq!(oauth_error, "Your Google sign-in expired or was revoked. Sign in to Google Colab again in Settings → Cloud.");
+                } else {
+                    assert_eq!(oauth_error, expected("Google"));
+                }
+            });
+        }
+    }
+}
+
+fn partial_reply(status: u16) -> Vec<u8> {
+    format!("HTTP/1.1 {status} X\r\nContent-Length: 200\r\nConnection: close\r\n\r\npartial").into_bytes()
+}
+
+#[test]
+fn https_assignment_tls_failure_stops_post_and_reconciliation() {
+    for (failure_request, expected_methods) in [
+        (1, &["GET", "POST"][..]),
+        (2, &["GET", "POST", "GET"][..]),
+    ] {
+        let requests = AtomicUsize::new(0);
+        let (base, seen) = mock::serve_https_mid_body_tls_alert(move |_, _| {
+            match requests.fetch_add(1, Ordering::SeqCst) {
+                0 => (raw_reply(r#"{"token":"initial"}"#), false),
+                request if request == failure_request => (partial_reply(502), true),
+                1 => (Vec::new(), false),
+                _ => (raw_reply(ASSIGNMENT), false),
+            }
+        });
+        let client = colab(&base, &sessions()).with_root_cert(mock::loopback_root_cert());
+        assert_eq!(
+            client.create_with("pc-train", "T4", false).err().unwrap(),
+            "Google Colab request failed (TLS error).",
+        );
+        let log = seen.lock().unwrap();
+        assert_eq!(log.iter().map(|r| r.method.as_str()).collect::<Vec<_>>(), expected_methods);
+        assert!(log.iter().all(|r| r.path == log[0].path));
+    }
+}
+
+#[test]
+fn https_unassign_404_tls_failure_preserves_session() {
+    let (base, seen) = mock::serve_https_mid_body_tls_alert(|_, _| (partial_reply(404), true));
+    let sessions = sessions();
+    let client = colab(&base, &sessions).with_root_cert(mock::loopback_root_cert());
+    let endpoint = "gpu-t4-s-new";
+    store::update(&sessions, |mut known| {
+        known.insert(endpoint.into(), SessionRecord { endpoint: endpoint.into(), ..SessionRecord::default() });
+        (known, ())
+    }).unwrap();
+    let before = std::fs::read(&sessions).unwrap();
+    assert_eq!(client.unassign(endpoint).unwrap_err(), "Google Colab request failed (TLS error).");
+    assert_eq!(std::fs::read(&sessions).unwrap(), before);
+    let log = seen.lock().unwrap();
+    assert_eq!(log.len(), 1);
+    assert_eq!(log[0].method, "GET");
+    assert_eq!(log[0].path.split('?').next(), Some("/tun/m/unassign/gpu-t4-s-new"));
 }
