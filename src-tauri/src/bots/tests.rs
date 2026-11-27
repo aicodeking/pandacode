@@ -124,6 +124,38 @@ fn startup_reconciles_active_bot_deliveries_as_failed() {
 }
 
 #[test]
+fn reconcile_queued_deliveries_isolates_malformed_post_text_blob() {
+    let f = fixture();
+    let scout = bot(&f);
+    let (session, _) = thread_session(&f.store, &scout, DESKTOP, DESKTOP, "Scout · You").unwrap();
+    let channel = shared_channels::create(&f.store, "launch", std::slice::from_ref(&scout.id)).unwrap();
+    f.store.db.execute(
+        "INSERT INTO bot_shared_channel_messages(id,channel_id,kind,text,status,created_at)
+         VALUES('malformed',?1,'user',X'deadbeef','queued',1),
+               ('healthy',?1,'user','ship it','queued',2)",
+        [&channel.id],
+    ).unwrap();
+    // The healthy delivery's queue entry was consumed just before the crash.
+    f.store.db.execute(
+        "INSERT INTO bot_shared_channel_deliveries(id,channel_id,message_id,bot_id,session_id,status,created_at,updated_at)
+         VALUES('malformed-delivery',?1,'malformed',?2,?3,'queued',1,1),
+               ('healthy-delivery',?1,'healthy',?2,?3,'queued',2,2)",
+        params![channel.id,scout.id,session],
+    ).unwrap();
+
+    let error = shared_channels::reconcile_in_progress(&f.store).unwrap_err();
+    assert!(error.contains("Invalid column type Blob") && error.contains("name: text"), "{error}");
+    let statuses = |id| f.store.db.query_row(
+        "SELECT d.status,m.status FROM bot_shared_channel_deliveries d
+         JOIN bot_shared_channel_messages m ON m.id=d.message_id WHERE d.id=?1",
+        [id],
+        |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+    ).unwrap();
+    assert_eq!(statuses("healthy-delivery"), ("failed".into(), "failed".into()));
+    assert_eq!(statuses("malformed-delivery"), ("queued".into(), "queued".into()));
+}
+
+#[test]
 fn channel_post_status_follows_retries_and_bot_resets() {
     let f = fixture();
     let scout = bot(&f);

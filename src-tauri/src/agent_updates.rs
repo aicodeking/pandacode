@@ -75,8 +75,8 @@ pub(crate) fn reserve_install(state: &crate::AppState) -> Result<InstallGuard> {
     // Accept JSON5 snapshots, like json_extract, and report malformed snapshots separately.
     let team_checks = "SELECT EXISTS(
          SELECT 1 FROM architect_teams
-         WHERE CASE WHEN json_valid(content, 6) THEN json_extract(content,'$.status') END IN ('running','waiting')
-     ), EXISTS(SELECT 1 FROM architect_teams WHERE NOT json_valid(content, 6))";
+         WHERE CASE WHEN json_valid(content, 2) THEN json_extract(content,'$.status') END IN ('running','waiting')
+     ), EXISTS(SELECT 1 FROM architect_teams WHERE NOT json_valid(content, 2))";
     let (active_team, malformed_team): (bool, bool) = store.db
         .query_row(team_checks, [], |row| Ok((row.get(0)?, row.get(1)?)))
         .map_err(|_| "Team state is unavailable.")?;

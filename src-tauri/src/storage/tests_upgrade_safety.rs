@@ -574,7 +574,7 @@ fn expected_recovery(db: &Connection, table: &str, column: &str, rowid: i64, old
             .into(),
         ("messages", "content") => r#"CASE WHEN role='tool' AND tool_id IS NOT NULL
             AND session_id IN (SELECT id FROM sessions WHERE status IN ('running','waiting'))
-            AND CASE WHEN json_valid(content,6) THEN json_extract(content,'$.type')='tool_activity'
+            AND CASE WHEN json_valid(content,2) THEN json_extract(content,'$.type')='tool_activity'
             AND json_extract(content,'$.version')=1 AND json_extract(content,'$.status')='running' END
             THEN json_set(content,'$.status','failed','$.output',coalesce(json_extract(content,'$.output'),'')
                 || char(10) || char(10) || '[PandaCode was interrupted before this tool reported a result.]') ELSE content END"#
@@ -586,29 +586,27 @@ fn expected_recovery(db: &Connection, table: &str, column: &str, rowid: i64, old
                 "CASE WHEN json_type(content,'$.tools')='array' THEN json_set(content,'$.status','stopped','$.updatedAt',?2,'$.tools',
                     json((SELECT json_group_array(CASE
                         WHEN type='object' AND json_extract(value,'$.status') IN ('running','waiting') THEN json(json_set(value,'$.status','failed'))
-                        WHEN type IN ('object','array') THEN json(value)
-                        WHEN type IN ('true','false') THEN json(type)
-                        ELSE value END) FROM json_each(content,'$.tools'))))
+                        ELSE json(content -> fullkey) END) FROM json_each(content,'$.tools'))))
                 ELSE json_set(content,'$.status','stopped','$.updatedAt',?2) END"
             };
-            conditional("CASE WHEN json_valid(content,6) THEN json_extract(content,'$.status') IN ('running','waiting') END", value)
+            conditional("CASE WHEN json_valid(content,2) THEN json_extract(content,'$.status') IN ('running','waiting') END", value)
         }
-        ("architect_teams", "content") => "(SELECT CASE WHEN json_valid(stamped,6)
-            AND json_extract(stamped,'$.status') IN ('running','waiting') THEN
+        ("architect_teams", "content") => "(SELECT CASE WHEN
+            CASE WHEN json_valid(stamped,2) THEN json_extract(stamped,'$.status') END IN ('running','waiting') THEN
             CASE WHEN json_type(stamped,'$.workers')='array' THEN
                 json_set(stamped,'$.status','interrupted','$.pendingTurn',NULL,
                     '$.error','PandaCode restarted. Resume explicitly to continue.',
                     '$.generation',coalesce(json_extract(stamped,'$.generation'),0)+1,
                     '$.revision',coalesce(json_extract(stamped,'$.revision'),0)+1,
-                    '$.workers',json((SELECT json_group_array(json(CASE WHEN json_extract(value,'$.status') IN ('running','waiting')
-                        THEN json_set(value,'$.status','stopped') ELSE value END))
-                        FROM json_each(stamped,'$.workers') WHERE type='object')))
+                    '$.workers',json((SELECT json_group_array(CASE WHEN type='object' AND json_extract(value,'$.status') IN ('running','waiting')
+                        THEN json(json_set(value,'$.status','stopped')) ELSE json(stamped -> fullkey) END)
+                        FROM json_each(stamped,'$.workers'))))
             ELSE json_set(stamped,'$.status','interrupted','$.pendingTurn',NULL,
                     '$.error','PandaCode restarted. Resume explicitly to continue.',
                     '$.generation',coalesce(json_extract(stamped,'$.generation'),0)+1,
                     '$.revision',coalesce(json_extract(stamped,'$.revision'),0)+1) END
             ELSE stamped END FROM (
-                SELECT CASE WHEN json_valid(content,6) AND coalesce(json_type(content,'$.legacyPromptThroughId'),'null')='null'
+                SELECT CASE WHEN json_valid(content,2) AND coalesce(json_type(content,'$.legacyPromptThroughId'),'null')='null'
                     THEN json_set(content,'$.legacyPromptThroughId',coalesce((SELECT max(id) FROM messages WHERE session_id=old.session_id),0))
                     ELSE content END AS stamped))"
             .into(),

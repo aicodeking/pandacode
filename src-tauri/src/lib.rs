@@ -1037,10 +1037,10 @@ pub(crate) fn remove_project_with_team_check(store: &Store, project_id: &str) ->
         let team_checks = "SELECT EXISTS(
              SELECT 1 FROM architect_teams t JOIN sessions s ON s.id=t.session_id
              WHERE s.project_id=?1
-               AND CASE WHEN json_valid(t.content, 6) THEN json_extract(t.content,'$.status') END IN ('running','waiting')
+               AND CASE WHEN json_valid(t.content, 2) THEN json_extract(t.content,'$.status') END IN ('running','waiting')
          ), EXISTS(
              SELECT 1 FROM architect_teams t JOIN sessions s ON s.id=t.session_id
-             WHERE s.project_id=?1 AND NOT json_valid(t.content, 6)
+             WHERE s.project_id=?1 AND NOT json_valid(t.content, 2)
          )";
         let (active_team, malformed_team): (bool, bool) = store.db
             .prepare_cached(team_checks)

@@ -302,26 +302,30 @@ pub(crate) fn reconcile_in_progress(store: &Store) -> Result<()> {
 }
 
 fn reconcile_interrupted_deliveries(store: &Store) -> Result<Vec<String>> {
+    let rollback = RollbackGuard::new(&store.db);
+    let mut errors = Vec::new();
     let posts = recovery_posts(
         store,
         "SELECT id FROM bot_shared_channel_messages WHERE kind='user'
          AND (status='in_progress' OR id IN (
              SELECT message_id FROM bot_shared_channel_deliveries WHERE status='in_progress'
          ))",
+        &rollback,
+        &mut errors,
     )?;
     store.db.execute("UPDATE bot_shared_channel_deliveries SET status='failed',updated_at=?1 WHERE status='in_progress'", [crate::storage::now()]).map_err(|e| e.to_string())?;
-    settle_recovery_posts(store, posts, Vec::new())
+    settle_recovery_posts(store, posts, errors)
 }
 
 fn reconcile_queued_deliveries(store: &Store) -> Result<Vec<String>> {
     let rollback = RollbackGuard::new(&store.db);
+    let mut session_errors = Vec::new();
     // A queued assignment whose queue entry is gone was taken just before PandaCode closed.
     let queued: Vec<(String,String,String,String)> = {
         let mut statement = store.db.prepare("SELECT d.id,d.session_id,c.name,m.text FROM bot_shared_channel_deliveries d JOIN bot_shared_channel_messages m ON m.id=d.message_id JOIN bot_shared_channels c ON c.id=d.channel_id WHERE d.status='queued'").map_err(|e| e.to_string())?;
         let rows = statement.query_map([], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).map_err(|e| e.to_string())?;
-        rows.collect::<rusqlite::Result<_>>().map_err(|e| e.to_string())?
+        collect_recovery_rows(rows, &rollback, &mut session_errors)?
     };
-    let mut session_errors = Vec::new();
     for (id, session_id, name, text) in queued {
         let queue = match message_queue::list(store, Some(&session_id)) {
             Ok(queue) => queue,
@@ -343,6 +347,8 @@ fn reconcile_queued_deliveries(store: &Store) -> Result<Vec<String>> {
     let posts = recovery_posts(
         store,
         "SELECT id FROM bot_shared_channel_messages WHERE kind='user' AND status IN ('queued','in_progress')",
+        &rollback,
+        &mut session_errors,
     )?;
     settle_recovery_posts(store, posts, session_errors)
 }
@@ -360,10 +366,27 @@ fn settle_recovery_posts(store: &Store, posts: Vec<String>, mut errors: Vec<Stri
     Ok(errors)
 }
 
-fn recovery_posts(store: &Store, sql: &str) -> Result<Vec<String>> {
+fn recovery_posts(store: &Store, sql: &str, rollback: &RollbackGuard<'_>, errors: &mut Vec<String>) -> Result<Vec<String>> {
     let mut statement = store.db.prepare(sql).map_err(|error| error.to_string())?;
     let rows = statement.query_map([], |row| row.get(0)).map_err(|error| error.to_string())?;
-    rows.collect::<rusqlite::Result<_>>().map_err(|error| error.to_string())
+    collect_recovery_rows(rows, rollback, errors)
+}
+
+fn collect_recovery_rows<T>(
+    rows: impl Iterator<Item = rusqlite::Result<T>>,
+    rollback: &RollbackGuard<'_>,
+    errors: &mut Vec<String>,
+) -> Result<Vec<T>> {
+    let mut decoded = Vec::new();
+    for row in rows {
+        match row {
+            Ok(row) => decoded.push(row),
+            Err(error @ (rusqlite::Error::InvalidColumnType(..) | rusqlite::Error::FromSqlConversionFailure(..)))
+                if !rollback.rolled_back() => errors.push(error.to_string()),
+            Err(error) => return Err(error.to_string()),
+        }
+    }
+    Ok(decoded)
 }
 
 #[cfg(test)]
