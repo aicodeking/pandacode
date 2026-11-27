@@ -268,6 +268,8 @@ INSERT INTO bot_rules(id,bot_id,pattern,decision,created_at)
     VALUES('rule','bot-1','cargo test*','allow',139);
 INSERT INTO bot_schedules(id,bot_id,title,prompt,kind,interval_minutes,next_run_at,created_by,created_at)
     VALUES('bot-timer','bot-1','Check again','Review the reports','interval',15,400,'user',140);
+INSERT INTO bot_webhooks(id,bot_id,title,prompt,created_at)
+    VALUES('hook','bot-1','Deploy','Deploy the site','2026-01-01T00:00:00Z');
 INSERT INTO bot_messages(id,source_bot_id,target_bot_id,source_session_id,target_session_id,
         source_channel_id,source_external_id,text,status,result,depth,created_at,updated_at)
     VALUES('bot-mail','bot-1','bot-2','lead','worker','channel','visitor','Check timestamps','completed','They match.',1,141,142);

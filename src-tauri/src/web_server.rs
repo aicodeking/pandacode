@@ -2053,6 +2053,8 @@ const WEB_ALLOWED_COMMANDS: &[&str] = &[
     "schedule_snooze", "schedule_runs", "scheduler_settings", "scheduler_set_settings", "bot_channel_add",
     "bot_channel_test", "bot_channel_configure", "bot_channel_set_enabled", "bot_channel_remove",
     "bot_pairing_decide", "bot_web_link", "bot_web_new_link", "bot_rule_add", "bot_rule_delete",
+    "bot_webhook_create", "bot_webhook_list", "bot_webhook_update", "bot_webhook_set_enabled",
+    "bot_webhook_delete", "bot_webhook_rotate_secret", "bot_webhook_rotate_token", "bot_webhook_test",
     "list_importable_conversations", "import_conversations", "provider_set_claude_connection_mode",
     "provider_set_claude_cli_refresh", "harness_privacy", "harness_privacy_set", "provider_claude_status",
     "list_opencode_models", "save_opencode_models", "provider_set_executable",
