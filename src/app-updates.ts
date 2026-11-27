@@ -188,10 +188,10 @@ export function mountUpdatePill(pill: HTMLButtonElement, updates: AppUpdates): v
  * downloadable or downloaded update, GitHub Releases on a copy that cannot install in place.
  * Its own dismiss (Later) is separate from the pill's. */
 export function mountUpdateBanner(banner: HTMLDivElement, updates: AppUpdates, openAbout: () => void): void {
-  banner.innerHTML = `<button type="button" class="sidebar-update-banner-body"><span class="sidebar-update-banner-icon"></span><span class="sidebar-update-banner-copy"><strong></strong><small></small></span></button><button type="button" class="sidebar-update-banner-dismiss" aria-label="Dismiss update notice">${icon('close')}</button>`;
+  banner.innerHTML = `<button type="button" class="sidebar-update-banner-body"><span class="sidebar-update-banner-icon"></span><span class="sidebar-update-banner-copy"><span class="sidebar-update-banner-title"></span><span class="sidebar-update-banner-detail"></span></span></button><button type="button" class="sidebar-update-banner-dismiss" aria-label="Dismiss update notice">${icon('close')}</button>`;
   const iconSpan = banner.querySelector<HTMLElement>('.sidebar-update-banner-icon')!;
-  const title = banner.querySelector<HTMLElement>('strong')!;
-  const detail = banner.querySelector<HTMLElement>('small')!;
+  const title = banner.querySelector<HTMLElement>('.sidebar-update-banner-title')!;
+  const detail = banner.querySelector<HTMLElement>('.sidebar-update-banner-detail')!;
   const body = banner.querySelector<HTMLButtonElement>('.sidebar-update-banner-body')!;
   const dismiss = banner.querySelector<HTMLButtonElement>('.sidebar-update-banner-dismiss')!;
   let dismissed: string | null = null;

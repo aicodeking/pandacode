@@ -61,8 +61,8 @@ button .icon{pointer-events:none}
 .sidebar-update-banner-body:focus-visible{outline:2px solid var(--focus);outline-offset:-2px}
 .sidebar-update-banner-icon{color:var(--accent);flex:none;display:grid;place-items:center}
 .sidebar-update-banner-copy{min-width:0}
-.sidebar-update-banner-copy strong{display:block;font-size:var(--type-meta);font-weight:var(--weight-strong);line-height:var(--type-meta-leading);color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.sidebar-update-banner-copy small{display:block;font-size:var(--type-caption);line-height:var(--type-caption-leading);color:var(--accent-ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sidebar-update-banner-title{display:block;font-size:var(--type-meta);font-weight:var(--weight-medium);line-height:var(--type-meta-leading);color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sidebar-update-banner-detail{display:block;font-size:var(--type-caption);line-height:var(--type-caption-leading);color:var(--accent-ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .sidebar-update-banner-dismiss{position:absolute;top:3px;right:3px;width:20px;height:20px;display:grid;place-items:center;border-radius:var(--ds-control-radius);color:var(--accent-ink)}
 .sidebar-update-banner-dismiss .icon{--icon-size:11px;--icon-stroke:var(--icon-stroke-xs)}
 .sidebar-update-banner-dismiss:hover{background-color:var(--ds-fill-hover)}
