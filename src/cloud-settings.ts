@@ -369,6 +369,7 @@ export function mountCloudSettings(host: HTMLElement, options: CloudSettingsHost
     catch { return; } // No running sign-in to restore; the Sign in button stays ready.
     if (disposed || !running || colabConnected() || colabPending || colabSigning) return;
     colabSignInId = running.id; colabSigning = { ...running };
+    (section('colab') as HTMLDetailsElement).open = true;
     rowStatus(section('colab'), running.message || COLAB_SIGN_IN_STEPS[running.state]);
     render();
   }

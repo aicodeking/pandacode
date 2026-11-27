@@ -278,6 +278,7 @@ test('cloud sandboxes: Google Colab signs in with one click and saves its defaul
 
   // Saved natively, so a reopened Settings shows the same choices.
   await reopenSettings(page);
+  await card.locator('summary').click();
   await expect(hardware).toHaveValue('L4');
   await expect(highMem).not.toBeChecked();
   await expect(highMem).toBeDisabled();
@@ -291,7 +292,7 @@ test('cloud sandboxes: Google Colab signs in with one click and saves its defaul
 
   await disconnect.click();
   await expect(signIn).toBeVisible();
-  await expect(card.locator('.cloud-detail')).toHaveText('');
+  await expect(card.locator('.cloud-detail')).toHaveText('Cloud GPU/TPU runtimes for cloud agents, native Python execution, and browser notebooks.');
   await expect(card.locator('.cloud-colab-config')).toBeHidden();
   expect(errors).toEqual([]);
 });
