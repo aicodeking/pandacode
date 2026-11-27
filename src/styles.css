@@ -702,7 +702,17 @@ button:not(:disabled):active{background-color:var(--accent-dim);transition:none}
 
 .project-menu-search>.icon{--icon-size:var(--icon-sm);--icon-stroke:var(--icon-stroke-sm)}
 .project-menu-list{display:flex;flex-direction:column;gap:2px;min-height:0;overflow:auto;overscroll-behavior:contain}
+.project-menu-row{position:relative;display:flex;align-items:center;flex-shrink:0;min-width:0}
+.project-menu-row:has(>.project-menu-remove):is(:hover,:focus-within)>.project-menu-option{padding-right:34px}
+.project-menu-row:hover>.project-menu-option:not(:disabled):not([aria-selected="true"]){background:var(--ds-row-hover)}
 .project-menu-option{display:flex;flex-shrink:0;width:100%;align-items:center;justify-content:flex-start;gap:8px;min-height:28px;padding:4px 8px;text-align:left;color:var(--text)}
+.project-menu-remove{position:absolute;z-index:1;right:4px;display:grid;place-items:center;flex-shrink:0;width:var(--control-sm);height:var(--control-sm);padding:0;border-radius:var(--ds-control-radius);color:var(--muted);opacity:0;--press:.9;transition:opacity var(--ds-ease-out) ease-out,background-color var(--ds-ease-out) ease-out,color var(--ds-ease-out) ease-out,scale var(--spring-fast-duration) var(--spring-fast)}
+.project-menu-remove>.icon{--icon-size:var(--icon-sm);--icon-stroke:var(--icon-stroke-sm)}
+.project-menu-row:is(:hover,:focus-within)>.project-menu-remove,.project-menu-remove:focus-visible{opacity:1;transition-duration:var(--ds-ease-in),var(--ds-ease-in),var(--ds-ease-in),var(--spring-fast-duration)}
+.project-menu-remove:not(:disabled):hover{color:var(--ds-danger);background:var(--tone-danger-bg)}
+.project-menu-remove:not(:disabled):active{color:var(--ds-danger);background:color-mix(in srgb,var(--danger) 18%,transparent);scale:var(--ds-press)}
+.project-menu-remove:focus-visible{outline:2px solid var(--focus);outline-offset:-2px;color:var(--ds-danger)}
+@media(hover:none){.project-menu-remove{opacity:1}.project-menu-row:has(>.project-menu-remove)>.project-menu-option{padding-right:34px}}
 .project-menu-option>.icon{--icon-size:var(--icon-md);--icon-stroke:var(--icon-stroke-md);color:var(--muted)}
 .project-menu-option>.icon:last-child:not(:first-child){--icon-size:var(--icon-sm);--icon-stroke:var(--icon-stroke-sm);color:var(--accent-ink)}
 .project-menu-label{display:flex;align-items:baseline;gap:8px;min-width:0;flex:1}
@@ -782,7 +792,7 @@ html[data-theme="dark"] .choice-menu-option:focus-visible{background:color-mix(i
 .mode-picker,.composer-project{padding:6px;border-radius:var(--ds-control-radius)}
 .model-picker{padding:6px;border-radius:var(--ds-control-radius)}
 @media(prefers-reduced-transparency:reduce){.floating-menu{background:var(--bg);backdrop-filter:none;-webkit-backdrop-filter:none}.project-menu-search,.choice-menu-search{background:transparent}}
-@media(prefers-contrast:more){.floating-menu{background:var(--bg);border:1px solid var(--border);backdrop-filter:none;-webkit-backdrop-filter:none;box-shadow:0 6px 20px rgb(0 0 0 / .18)}.project-menu-search,.choice-menu-search{border-bottom:1px solid #97978e}.project-menu-footer{border-top:1px solid #97978e}.project-menu-option[aria-selected="true"],.choice-menu-option[aria-checked="true"]{outline:1px solid var(--focus);outline-offset:-1px}.project-menu-path,.choice-menu-description{color:var(--text)}}
+@media(prefers-contrast:more){.floating-menu{background:var(--bg);border:1px solid var(--border);backdrop-filter:none;-webkit-backdrop-filter:none;box-shadow:0 6px 20px rgb(0 0 0 / .18)}.project-menu-search,.choice-menu-search{border-bottom:1px solid #97978e}.project-menu-footer{border-top:1px solid #97978e}.project-menu-option[aria-selected="true"],.choice-menu-option[aria-checked="true"]{outline:1px solid var(--focus);outline-offset:-1px}.project-menu-remove{color:var(--danger)}.project-menu-path,.choice-menu-description{color:var(--text)}}
 
 /* AppKit supplies the material. Only the window frame (--frame on .workspace, src/inset-shell.css) reveals it; panels stay solid. */
 html:is([data-native-material="liquidGlass"],[data-native-material="vibrancy"]),

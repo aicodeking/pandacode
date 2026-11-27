@@ -7366,6 +7366,11 @@ async function showProjectPicker(anchor: HTMLElement): Promise<void> {
       await changeTaskProject(projectId);
     },
     onNewProject: () => { if (selected.id === state.sessionId && generation === state.generation) showOpenProject(true); },
+    canRemove: project => project.id !== NO_PROJECT,
+    onRemove: async projectId => {
+      const target = state.projects.find(p => p.id === projectId);
+      return target ? showRemoveProject(target) : false;
+    },
   });
 }
 /** One line for the picker: the lead's model, then the worker count. */
@@ -7888,8 +7893,31 @@ async function showFolderMenu(heading: HTMLElement, point?: { x: number; y: numb
     state.collapsedFolders.delete(id); saveCollapsedFolders(); renderNavigation();
   } });
 }
-function showRemoveProject(project: Project): void {
-  modal(`Remove ${project.name}?`, `<form id="remove-project-form" data-project-id="${escape(project.id)}"><p class="dialog-description">Its tasks are removed from PandaCode. The folder stays on disk.</p><div class="dialog-footer"><button type="button" class="secondary-button" data-action="close-dialog">Cancel</button><button class="primary-button danger">Remove project</button></div></form>`, 'compact-dialog');
+function showRemoveProject(project: Project): Promise<boolean> {
+  const dialog = modal(`Remove ${project.name}?`, `<form id="remove-project-form" data-project-id="${escape(project.id)}"><p class="dialog-description">Its tasks are removed from PandaCode. The folder stays on disk.</p><div class="dialog-footer"><button type="button" class="secondary-button" data-action="close-dialog">Cancel</button><button type="submit" class="primary-button danger">Remove project</button></div></form>`, 'compact-dialog');
+  const form = dialog.querySelector<HTMLFormElement>('#remove-project-form')!;
+  form.querySelector<HTMLButtonElement>('[data-action="close-dialog"]')!.focus();
+  return new Promise(resolve => {
+    let settled = false;
+    const finish = (removed: boolean): void => { if (!settled) { settled = true; resolve(removed); } };
+    dialog.addEventListener('close', () => finish(false), { once: true });
+    form.addEventListener('submit', event => {
+      event.preventDefault();
+      event.stopPropagation();
+      const submitter = form.querySelector<HTMLButtonElement>('[type="submit"]');
+      if (submitter?.disabled) return;
+      if (submitter) submitter.disabled = true;
+      run((async () => {
+        try {
+          await removeProject(project.id);
+          finish(true);
+          if (dialog.open && form.isConnected) closeModal();
+        } finally {
+          if (submitter?.isConnected) submitter.disabled = false;
+        }
+      })());
+    });
+  });
 }
 /** Projects: Manual. Saves the dragged folder order; projects not in it lead, newest first. */
 function reorderFolders(ids: string[], focus: string): void {
@@ -9373,7 +9401,6 @@ document.addEventListener('submit', event => {
       else if (form.id === 'open-project-form') {
         const path = String(data.get('path') || '').trim(); if (!path) return; await addProject(path);
       } else if (form.id === 'rename-form') { const title = String(data.get('title') || '').trim(); if (!title) return; await call('update_session', { sessionId: form.dataset.sessionId || state.sessionId, title }); closeModal(); await reloadSessions(); }
-      else if (form.id === 'remove-project-form') { await removeProject(form.dataset.projectId!); closeModal(); }
       else if (form.id.startsWith('worktree-')) { await worktrees.submit(form, data); }
       else if (form.id.startsWith('github-')) { await github.submit(form, data); }
       else if (form.id === 'commit-form') { const message = document.querySelector<HTMLTextAreaElement>('#commit-message')!.value.trim(); if (!message) { notify('Enter a commit message.'); return; } const result = await call<string>('git_commit', { ...workspaceContext(), message }); await refreshInspector(); notify(result || 'Changes committed'); }
