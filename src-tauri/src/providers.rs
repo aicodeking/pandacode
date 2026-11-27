@@ -4637,6 +4637,14 @@ async fn run_inner(
     } else {
         None
     };
+    // Apply the project pin after provider and connection environment overrides.
+    // A stale pin retains gh's active account, as warm agents and terminals do.
+    if let Some(pin) = &config.github_pin {
+        if let Ok(Some(token)) = crate::github_accounts::token_for(Some(pin)) {
+            command.env("GH_TOKEN", &token);
+            command.env("GH_ENTERPRISE_TOKEN", &token);
+        }
+    }
     run_process_with_tools(
         config,
         sink,

@@ -646,7 +646,7 @@ fn pr_review_args(repo: &str, number: i64, event: ReviewEvent, body: &str) -> Ve
 /// Review pull request `number` with the caller's trust (see [`run_gh_as`]): the phone's
 /// `pull.review` must not let `gh` run the checkout's git hooks or filters with desktop trust.
 /// `repo` (`owner/name`) is the project's `origin`, passed as `--repo=…`.
-pub(crate) fn review_pull_as(root: &Path, repo: &str, number: i64, event: ReviewEvent, body: &str, trust: Trust) -> Result<(), String> {
+pub(crate) fn review_pull_as(root: &Path, repo: &str, token: Option<&str>, number: i64, event: ReviewEvent, body: &str, trust: Trust) -> Result<(), String> {
     let body = body.trim();
     if number <= 0 {
         return Err("Choose a pull request to review.".into());
@@ -658,7 +658,7 @@ pub(crate) fn review_pull_as(root: &Path, repo: &str, number: i64, event: Review
         return Err("Write a comment for this review.".into());
     }
     let args = pr_review_args(repo, number, event, body);
-    run_gh_as(root, &args.iter().map(String::as_str).collect::<Vec<_>>(), TIMEOUT, trust)?;
+    run_gh_token_as(root, token, &args.iter().map(String::as_str).collect::<Vec<_>>(), TIMEOUT, trust)?;
     Ok(())
 }
 
@@ -712,13 +712,13 @@ mod tests {
         assert_eq!(ReviewEvent::parse("--approve"), None);
         assert!(ReviewEvent::Comment.needs_body() && !ReviewEvent::Approve.needs_body());
         let root = std::path::Path::new("/tmp");
-        assert!(super::review_pull_as(root, "o/r", 7, ReviewEvent::Comment, "  ", crate::workspace::Trust::phone(false)).is_err());
-        assert!(super::review_pull_as(root, "o/r", 0, ReviewEvent::Approve, "", crate::workspace::Trust::phone(false)).is_err());
-        assert_eq!(super::review_pull_as(root, "", 7, ReviewEvent::Approve, "", crate::workspace::Trust::phone(false)).unwrap_err(), "This project has no GitHub remote.");
+        assert!(super::review_pull_as(root, "o/r", None, 7, ReviewEvent::Comment, "  ", crate::workspace::Trust::phone(false)).is_err());
+        assert!(super::review_pull_as(root, "o/r", None, 0, ReviewEvent::Approve, "", crate::workspace::Trust::phone(false)).is_err());
+        assert_eq!(super::review_pull_as(root, "", None, 7, ReviewEvent::Approve, "", crate::workspace::Trust::phone(false)).unwrap_err(), "This project has no GitHub remote.");
         let source = include_str!("github.rs");
         let body = &source[source.find("pub(crate) fn review_pull_as(").unwrap()..];
         let body = &body[..body.find("\n}\n").unwrap()];
-        assert!(body.contains("run_gh_as(root, &args.iter().map(String::as_str).collect::<Vec<_>>(), TIMEOUT, trust)?"));
+        assert!(body.contains("run_gh_token_as(root, token, &args.iter().map(String::as_str).collect::<Vec<_>>(), TIMEOUT, trust)?"));
         assert!(!body.contains("run_gh(root"));
     }
 

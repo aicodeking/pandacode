@@ -851,7 +851,11 @@ async fn open_pull(ctx: Ctx<'_>, this: PullCreate) -> Result<Value> {
     let pin_root = root.clone();
     crate::blocking(move || crate::github::pull_create_repo(&pin_root, trust)).await?;
     let (title, body, draft) = (this.title, this.body, this.draft);
-    let link = crate::blocking(move || crate::push_and_open_pull(&root, &title, &body, &base, draft, trust, None)).await?;
+    let project = task.project_id.clone();
+    let link = crate::blocking(move || {
+        let token = crate::github_token(&project)?;
+        crate::push_and_open_pull(&root, &title, &body, &base, draft, trust, token.as_deref())
+    }).await?;
     let store = ctx.state().store.clone();
     let session_id = this.session_id;
     let saved = link.clone();

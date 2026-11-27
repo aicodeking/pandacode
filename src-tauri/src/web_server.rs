@@ -2078,7 +2078,7 @@ const WEB_ALLOWED_COMMANDS: &[&str] = &[
     "resolve_agent_ui_action", "list_providers", "list_provider_models", "git_status", "git_diff", "jj_status",
     "jj_diff", "jj_describe", "jj_new", "jj_commit", "jj_log", "git_stage", "git_commit", "git_branches",
     "git_switch_branch", "git_push", "create_worktree", "attach_worktree", "worktree_status", "remove_worktree",
-    "merge_worktree", "recreate_worktree", "github_status", "github_repos", "project_icon", "github_repo_pulls",
+    "merge_worktree", "recreate_worktree", "github_accounts", "github_set_account", "github_status", "github_repos", "project_icon", "github_repo_pulls",
     "github_repo_issues", "github_repo_runs", "github_run_details", "github_project_repos", "github_clone_repo",
     "github_search", "github_issues", "github_resolve", "github_refresh_links", "github_create_pull_request",
     "github_pull_request", "github_pull_request_diff", "github_merge_pull_request",
