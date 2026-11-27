@@ -21,6 +21,78 @@ pub(super) fn mode_id(mode: &str) -> &'static str {
 /// Shown when Command Code has neither a saved key nor a CLI login.
 pub(super) const SIGN_IN: &str = "Command Code is not signed in. Run `command-code login` in a terminal, or save an API key in Settings → Agents, then send again.";
 
+/// Command Code's `exit_plan_mode` approval rides on `session/request_permission`,
+/// not on a tool call: the tool call is `kind: "other"`, and both offered options
+/// are `kind: "allow_once"` ("Yes, auto-accept edits" and "Cancel"). That shape is
+/// indistinguishable from a structured question by option kinds alone, so it must
+/// be recognised here or the generic question handling cancels it before the user
+/// ever sees a prompt. The CLI drops its own `exitPlanMode` marker over ACP, so the
+/// remaining signals are the canonical question text it sends for this one prompt.
+///
+/// A header or a Yes/Cancel pair alone is not enough: a model's own
+/// `ask_user_question` may reasonably be titled "Plan Review" and offer "Yes, …"
+/// and "Cancel". Matching the CLI's exact question text keeps those on the generic
+/// path; an unrecognised shape stays a cancel, so a real plan is never approved by
+/// a request this code did not understand.
+///
+/// ACP carries no provenance for this prompt, so a model that reproduces the exact
+/// header, question and labels is indistinguishable from the CLI asking — and that
+/// question is a plan approval either way, so the approval answer is still correct.
+const PLAN_QUESTIONS: [&str; 2] = [
+    "Exit plan mode and begin implementation?",
+    "Plan ready for review. Begin implementation?",
+];
+
+pub(super) fn is_plan_approval(request: &Value) -> bool {
+    let call = &request["params"]["toolCall"];
+    let question = call["rawInput"]["question"].as_str().unwrap_or_default();
+    if !PLAN_QUESTIONS.contains(&question) {
+        return false;
+    }
+    let title = call["title"].as_str().unwrap_or_default();
+    if !title.starts_with("Exit Plan:") && !title.starts_with("Plan Review:") {
+        return false;
+    }
+    // The CLI answers "auto-accept" for a "Yes, auto-accept…" label and "default" for
+    // any other "Yes, …", and treats everything else as a cancel.
+    let named = |prefix: &str| {
+        request["params"]["options"]
+            .as_array()
+            .is_some_and(|options| {
+                options.iter().any(|option| {
+                    option["kind"] == "allow_once"
+                        && option["name"]
+                            .as_str()
+                            .is_some_and(|name| name.starts_with(prefix))
+                })
+            })
+    };
+    named("Yes, ") && named("Cancel")
+}
+
+/// The answer to a plan-approval request. Both options are `allow_once`, so the
+/// choice is made by name: approving takes the "Yes, …" option and declining takes
+/// "Cancel". Anything unrecognised stays a cancel so a plan is never approved by a
+/// request this code did not understand.
+pub(super) fn plan_decision(request: &Value, approved: bool) -> Value {
+    let options = request["params"]["options"].as_array();
+    let selected = options.and_then(|options| {
+        options.iter().find(|option| {
+            option["name"].as_str().is_some_and(|name| {
+                if approved {
+                    name.starts_with("Yes, ")
+                } else {
+                    name.starts_with("Cancel")
+                }
+            })
+        })
+    });
+    let outcome = selected
+        .map(|option| json!({"outcome":"selected","optionId":option["optionId"]}))
+        .unwrap_or_else(|| json!({"outcome":"cancelled"}));
+    json!({"jsonrpc":"2.0","id":request["id"],"result":{"outcome":outcome}})
+}
+
 /// The key to hand Command Code: a saved key wins, then the app's environment. A
 /// locked or unavailable secure store is not fatal here, because the CLI can use
 /// the account from `command-code login` instead.
@@ -175,6 +247,118 @@ mod tests {
         let (mut p, _) = ready("ask", "default", None);
         let step = permission(&mut p);
         assert!(step.write.is_empty() && step.events.iter().any(|e| e.kind == "approval"));
+    }
+
+    /// The frame `command-code acp` 1.93.4 builds for `exit_plan_mode` in plan mode:
+    /// `requestQuestion` joins header and question into the title and appends each
+    /// option's description to its name. Both options are `allow_once`, so the generic
+    /// question heuristic used to cancel it and the user never saw an approval prompt.
+    fn plan_approval(p: &mut Protocol) -> Step {
+        p.receive(json!({"jsonrpc":"2.0","id":11,"method":"session/request_permission","params":{"sessionId":"cc-1","toolCall":{"toolCallId":"question_1","title":"Exit Plan: Exit plan mode and begin implementation?","kind":"other","status":"pending","rawInput":{"question":"Exit plan mode and begin implementation?","options":["Yes, auto-accept edits","Cancel"]}},"options":[
+            {"optionId":"option_0","name":"Yes, auto-accept edits: Exit plan mode and implement with accept edits (no permission prompts)","kind":"allow_once"},
+            {"optionId":"option_1","name":"Cancel: Stay in plan mode — run /plans to annotate or edit the plan anytime","kind":"allow_once"}]}})).unwrap()
+    }
+
+    #[test]
+    fn plan_approval_reaches_the_user_instead_of_being_cancelled() {
+        let (mut p, _) = ready("plan", "default", None);
+        let step = plan_approval(&mut p);
+        assert!(step.write.is_empty(), "the request must wait for the user, not be answered: {:?}", step.write);
+        let approval = step.events.iter().find(|e| e.kind == "approval").expect("an approval event");
+        assert!(approval.request_id.is_some());
+    }
+
+    #[test]
+    fn approval_answering_a_plan_exits_plan_mode_and_declining_keeps_it() {
+        let approve = |approved: bool| {
+            let (mut p, _) = ready("plan", "default", None);
+            let id = plan_approval(&mut p)
+                .events
+                .iter()
+                .find(|e| e.kind == "approval")
+                .and_then(|e| e.request_id.clone())
+                .expect("an approval request id");
+            p.approve(&id, approved).expect("a decision")["result"]["outcome"].clone()
+        };
+        assert_eq!(approve(true), json!({"outcome":"selected","optionId":"option_0"}));
+        assert_eq!(approve(false), json!({"outcome":"selected","optionId":"option_1"}));
+    }
+
+    #[test]
+    fn a_plain_question_is_still_not_a_plan_approval() {
+        let (mut p, _) = ready("plan", "default", None);
+        let step = p.receive(json!({"jsonrpc":"2.0","id":12,"method":"session/request_permission","params":{"sessionId":"cc-1","toolCall":{"toolCallId":"question_1","title":"Host + DB: which droplet?","kind":"other"},"options":[
+            {"optionId":"option_0","name":"It's a Plan VPS","kind":"allow_once"},
+            {"optionId":"option_1","name":"A new droplet","kind":"allow_once"}]}})).unwrap();
+        assert!(step.events.iter().all(|e| e.kind != "approval"));
+        assert_eq!(step.write[0]["result"]["outcome"]["outcome"], json!("cancelled"));
+    }
+
+    /// `plan_review` (outside plan mode) uses the same prompt with the other header and
+    /// question, so both canonical texts must be recognised.
+    #[test]
+    fn plan_review_is_also_an_approval() {
+        let (mut p, _) = ready("ask", "default", None);
+        let step = p.receive(json!({"jsonrpc":"2.0","id":15,"method":"session/request_permission","params":{"sessionId":"cc-1","toolCall":{"toolCallId":"question_2","title":"Plan Review: Plan ready for review. Begin implementation?","kind":"other","rawInput":{"question":"Plan ready for review. Begin implementation?","options":["Yes, auto-accept edits","Cancel"]}},"options":[
+            {"optionId":"option_0","name":"Yes, auto-accept edits: Implement with accept edits (no permission prompts)","kind":"allow_once"},
+            {"optionId":"option_1","name":"Cancel: Keep refining the plan — run /plans to annotate or edit it anytime","kind":"allow_once"}]}})).unwrap();
+        assert!(step.write.is_empty(), "waits for the user: {:?}", step.write);
+        assert!(step.events.iter().any(|e| e.kind == "approval"));
+    }
+
+    /// A model may title its own question "Plan Review", and may offer "Yes, …" and
+    /// "Cancel" options. Neither alone, nor both together, may turn a real question into
+    /// plan approval: the question text the CLI sends for plan approval is canonical.
+    #[test]
+    fn a_question_with_approval_like_header_and_labels_is_not_plan_approval() {
+        let question = |title: &str, asked: &str, options: Value| {
+            let (mut p, _) = ready("plan", "default", None);
+            let step = p.receive(json!({"jsonrpc":"2.0","id":13,"method":"session/request_permission","params":{"sessionId":"cc-1","toolCall":{"toolCallId":"question_2","title":title,"kind":"other","rawInput":{"question":asked}},"options":options}})).unwrap();
+            (step.events.iter().any(|e| e.kind == "approval"), step.write[0]["result"]["outcome"]["outcome"].clone())
+        };
+        let header_only = question("Plan Review: which section needs revision?", "which section needs revision?", json!([
+            {"optionId":"option_0","name":"Architecture","kind":"allow_once"},
+            {"optionId":"option_1","name":"Testing","kind":"allow_once"}]));
+        assert_eq!(header_only, (false, json!("cancelled")));
+        let label_only = question("Deploy target: where?", "where?", json!([
+            {"optionId":"option_0","name":"Yes, auto-accept edits for this one","kind":"allow_once"},
+            {"optionId":"option_1","name":"Cancel the deploy","kind":"allow_once"}]));
+        assert_eq!(label_only, (false, json!("cancelled")));
+        let header_and_labels = question("Plan Review: use PostgreSQL for storage?", "use PostgreSQL for storage?", json!([
+            {"optionId":"option_0","name":"Yes, use PostgreSQL","kind":"allow_once"},
+            {"optionId":"option_1","name":"Cancel: discuss another database","kind":"allow_once"}]));
+        assert_eq!(header_and_labels, (false, json!("cancelled")));
+    }
+
+    /// Each signal is required on its own, so dropping any one keeps the generic path.
+    #[test]
+    fn a_plan_approval_needs_both_its_question_and_its_option_pair() {
+        let request = |question: &str, options: Value| json!({"jsonrpc":"2.0","id":16,"method":"session/request_permission","params":{"sessionId":"cc-1","toolCall":{"toolCallId":"question_3","title":"Exit Plan: Exit plan mode and begin implementation?","kind":"other","rawInput":{"question":question}},"options":options}});
+        let yes = json!({"optionId":"option_0","name":"Yes, auto-accept edits: go","kind":"allow_once"});
+        let cancel = json!({"optionId":"option_1","name":"Cancel: stay","kind":"allow_once"});
+        assert!(is_plan_approval(&request("Exit plan mode and begin implementation?", json!([yes, cancel]))));
+        assert!(!is_plan_approval(&request("Exit plan mode and begin implementation?", json!([yes]))), "no cancel option");
+        assert!(!is_plan_approval(&request("Exit plan mode and begin implementation?", json!([cancel]))), "no yes option");
+        assert!(!is_plan_approval(&request("Something else entirely?", json!([yes, cancel]))), "not the canonical question");
+        assert!(!is_plan_approval(&json!({"params":{"toolCall":{"title":"Exit Plan: Exit plan mode and begin implementation?"},"options":[yes, cancel]}})), "no question text");
+        assert!(
+            !is_plan_approval(&json!({"params":{"toolCall":{"title":"Host: Exit plan mode and begin implementation?","rawInput":{"question":"Exit plan mode and begin implementation?"}},"options":[yes.clone(), cancel.clone()]}})),
+            "canonical question and options with the wrong header"
+        );
+        assert!(
+            !is_plan_approval(&json!({"params":{"toolCall":{"rawInput":{"question":"Exit plan mode and begin implementation?"}},"options":[yes, cancel]}})),
+            "canonical question and options with no header"
+        );
+    }
+
+    /// `plan_decision` itself refuses to guess when the expected option is absent.
+    #[test]
+    fn plan_decision_cancels_when_the_expected_option_is_missing() {
+        let request = json!({"jsonrpc":"2.0","id":17,"params":{"options":[
+            {"optionId":"option_0","name":"Proceed","kind":"allow_once"},
+            {"optionId":"option_1","name":"Back","kind":"allow_once"}]}});
+        assert_eq!(plan_decision(&request, true)["result"]["outcome"]["outcome"], json!("cancelled"));
+        assert_eq!(plan_decision(&request, false)["result"]["outcome"]["outcome"], json!("cancelled"));
     }
 
     #[test]
