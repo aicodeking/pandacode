@@ -1,5 +1,11 @@
 //! Claude credential selection is scoped to the child process. Only credential
 //! source names and endpoint origins may cross IPC, never credential values.
+//!
+//! PandaCode always selects Claude's model itself (the launch always names it), so the
+//! ambient model and alias variables are removed in both modes: an alias such as `haiku`
+//! resolved through a shell's `ANTHROPIC_DEFAULT_HAIKU_MODEL` would otherwise silently
+//! replace PandaCode's choice, and a stale value like `auto/claude-sonnet` makes the API
+//! reject the run as `unrecognized_model`. Credentials and the endpoint stay inherited.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -24,6 +30,12 @@ const OVERRIDES: &[&str] = &[
     "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY",
     "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_PROFILE", "ANTHROPIC_FEDERATION_RULE_ID",
     "ANTHROPIC_ORGANIZATION_ID", "ANTHROPIC_IDENTITY_TOKEN_FILE",
+];
+
+/// Model selection belongs to PandaCode, which always names the model at launch, so these are
+/// removed in every mode. Leaving them inherited lets a shell's alias redirection (or a stale
+/// `auto/<model>` value) override that choice and fail the run as `unrecognized_model`.
+pub(crate) const MODEL_OVERRIDES: &[&str] = &[
     "ANTHROPIC_MODEL", "ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL",
     "ANTHROPIC_DEFAULT_HAIKU_MODEL", "ANTHROPIC_DEFAULT_FABLE_MODEL", "ANTHROPIC_SMALL_FAST_MODEL",
     "CLAUDE_CODE_SUBAGENT_MODEL",
@@ -56,14 +68,15 @@ pub(crate) fn removed_environment(provider: &str) -> &'static [&'static str] {
 }
 
 /// The variables `configure` removes from a Claude process in `mode`; usage
-/// checks read the launch environment through the same list.
+/// checks read the launch environment through the same list. Model selection is
+/// always PandaCode's, so those are listed in either mode.
 pub(crate) fn stripped(mode: Mode) -> &'static [&'static str] {
     if mode == Mode::Subscription { OVERRIDES } else { &[] }
 }
 
 fn apply_mode(command: &mut Command, provider: &str, mode: Mode) {
     if provider == "claude" {
-        for name in stripped(mode) { command.env_remove(name); }
+        for name in stripped(mode).iter().chain(MODEL_OVERRIDES) { command.env_remove(name); }
     }
 }
 
@@ -174,6 +187,53 @@ mod tests {
         assert_eq!(env[OsStr::new("PATH")], Some(OsStr::new("keep-path")));
         assert_eq!(env[OsStr::new("ZAI_API_KEY")], Some(OsStr::new("relay-key")));
         assert_eq!(std::env::var_os("ANTHROPIC_API_KEY"), before);
+    }
+
+    #[test]
+    fn model_selection_is_reclaimed_in_both_modes_while_credentials_stay_inherited() {
+        // A shell that redirects Claude's model aliases to a router's own names.
+        let aliases = [
+            ("ANTHROPIC_MODEL", "auto/claude-sonnet"),
+            ("ANTHROPIC_DEFAULT_OPUS_MODEL", "auto/claude-opus"),
+            ("ANTHROPIC_DEFAULT_SONNET_MODEL", "auto/claude-sonnet"),
+            ("ANTHROPIC_DEFAULT_HAIKU_MODEL", "auto/claude-sonnet"),
+            ("ANTHROPIC_DEFAULT_FABLE_MODEL", "auto/claude-fable"),
+            ("ANTHROPIC_SMALL_FAST_MODEL", "auto/claude-haiku"),
+            ("CLAUDE_CODE_SUBAGENT_MODEL", "auto/claude-haiku"),
+        ];
+        let before = std::env::var_os("ANTHROPIC_MODEL");
+        let mut command = tokio::process::Command::new("claude");
+        command.env("PATH", "keep-path").env("ZAI_API_KEY", "relay-key");
+        command.env("ANTHROPIC_API_KEY", "sk-test").env("ANTHROPIC_BASE_URL", "https://gateway.example");
+        for (name, value) in aliases { command.env(name, value); }
+        apply_mode(&mut command, "claude", Mode::Inherit);
+        let env: HashMap<_, _> = command.as_std().get_envs().collect();
+        for (name, _) in aliases { assert_eq!(env[OsStr::new(name)], None, "{name} must not reach a launch"); }
+        // The user's own gateway and credentials are still inherited in this mode.
+        assert_eq!(env[OsStr::new("ANTHROPIC_API_KEY")], Some(OsStr::new("sk-test")));
+        assert_eq!(env[OsStr::new("ANTHROPIC_BASE_URL")], Some(OsStr::new("https://gateway.example")));
+        assert_eq!(env[OsStr::new("PATH")], Some(OsStr::new("keep-path")));
+        assert_eq!(env[OsStr::new("ZAI_API_KEY")], Some(OsStr::new("relay-key")));
+        // The process environment is not mutated; only the child's copy is.
+        assert_eq!(std::env::var_os("ANTHROPIC_MODEL"), before);
+
+        // Prefer saved Claude login removes the credentials and the model selection alike.
+        let mut command = tokio::process::Command::new("claude");
+        command.env("ANTHROPIC_API_KEY", "sk-test").env("ANTHROPIC_MODEL", "auto/claude-sonnet");
+        apply_mode(&mut command, "claude", Mode::Subscription);
+        let env: HashMap<_, _> = command.as_std().get_envs().collect();
+        for name in OVERRIDES.iter().chain(MODEL_OVERRIDES) { assert_eq!(env[OsStr::new(name)], None, "{name}"); }
+    }
+
+    #[test]
+    fn a_relay_is_untouched_by_the_claude_model_scrub() {
+        // GLM launches Claude Code too, but under its own relay rules; the model scrub is Claude's.
+        let mut command = tokio::process::Command::new("claude");
+        command.env("ANTHROPIC_MODEL", "auto/claude-sonnet").env("ANTHROPIC_API_KEY", "relay-key");
+        apply_mode(&mut command, "glm", Mode::Inherit);
+        let env: HashMap<_, _> = command.as_std().get_envs().collect();
+        assert_eq!(env[OsStr::new("ANTHROPIC_MODEL")], Some(OsStr::new("auto/claude-sonnet")));
+        assert_eq!(env[OsStr::new("ANTHROPIC_API_KEY")], Some(OsStr::new("relay-key")));
     }
 
     #[test]

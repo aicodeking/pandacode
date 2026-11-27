@@ -272,6 +272,16 @@ process, and "Prefer saved Claude login" scrubs inherited credential variables
 at this point), then a named connection's environment, whose variables land
 after the scrub.
 
+Claude's model selection is the one thing PandaCode keeps for itself, in every
+mode. A Claude Code launch always names its model, so the inherited
+`ANTHROPIC_MODEL`, `ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU,FABLE}_MODEL`,
+`ANTHROPIC_SMALL_FAST_MODEL` and `CLAUDE_CODE_SUBAGENT_MODEL` are removed from
+the child before it starts. Left in place, an alias redirection such as
+`ANTHROPIC_DEFAULT_HAIKU_MODEL=auto/claude-sonnet` silently replaces the chosen
+model, and the API rejects the run as `unrecognized_model`. Credentials and
+`ANTHROPIC_BASE_URL` are untouched in "Inherit" mode, so a gateway keeps
+working.
+
 The effective set is applied to everything that spawns the harness: tasks
 (`run_inner` in `providers.rs`), warm Claude agents (`providers/warm.rs`, whose
 adoption key carries a fingerprint of the saved variables, so an edit always
@@ -298,9 +308,13 @@ rest of the roster (Codex and Kimi Code today) gets a generated card with an
 executable location and these environment settings.
 
 A saved executable location must be an absolute path to an existing executable
-file; it is started directly, never through a shell. GLM Coding Plan and MiMo
-Token Plan run the Claude executable, so they have no location of their own and
-use the one on the Claude Code card.
+file; it is started directly, never through a shell. The path is stored exactly
+as entered, so a symlink stays a link: its target is checked for existence and
+the executable bit, not substituted into the setting. An upgrade that repoints
+the link (a Homebrew Caskroom link or a Volta shim, say) therefore keeps working
+without editing the setting. GLM Coding Plan and MiMo Token Plan run the Claude
+executable, so they have no location of their own and use the one on the Claude
+Code card.
 
 ## GitHub Copilot CLI
 
