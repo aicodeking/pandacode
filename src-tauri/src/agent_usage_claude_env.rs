@@ -47,7 +47,8 @@ impl ClaudeEnv {
         if let Some(value) = last(&self.connection, name) {
             return Some(value);
         }
-        if claude_auth::stripped(self.mode).contains(&name) {
+        // Model selection is always PandaCode's, so those never reach Claude from here.
+        if claude_auth::stripped(self.mode).contains(&name) || claude_auth::MODEL_OVERRIDES.contains(&name) {
             return None;
         }
         last(&self.saved, name).or_else(|| (self.process)(name))
@@ -97,5 +98,15 @@ mod tests {
         let named = env(Mode::Subscription, &saved, &connection);
         assert_eq!(named.get("ANTHROPIC_API_KEY").as_deref(), Some("b"));
         assert_eq!(named.config_dir(), None, "a relative folder is refused");
+    }
+
+    #[test]
+    fn model_variables_never_count_as_the_launch_environment() {
+        // A usage reading must mirror the launch, which always reclaims model selection.
+        let saved = [pair("ANTHROPIC_MODEL", "auto/claude-sonnet"), pair("ANTHROPIC_API_KEY", "saved-key")];
+        let inherit = env(Mode::Inherit, &saved, &[]);
+        assert_eq!(inherit.get("ANTHROPIC_MODEL"), None);
+        assert_eq!(inherit.get("ANTHROPIC_DEFAULT_HAIKU_MODEL"), None);
+        assert_eq!(inherit.get("ANTHROPIC_API_KEY").as_deref(), Some("saved-key"));
     }
 }
