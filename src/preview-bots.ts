@@ -12,6 +12,7 @@ interface Store { bot: Bot; memories: Memory[]; schedules: Schedule[]; channels:
 const bots = new Map<string, Store>();
 const webhooks = new Map<string, Webhook>();
 const webhookSecrets = new Map<string, string>();
+const webhookTokens = new Map<string, string>();
 const newWebhookSecret = () => [...crypto.getRandomValues(new Uint8Array(32))].map(byte => byte.toString(16).padStart(2, '0')).join('');
 const failoverAsks = new Map<string, FailoverAsk>();
 const sharedChannels = new Map<string, SharedChannelDetail>();
@@ -314,18 +315,40 @@ export async function invokeBots<T>(command: string, args: Record<string, any>, 
       const prompt = String(args.prompt ?? '').trim().slice(0, 8000);
       if (!prompt) throw new Error('A webhook needs a prompt: what should the bot do?');
       if ([...webhooks.values()].filter(hook => hook.botId === args.botId).length >= 50) throw new Error('A bot can have up to 50 webhooks.');
-      const hook: Webhook = { id: crypto.randomUUID(), botId: args.botId, title: String(args.title ?? '').trim().slice(0, 120) || prompt.slice(0, 60), prompt, enabled: true, lastTimestamp: 0, createdAt: new Date().toISOString() };
+      const hook: Webhook = { id: crypto.randomUUID(), botId: args.botId, title: String(args.title ?? '').trim().slice(0, 120) || prompt.slice(0, 60), prompt, enabled: true, lastTimestamp: 0, requireSignature: true, requireToken: false, allowedIps: [], trustForwarded: false, allowPublicHost: false, lastDelivery: null, createdAt: new Date().toISOString() };
       webhooks.set(hook.id, hook); webhookSecrets.set(hook.id, newWebhookSecret()); result = structuredClone(hook); changed(); break;
+    }
+    case 'bot_webhook_update': {
+      const hook = webhooks.get(String(args.id));
+      if (!hook) throw new Error('This webhook no longer exists.');
+      const settings = (args.settings ?? {}) as Record<string, unknown>;
+      const next = { ...hook };
+      if (typeof settings.requireSignature === 'boolean') next.requireSignature = settings.requireSignature;
+      if (typeof settings.requireToken === 'boolean') next.requireToken = settings.requireToken;
+      if (typeof settings.trustForwarded === 'boolean') next.trustForwarded = settings.trustForwarded;
+      if (typeof settings.allowPublicHost === 'boolean') next.allowPublicHost = settings.allowPublicHost;
+      if (Array.isArray(settings.allowedIps)) {
+        next.allowedIps = (settings.allowedIps as string[]).map(entry => String(entry).trim()).filter(Boolean);
+        for (const entry of next.allowedIps) {
+          // Loose check: an address, optionally with a numeric prefix after a slash.
+          if (!/^[0-9a-fA-F:.]+(\/(\d{1,3}))?$/.test(entry)) throw new Error(`${entry} is not a valid IP address or range.`);
+        }
+        if (next.allowedIps.length > 64) throw new Error('A webhook can allow up to 64 addresses or ranges.');
+      }
+      if (!next.requireSignature && !next.requireToken && !next.allowedIps.length) throw new Error('A webhook needs a signing secret, an API token or an IP allowlist, so anyone who finds the URL cannot start work.');
+      webhooks.set(next.id, next); result = structuredClone(next); changed(); break;
     }
     case 'bot_webhook_set_enabled':
     case 'bot_webhook_delete':
     case 'bot_webhook_rotate_secret':
+    case 'bot_webhook_rotate_token':
     case 'bot_webhook_test': {
       const hook = webhooks.get(String(args.id));
       if (!hook) throw new Error('This webhook no longer exists.');
       if (command === 'bot_webhook_set_enabled') { hook.enabled = Boolean(args.enabled); result = structuredClone(hook); changed(); }
       else if (command === 'bot_webhook_delete') { webhooks.delete(hook.id); webhookSecrets.delete(hook.id); changed(); }
       else if (command === 'bot_webhook_rotate_secret') { result = newWebhookSecret(); webhookSecrets.set(hook.id, result as string); }
+      else if (command === 'bot_webhook_rotate_token') { const token = newWebhookSecret(); webhookTokens.set(hook.id, token); result = token; }
       else result = hook.enabled ? { status: 202 } : { status: 403, error: 'This webhook is disabled.' };
       break;
     }

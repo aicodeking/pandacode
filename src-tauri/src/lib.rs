@@ -5129,6 +5129,8 @@ pub(crate) fn main_invoke_handler(invoke: tauri::ipc::Invoke<tauri::Wry>) -> boo
         bots::webhooks::bot_webhook_set_enabled,
         bots::webhooks::bot_webhook_delete,
         bots::webhooks::bot_webhook_rotate_secret,
+        bots::webhooks::bot_webhook_rotate_token,
+        bots::webhooks::bot_webhook_update,
         bots::webhooks::bot_webhook_test,
         bots::guard::bot_rule_add,
         bots::guard::bot_rule_delete,

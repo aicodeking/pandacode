@@ -949,12 +949,19 @@ fn an_unreadable_team_refuses_the_turn_without_promoting_its_request_or_keeping_
 /// secret's own bytes, as lowercase hex behind `sha256=`. Reimplemented here so the
 /// tests pin the scheme independently of the module under test.
 fn webhook_signature(secret: &str, timestamp: &str, body: &str) -> String {
+    format!("sha256={}", hmac_hex(secret, &format!("{timestamp}.{body}")))
+}
+
+/// The bare lowercase hex a `t=...,v1=...` header carries.
+fn hmac_hex(secret: &str, message: &str) -> String {
     use hmac::{Hmac, Mac};
     let mut mac = Hmac::<sha2::Sha256>::new_from_slice(secret.as_bytes()).unwrap();
-    mac.update(format!("{timestamp}.{body}").as_bytes());
-    let hex: String = mac.finalize().into_bytes().iter().map(|b| format!("{b:02x}")).collect();
-    format!("sha256={hex}")
+    mac.update(message.as_bytes());
+    mac.finalize().into_bytes().iter().map(|b| format!("{b:02x}")).collect()
 }
+
+/// The app handle behind a `MockRuntime`, which the webhook routes accept.
+type MockApp = tauri::App<tauri::test::MockRuntime>;
 
 #[test]
 fn webhook_signatures_check_the_mac_freshness_and_header_rules() {
@@ -1090,6 +1097,138 @@ fn webhook_route_classifies_unknown_disabled_unsigned_stale_and_empty_requests()
     assert!(!error_of(&empty).is_empty());
 }
 
+/// A helper for the auth-method tests: a webhook on a bot, driven through `Auth`.
+fn webhook_fixture() -> (Fixture, webhooks::Webhook, MockApp) {
+    let f = fixture();
+    let scout = bot(&f);
+    let app = tauri::test::mock_app();
+    let hook = webhooks::create(&f.store, &scout.id, "Hook", "Do the thing").unwrap();
+    (f, hook, app)
+}
+
+fn post(app: &MockApp, store: &crate::storage::Store, id: &str, auth: webhooks::Auth<'_>) -> (u16, serde_json::Value) {
+    let response = webhooks::route_with(app.handle(), store, id, &auth);
+    (response.status, serde_json::from_slice(&response.body).unwrap_or_default())
+}
+
+#[test]
+fn webhook_requires_a_method_so_a_url_alone_starts_nothing() {
+    let (f, hook, _app) = webhook_fixture();
+    let settings = |json: serde_json::Value| serde_json::from_value::<webhooks::WebhookSettings>(json).unwrap();
+    let refused = webhooks::update(&f.store, &hook.id, &settings(serde_json::json!({"requireSignature": false}))).unwrap_err();
+    assert_eq!(refused, webhooks::NEEDS_METHOD);
+    assert!(webhooks::get(&f.store, &hook.id).unwrap().require_signature, "a refused update changes nothing");
+    let with_ips = webhooks::update(&f.store, &hook.id, &settings(serde_json::json!({"requireSignature": false, "allowedIps": ["10.0.0.0/8"]}))).unwrap();
+    assert!(!with_ips.require_signature && with_ips.allowed_ips == ["10.0.0.0/8"], "an allowlist is a method");
+    let cleared = webhooks::update(&f.store, &hook.id, &settings(serde_json::json!({"allowedIps": [], "requireToken": false}))).unwrap_err();
+    assert_eq!(cleared, webhooks::NEEDS_METHOD, "taking the last method away is refused");
+    assert_eq!(webhooks::update(&f.store, &hook.id, &settings(serde_json::json!({"allowedIps": ["10.0.0.0/33"]}))).unwrap_err(), "10.0.0.0/33 is not a valid IP address or range.");
+    // A junk entry is refused and the stored list is untouched.
+    assert_eq!(webhooks::get(&f.store, &hook.id).unwrap().allowed_ips, ["10.0.0.0/8"]);
+}
+
+#[test]
+fn webhook_accepts_the_token_header_forms_and_refuses_a_wrong_one() {
+    let (f, hook, app) = webhook_fixture();
+    webhooks::update(&f.store, &hook.id, &serde_json::from_value(serde_json::json!({"requireSignature": false, "requireToken": true})).unwrap()).unwrap();
+    let token = webhooks::rotate_token(&f.store, &hook.id).unwrap();
+    let body = r#"{"text":"deploy"}"#;
+    let auth = |token: Option<String>| webhooks::Auth { token, loopback_host: true, body, now: 1_700_000_000, ..Default::default() };
+    // Each accepted event is counted by the limiter, so give distinct bodies.
+    for marker in ["a", "b", "c"] {
+        let event: &'static str = Box::leak(format!("{{\"text\":\"{marker}\"}}").into_boxed_str());
+        let auth = webhooks::Auth { token: Some(token.clone()), loopback_host: true, body: event, now: 1_700_000_000, ..Default::default() };
+        let (status, _) = post(&app, &f.store, &hook.id, auth);
+        assert!((200..300).contains(&status), "a correct token is accepted: {status}");
+    }
+    // All three header forms a service might send are read into that token.
+    let one = |name: &str, value: &str| [(name.to_string(), value.to_string())].into_iter().collect::<std::collections::HashMap<_, _>>();
+    let raw = token.clone();
+    assert_eq!(webhooks::token_from(&one("authorization", &format!("Bearer {raw}"))), Some(raw.clone()), "Authorization: Bearer");
+    assert_eq!(webhooks::token_from(&one("x-api-key", &raw)), Some(raw.clone()), "X-Api-Key");
+    assert_eq!(webhooks::token_from(&one("x-pandacode-token", &raw)), Some(raw.clone()), "X-PandaCode-Token");
+    assert_eq!(webhooks::token_from(&std::collections::HashMap::new()), None, "no header, no token");
+    let (status, body_json) = post(&app, &f.store, &hook.id, auth(Some("wrong".into())));
+    assert_eq!((status, body_json["error"].as_str().unwrap()), (401, "Invalid or missing API token."), "a wrong token is refused");
+    assert_eq!(post(&app, &f.store, &hook.id, auth(None)).0, 401, "a missing token is refused");
+}
+
+#[test]
+fn webhook_signature_accepts_both_wire_formats() {
+    let (f, hook, app) = webhook_fixture();
+    let secret = webhooks::rotate_secret(&f.store, &hook.id).unwrap();
+    let body = r#"{"text":"deploy"}"#;
+    let now = 1_700_000_000;
+    let (legacy, stripe) = ("1699999900", "1699999901");
+    let signed = webhook_signature(&secret, legacy, body);
+    let stripe_header = format!("t={stripe},v1={}", hmac_hex(&secret, &format!("{stripe}.{body}")));
+    let send = |timestamp: Option<&'static str>, header: Option<&str>| webhooks::route(app.handle(), &f.store, &hook.id, timestamp, header, body, now).status;
+    assert!((200..300).contains(&send(Some(legacy), Some(&signed))), "the legacy pair is accepted");
+    assert!((200..300).contains(&send(None, Some(&stripe_header))), "the single t=,v1= header is accepted");
+    assert_eq!(send(None, Some(&format!("t={stripe},v1=deadbeef"))), 401, "a tampered digest is refused");
+    assert_eq!(send(None, Some(&format!("t={stripe}"))), 401, "a header with no digest is refused");
+    let stale = "1699999000";
+    assert_eq!(send(None, Some(&format!("t={stale},v1={}", hmac_hex(&secret, &format!("{stale}.{body}"))))), 401, "a stale t= header is refused");
+}
+
+#[test]
+fn webhook_ip_allowlist_uses_the_peer_unless_forwarding_is_trusted() {
+    let (f, hook, app) = webhook_fixture();
+    webhooks::update(&f.store, &hook.id, &serde_json::from_value(serde_json::json!({"requireSignature": false, "allowedIps": ["10.0.0.0/8"]})).unwrap()).unwrap();
+    let body = r#"{"text":"deploy"}"#;
+    let reach = |peer: &str, forwarded: Option<&'static str>| {
+        let auth = webhooks::Auth { peer: Some(peer.parse().unwrap()), forwarded_for: forwarded, loopback_host: true, body, now: 1_700_000_000, ..Default::default() };
+        post(&app, &f.store, &hook.id, auth).0
+    };
+    assert!((200..300).contains(&reach("10.1.2.3", None)), "an address inside the range is allowed");
+    assert_eq!(reach("11.1.2.3", None), 403, "an address outside the range is refused");
+    assert_eq!(reach("11.1.2.3", Some("10.1.2.3")), 403, "a forwarded address is ignored unless trusted");
+    let mut trust = webhooks::get(&f.store, &hook.id).unwrap();
+    trust.trust_forwarded = true;
+    webhooks::update(&f.store, &hook.id, &serde_json::from_value(serde_json::json!({"trustForwarded": true})).unwrap()).unwrap();
+    assert!((200..300).contains(&reach("11.1.2.3", Some("10.1.2.3"))), "a trusted forwarded address is judged instead of the peer");
+    assert_eq!(reach("11.1.2.3", Some("10.1.2.3, 172.16.0.1")), 202, "the left-most forwarded address is the caller");
+}
+
+#[test]
+fn webhook_public_host_is_refused_unless_the_owner_allows_it() {
+    let (f, hook, app) = webhook_fixture();
+    let body = r#"{"text":"deploy"}"#;
+    let send = |loopback: bool| {
+        let auth = webhooks::Auth { loopback_host: loopback, body, now: 1_700_000_000, peer: Some("127.0.0.1".parse().unwrap()), ..Default::default() };
+        let response = webhooks::route_with(app.handle(), &f.store, &hook.id, &auth);
+        response.status
+    };
+    assert_eq!(send(false), 403, "a non-loopback Host is refused by default");
+    webhooks::update(&f.store, &hook.id, &serde_json::from_value(serde_json::json!({"allowPublicHost": true, "requireSignature": false, "allowedIps": ["0.0.0.0/0", "::/0"]})).unwrap()).unwrap();
+    assert!((200..300).contains(&send(false)), "a public Host is accepted once allowed");
+}
+
+#[test]
+fn webhook_duplicate_delivery_ids_start_nothing() {
+    let (f, hook, app) = webhook_fixture();
+    let secret = webhooks::rotate_secret(&f.store, &hook.id).unwrap();
+    let body = r#"{"text":"deploy"}"#;
+    let now = 1_700_000_000;
+    let send = |timestamp: &'static str, delivery: &'static str| {
+        let auth = webhooks::Auth {
+            timestamp: Some(timestamp),
+            signature: Some(Box::leak(webhook_signature(&secret, timestamp, body).into_boxed_str())),
+            delivery: Some(delivery),
+            loopback_host: true,
+            body,
+            now,
+            ..Default::default()
+        };
+        post(&app, &f.store, &hook.id, auth)
+    };
+    assert_eq!(send("1699999900", "d-1").0, 202, "the first delivery is accepted");
+    let (status, json) = send("1699999901", "d-1");
+    assert_eq!((status, json["duplicate"].as_bool()), (200, Some(true)), "a repeat of the same id reports a duplicate");
+    assert_eq!(webhooks::get(&f.store, &hook.id).unwrap().last_delivery.as_deref(), Some("d-1"));
+    assert_eq!(send("1699999902", "d-2").0, 202, "a new delivery id is accepted");
+}
+
 #[test]
 fn accepted_webhooks_record_their_timestamp_and_replays_are_refused() {
     let f = fixture();
@@ -1128,6 +1267,11 @@ fn bots_upgrade_creates_the_webhook_table_without_an_app_schema_bump() {
         columns.push(row.unwrap());
     }
     columns.sort();
-    assert_eq!(columns, vec!["bot_id", "created_at", "enabled", "id", "last_timestamp", "prompt", "title"]);
+    for expected in [
+        "id", "bot_id", "title", "prompt", "enabled", "last_timestamp", "created_at",
+        "require_signature", "require_token", "allowed_ips", "trust_forwarded", "allow_public_host", "last_delivery",
+    ] {
+        assert!(columns.iter().any(|name| name == expected), "bot_webhooks has {expected}: {columns:?}");
+    }
     assert_eq!(crate::storage::SCHEMA_VERSION, 37, "bot_webhooks rides bots::SCHEMA and never bumps the app schema");
 }

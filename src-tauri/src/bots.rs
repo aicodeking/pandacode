@@ -181,6 +181,12 @@ CREATE TABLE IF NOT EXISTS bot_webhooks(
   prompt TEXT NOT NULL,
   enabled INTEGER NOT NULL DEFAULT 1 CHECK(enabled IN (0,1)),
   last_timestamp INTEGER NOT NULL DEFAULT 0,
+  require_signature INTEGER NOT NULL DEFAULT 1 CHECK(require_signature IN (0,1)),
+  require_token INTEGER NOT NULL DEFAULT 0 CHECK(require_token IN (0,1)),
+  allowed_ips TEXT NOT NULL DEFAULT '[]' CHECK(json_valid(allowed_ips)),
+  trust_forwarded INTEGER NOT NULL DEFAULT 0 CHECK(trust_forwarded IN (0,1)),
+  allow_public_host INTEGER NOT NULL DEFAULT 0 CHECK(allow_public_host IN (0,1)),
+  last_delivery TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL);
 ")
     };
@@ -241,6 +247,21 @@ fn has_bot_column(db: &rusqlite::Connection, name: &str) -> Result<bool> {
     .map_err(|e| e.to_string())
 }
 
+/// Webhook columns added after `bot_webhooks` first shipped. `upgrade_schema` adds whichever
+/// are missing, so a database from an older build gains them on the next start.
+const WEBHOOK_COLUMNS: [(&str, &str); 6] = [
+    ("require_signature", "INTEGER NOT NULL DEFAULT 1 CHECK(require_signature IN (0,1))"),
+    ("require_token", "INTEGER NOT NULL DEFAULT 0 CHECK(require_token IN (0,1))"),
+    ("allowed_ips", "TEXT NOT NULL DEFAULT '[]' CHECK(json_valid(allowed_ips))"),
+    ("trust_forwarded", "INTEGER NOT NULL DEFAULT 0 CHECK(trust_forwarded IN (0,1))"),
+    ("allow_public_host", "INTEGER NOT NULL DEFAULT 0 CHECK(allow_public_host IN (0,1))"),
+    ("last_delivery", "TEXT NOT NULL DEFAULT ''"),
+];
+
+fn has_webhook_column(db: &rusqlite::Connection, name: &str) -> Result<bool> {
+    db.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('bot_webhooks') WHERE name=?1 COLLATE NOCASE)", [name], |r| r.get(0)).map_err(|e| e.to_string())
+}
+
 pub(crate) fn upgrade_schema(db: &rusqlite::Connection) -> Result<()> {
     // Bot databases at schema 27 already exist in the wild. Keep these tables idempotent
     // here instead of bumping the app-wide schema version for this bot-only feature.
@@ -248,6 +269,13 @@ pub(crate) fn upgrade_schema(db: &rusqlite::Connection) -> Result<()> {
     for (name, definition) in ADDED_COLUMNS {
         if !has_bot_column(db, name)? {
             db.execute_batch(&format!("ALTER TABLE bots ADD COLUMN {name} {definition};"))
+                .map_err(|e| e.to_string())?;
+        }
+    }
+    // `bot_webhooks` comes from the same batch, so it always exists by now.
+    for (name, definition) in WEBHOOK_COLUMNS {
+        if !has_webhook_column(db, name)? {
+            db.execute_batch(&format!("ALTER TABLE bot_webhooks ADD COLUMN {name} {definition};"))
                 .map_err(|e| e.to_string())?;
         }
     }

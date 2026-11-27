@@ -24,6 +24,8 @@ pub(crate) struct Request {
     pub query: HashMap<String, String>,
     pub headers: HashMap<String, String>,
     pub body: Vec<u8>,
+    /// The source address of the connection, for a webhook's IP allowlist.
+    pub peer: Option<std::net::IpAddr>,
 }
 
 impl Request {
@@ -118,7 +120,7 @@ pub(crate) fn parse_head(head: &str) -> Option<Request> {
         let (name, value) = line.split_once(':')?;
         headers.insert(name.trim().to_ascii_lowercase(), value.trim().to_owned());
     }
-    Some(Request { method, path: path.to_owned(), query, headers, body: Vec::new() })
+    Some(Request { method, path: path.to_owned(), query, headers, body: Vec::new(), peer: None })
 }
 
 async fn read_request(stream: &mut tokio::net::TcpStream) -> Result<Request, u16> {
@@ -177,12 +179,23 @@ async fn route(app: &tauri::AppHandle, request: Request) -> Response {
         ["hook", id] => {
             use tauri::Manager;
             let error = |status, text| Response::json(status, &serde_json::json!({"error": text}));
-            if !request.loopback_host() { return error(403, "A loopback Host is required."); }
             if request.method != "POST" { return error(405, "Use POST for webhook events."); }
             let Ok(body) = std::str::from_utf8(&request.body) else { return error(400, "The event must be UTF-8 text.") };
             let state = app.state::<crate::AppState>();
             let Ok(store) = state.store.lock() else { return error(500, "Store is unavailable.") };
-            crate::bots::webhooks::route(app, &store, id, request.header("x-pandacode-timestamp"), request.header("x-pandacode-signature"), body, crate::storage::now() / 1000)
+            let auth = crate::bots::webhooks::Auth {
+                timestamp: request.header("x-pandacode-timestamp"),
+                signature: request.header("x-pandacode-signature"),
+                token: crate::bots::webhooks::token_from(&request.headers),
+                peer: request.peer,
+                forwarded_for: request.header("x-forwarded-for"),
+                connecting_ip: request.header("cf-connecting-ip"),
+                loopback_host: request.loopback_host(),
+                delivery: request.header("x-pandacode-delivery").or_else(|| request.header("x-idempotency-key")).or_else(|| request.header("x-delivery-id")),
+                body,
+                now: crate::storage::now() / 1000,
+            };
+            crate::bots::webhooks::route_with(app, &store, id, &auth)
         }
         ["assets", "md4c.js"] => Response::markdown_engine(),
         [""] => Response::text(200, "PandaCode bots are running on this computer."),
@@ -192,13 +205,16 @@ async fn route(app: &tauri::AppHandle, request: Request) -> Response {
 
 async fn serve(app: tauri::AppHandle, listener: tokio::net::TcpListener) {
     loop {
-        let Ok((mut stream, _)) = listener.accept().await else { continue };
+        let Ok((mut stream, peer)) = listener.accept().await else { continue };
         let app = app.clone();
         tauri::async_runtime::spawn(async move {
             // Long polls wait up to 25 seconds, so allow a little longer overall.
             let work = async {
                 let response = match read_request(&mut stream).await {
-                    Ok(request) => route(&app, request).await,
+                    Ok(mut request) => {
+                        request.peer = Some(peer.ip());
+                        route(&app, request).await
+                    }
                     Err(status) => Response::text(status, reason(status)),
                 };
                 write_response(&mut stream, response).await;

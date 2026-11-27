@@ -61,15 +61,35 @@ A bot can run commands on the user's computer and can be messaged from outside i
 
 ## Webhook triggers
 
-A webhook starts work when a local service sends an event. In the bot's Webhooks settings, add a webhook with a name and a prompt describing what to do with the event. Each webhook keeps its own conversation. Events queue when that conversation is busy, and replies appear as bot notifications rather than HTTP responses. Paused bots do not start work. HTTP 202 with `{"ok":true}` means the event was accepted, not that the task succeeded; launch failures appear in the bot's Activity log. The local listener starts when an enabled webhook or web chat exists and keeps running until the app quits.
+A webhook starts work when a service sends an event. In the bot's Webhooks settings, add a webhook with a name and a prompt describing what to do with the event. Each webhook keeps its own conversation. Events queue when that conversation is busy, and replies appear as bot notifications rather than HTTP responses. Paused bots do not start work. HTTP 202 with `{"ok":true}` means the event was accepted, not that the task succeeded; launch failures appear in the bot's Activity log. The local listener starts when an enabled webhook or web chat exists and keeps running until the app quits.
 
-Copy the URL and signing secret when creating the webhook. The secret is shown once, stays in the secure store, and never enters the bot's prompt or webhook listings. Rotate it to replace a lost or compromised secret; callers using the old one stop working. Disable a webhook to refuse new events, or delete it to remove its secret too. Send test event signs and posts a sample through the same local endpoint.
+### Proving the caller is allowed
 
-Send a UTF-8 body with POST to `http://127.0.0.1:<port>/hook/<id>`. A JSON string field `text` supplies the event text; otherwise the trimmed body is used. Empty text is refused. Set `X-PandaCode-Timestamp` to decimal Unix seconds and `X-PandaCode-Signature` to `sha256=<lowercase hex HMAC-SHA256>`. Sign the exact UTF-8 bytes of `<timestamp>.<raw body>`, using the secret hex string's bytes as the HMAC key, not decoded hex bytes.
+Each webhook requires at least one method, so a leaked URL alone starts nothing. A save that would leave all three off is refused with "A webhook needs a signing secret, an API token or an IP allowlist, so anyone who finds the URL cannot start work."
 
-Timestamps must be within 300 seconds of the computer's current time, including the boundary. Every accepted timestamp must be strictly newer than the webhook's last accepted timestamp, so use increasing seconds for successive events. Repeated or older timestamps are refused even if the body differs. Invalid, stale or replayed signatures return 401; unknown webhooks return 404, disabled ones 403, and empty event text 400.
+| Method | What the caller sends |
+| --- | --- |
+| Signing secret | `X-PandaCode-Signature` with either `sha256=<lowercase hex>` over `<timestamp>.<raw body>` plus `X-PandaCode-Timestamp`, or the single-header `t=<unix seconds>,v1=<lowercase hex>` over `<t>.<raw body>`. Sign the exact UTF-8 bytes of the raw body, using the secret string's bytes as the HMAC key, not decoded hex bytes. |
+| API token | `Authorization: Bearer <token>`, `X-Api-Key: <token>` or `X-PandaCode-Token: <token>`. |
+| IP allowlist | The connection's source address must match an entry: one address or CIDR block per line, IPv4 or IPv6. Empty means any address. |
 
-Webhook triggers are loopback-only in this version. They require a loopback Host header and do not support remote services or tunnels.
+The signing secret and the API token are separate values, each shown once when created or rotated, held in the secure store, and never sent to the bot's prompt, the webview or the webhook listing. Rotating either one makes the old value stop working immediately. Send test event authenticates with whichever methods the webhook actually requires, so it exercises the real path.
+
+**Timestamps.** A signature timestamp must be within 300 seconds of the computer's current time, in either direction. When a signature is used, every accepted timestamp must be strictly newer than the webhook's last accepted one, so use increasing seconds for successive events; repeated or older timestamps are refused even if the body differs. A token-only request carries no timestamp and skips that check.
+
+**Retries.** Send `X-PandaCode-Delivery`, `X-Idempotency-Key` or `X-Delivery-Id` with a stable id per event. A repeat of the id last accepted answers `200 {"ok":true,"duplicate":true}` and starts nothing, so a sender that retries after a timeout cannot run the work twice.
+
+A webhook accepts up to 60 events a minute; more answers 429. Invalid, stale or replayed signatures, and a wrong or missing token, return 401; unknown webhooks return 404; disabled ones 403; an address outside the allowlist 403; and empty event text 400.
+
+### Reaching it from another machine
+
+By default the endpoint only answers a loopback `Host` header, so callers on this computer work as-is. To accept a hosted service, a tunnel or another device, turn on **Accept requests through a public URL or tunnel** and give the service an address that reaches this computer (for example `cloudflared tunnel --url http://127.0.0.1:47321` or `tailscale funnel --bg 47321`). The URL shown stays `http://127.0.0.1:<port>/hook/<id>`; substitute the tunnel's address.
+
+When a proxy or tunnel in front of PandaCode supplies the real caller address, turn on **Trust X-Forwarded-For from a proxy** so the allowlist judges the caller rather than the proxy. Only do this behind a proxy you control: otherwise a caller can name any address it likes. The left-most `X-Forwarded-For` entry is used, then `CF-Connecting-IP`, then the connection's own address.
+
+### Reading the event
+
+POST a UTF-8 body to `http://127.0.0.1:<port>/hook/<id>`. The event text is the first non-empty string found, in order, at JSON `text`, `message`, `prompt`, `run.prompt`, `run.systemPrompt`, `subject` or `title`; when none is present the trimmed body is used. Empty text is refused, and delivered text is capped like every other inbound path.
 
 ## Connections
 
@@ -99,7 +119,7 @@ Bot-to-bot work is available through the `bot_message_bot(to, text)` tool in a b
 
 | Area | Files |
 | --- | --- |
-| Data, commands, hooks | `src-tauri/src/bots.rs` (schema 25; `bots.soul` in 28; `bots.skills`, `bots.mcp`, `bot_tasks` in 29; later bot columns and shared-channel tables via `bots::upgrade()`), `src-tauri/src/skills/scoped.rs`, `bots/brief.rs`, `bots/gateway.rs`, `bots/guard.rs`, `bots/schedule.rs`, `bots/secrets.rs`, `bots/tools.rs`, `bots/shared_channels.rs`, `bots/failover.rs` |
+| Data, commands, hooks | `src-tauri/src/bots.rs` (schema 25; `bots.soul` in 28; `bots.skills`, `bots.mcp`, `bot_tasks` in 29; later bot columns and shared-channel tables via `bots::upgrade()`), `src-tauri/src/skills/scoped.rs`, `bots/brief.rs`, `bots/gateway.rs`, `bots/guard.rs`, `bots/schedule.rs`, `bots/secrets.rs`, `bots/tools.rs`, `bots/shared_channels.rs`, `bots/failover.rs`, `bots/webhooks.rs` |
 | Channels | `src-tauri/src/bots/channels/{mod,http,web,telegram,slack,discord,whatsapp}.rs` |
 | Hooks in `lib.rs` | `bots::start` at setup, `bots::approval_requested` in the event sink, `bots::run_finished` after `done`, `bots::tools::with_bot` in the tool host chain |
 | UI | `src/bots.ts`, `src/bots-panels.ts`, `src/bots.css`, `src/sidebar-bots.ts`, `src/bot-thread.ts`, `src/bot-shared-channels.ts`, preview mock `src/preview-bots.ts`, tests `tests/bots*.spec.ts` |

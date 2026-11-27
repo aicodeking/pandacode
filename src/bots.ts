@@ -39,7 +39,7 @@ export interface Pairing { channelId: string; senderId: string; senderName: stri
 export interface Thread { channelId: string; externalId: string; sessionId: string; updatedAt: number; }
 export interface Rule { id: string; pattern: string; decision: 'allow' | 'ask' | 'deny'; createdAt: number; }
 export interface Activity { id: number; kind: string; summary: string; detail: Record<string, unknown>; at: number; }
-export interface Webhook { id: string; botId: string; title: string; prompt: string; enabled: boolean; lastTimestamp: number; createdAt: string; }
+export interface Webhook { id: string; botId: string; title: string; prompt: string; enabled: boolean; lastTimestamp: number; requireSignature: boolean; requireToken: boolean; allowedIps: string[]; trustForwarded: boolean; allowPublicHost: boolean; lastDelivery?: string | null; createdAt: string; }
 export interface WebhookList { webhooks: Webhook[]; serverPort: number; }
 export interface WebhookTestResult { status: number; error?: string; }
 export interface BotDetail { webhooks?: Webhook[]; bot: Bot; memories: Memory[]; schedules: Schedule[]; channels: Channel[]; pairings: Pairing[]; threads: Thread[]; rules: Rule[]; serverPort: number; }
