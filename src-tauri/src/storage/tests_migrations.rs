@@ -808,7 +808,7 @@ fn newer_schema_without_sidebar_order_skips_the_sidebar_trigger() {
             assert_eq!(columns, 2, "cron and timezone columns");
             let notnull: i64 = store.db.query_row("SELECT COUNT(*) FROM pragma_table_info('task_schedules') WHERE name IN ('cron','timezone') AND \"notnull\"<>0", [], |r| r.get(0)).unwrap();
             assert_eq!(notnull, 0, "both nullable: syntax is validated in Rust, like prompts");
-            // A database from before the feature (the previous schema, 37): the v35 shape,
+            // A database from before the feature (the previous schema, 37): the pre-cron shape,
             // kind CHECK without `cron`. Recreate it that way with one row; the migration
             // adds the columns, keeps the row and rebuilds the CHECK to let the kind in.
             store
@@ -826,7 +826,7 @@ fn newer_schema_without_sidebar_order_skips_the_sidebar_trigger() {
                       enabled INTEGER NOT NULL DEFAULT 1, created_by TEXT NOT NULL CHECK(created_by IN ('user','agent')),
                       created_by_session TEXT REFERENCES sessions(id) ON DELETE SET NULL,
                       run_count INTEGER NOT NULL DEFAULT 0, max_runs INTEGER, consecutive_failures INTEGER NOT NULL DEFAULT 0,
-                      trigger_ok INTEGER, workflow_id TEXT, chain_from_id TEXT,
+                      trigger_ok INTEGER, workflow_id TEXT, chain_from_id TEXT, saved_remotely INTEGER NOT NULL DEFAULT 0,
                       created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
                     INSERT INTO task_schedules(id,session_id,title,prompt,kind,days,only_on_success,enabled,created_by,run_count,consecutive_failures,created_at,updated_at)
                       VALUES('kept','s','Kept','Hello','daily','[]',0,1,'user',0,0,0,0);
