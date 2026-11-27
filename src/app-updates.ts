@@ -8,10 +8,12 @@
  * A Linux copy not started from an AppImage (unpacked, or a distro package) is never
  * installed over in place: it only reports the update. The request carries no personal
  * data. The browser preview never checks. */
-import { call, nativeDesktop } from './bridge';
-import { CHECK_EVERY, downloadsOnItsOwn, parseUpdateMode, restartNow, updatePrompt, type UpdateMode, type UpdateState } from './app-updates-policy';
+import { call, nativeDesktop, preview } from './bridge';
+import { CHECK_EVERY, bannerPrompt, downloadsOnItsOwn, parseUpdateMode, restartNow, updatePrompt, type UpdateMode, type UpdateState } from './app-updates-policy';
 import { PROJECT_LINKS } from './about-settings';
 import { errorText } from './error-text';
+import { icon } from './dom';
+import { enterView } from './motion';
 export { describeUpdate, type UpdateMode, type UpdateState } from './app-updates-policy';
 
 export interface UpdatesHost {
@@ -43,12 +45,22 @@ type Pending = { version: string; download(onEvent: (event: { event: string; dat
 let instance: AppUpdates | undefined;
 export const appUpdates = (): AppUpdates | undefined => instance;
 
+/** Browser preview and specs: ?update=available|downloading|ready seeds the updater, since
+ * the preview never checks on its own and nothing else would ever show. */
+function previewState(): UpdateState {
+  const kind = new URLSearchParams(location.search).get('update');
+  if (kind === 'available') return { kind: 'available', version: '0.4.0' };
+  if (kind === 'downloading') return { kind: 'downloading', version: '0.4.0', percent: 42 };
+  if (kind === 'ready') return { kind: 'ready', version: '0.4.0' };
+  return { kind: 'off' };
+}
+
 export function startAppUpdates(host: UpdatesHost): AppUpdates {
   const listeners = new Set<() => void>();
-  let state: UpdateState = nativeDesktop ? { kind: 'idle' } : { kind: 'off' };
+  let state: UpdateState = nativeDesktop ? { kind: 'idle' } : preview ? previewState() : { kind: 'off' };
   let mode: UpdateMode = (() => { try { return parseUpdateMode(localStorage.getItem(KEY)); } catch { return 'automatic' as const; } })();
   // Until the native answer arrives nothing has been checked, so nothing can install.
-  let installable = false, approved = false;
+  let installable = preview && state.kind !== 'off', approved = false;
   const known = !nativeDesktop ? Promise.resolve() : call<boolean>('app_update_install_supported')
     .then(value => { installable = value; }, cause => { console.warn('Could not tell how PandaCode was installed:', cause); });
   let pending: Pending | null = null, lastCheck = 0, lastInput = Date.now(), checking: Promise<void> | null = null;
@@ -168,5 +180,40 @@ export function mountUpdatePill(pill: HTMLButtonElement, updates: AppUpdates): v
     else void updates.restart();
   });
   later.addEventListener('click', () => { if (updates.state.kind === 'available') dismissed = updates.state.version; paint(); });
+  paint();
+}
+
+/** The sidebar banner: the pill's prompt where the eye lands first. Pressing it opens
+ * Settings → About and does what the update button there would: install and restart for a
+ * downloadable or downloaded update, GitHub Releases on a copy that cannot install in place.
+ * Its own dismiss (Later) is separate from the pill's. */
+export function mountUpdateBanner(banner: HTMLDivElement, updates: AppUpdates, openAbout: () => void): void {
+  banner.innerHTML = `<button type="button" class="sidebar-update-banner-body"><span class="sidebar-update-banner-icon"></span><span class="sidebar-update-banner-copy"><span class="sidebar-update-banner-title"></span><span class="sidebar-update-banner-detail"></span></span></button><button type="button" class="sidebar-update-banner-dismiss" aria-label="Dismiss update notice">${icon('close')}</button>`;
+  const iconSpan = banner.querySelector<HTMLElement>('.sidebar-update-banner-icon')!;
+  const title = banner.querySelector<HTMLElement>('.sidebar-update-banner-title')!;
+  const detail = banner.querySelector<HTMLElement>('.sidebar-update-banner-detail')!;
+  const body = banner.querySelector<HTMLButtonElement>('.sidebar-update-banner-body')!;
+  const dismiss = banner.querySelector<HTMLButtonElement>('.sidebar-update-banner-dismiss')!;
+  let dismissed: string | null = null;
+  const paint = () => {
+    const prompt = bannerPrompt(updates.state, updates.installable, dismissed);
+    const wasHidden = banner.hidden;
+    banner.hidden = !prompt;
+    if (!prompt) return;
+    iconSpan.innerHTML = icon(updates.state.kind === 'available' || updates.state.kind === 'downloading' ? 'download' : 'refresh', 'icon-sm');
+    title.textContent = prompt.title;
+    detail.textContent = prompt.detail;
+    dismiss.hidden = !prompt.dismissible;
+    body.disabled = updates.state.kind === 'installing';
+    if (wasHidden) enterView(banner);
+  };
+  updates.subscribe(paint);
+  body.addEventListener('click', () => {
+    const kind = updates.state.kind;
+    openAbout();
+    if (!updates.installable && kind === 'available') void updates.openReleases();
+    else if (kind === 'available' || kind === 'ready') void updates.restart();
+  });
+  dismiss.addEventListener('click', () => { if (updates.state.kind === 'available') { dismissed = updates.state.version; paint(); } });
   paint();
 }
