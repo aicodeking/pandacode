@@ -1,8 +1,7 @@
+import { t } from './i18n.ts';
 /* The updater's decisions, kept free of app imports so they can be tested on their own:
  * how often to check, when a downloaded update may restart PandaCode, and how Settings
  * describes each state. */
-import { t } from './i18n.ts';
-
 export type UpdateState =
   | { kind: 'off' }
   | { kind: 'idle' }
@@ -64,10 +63,10 @@ export function describeUpdate(state: UpdateState, mode: UpdateMode, now = Date.
   switch (state.kind) {
     case 'off': return t('Updates are installed by the desktop app.');
     case 'checking': return t('Checking GitHub Releases…');
-    case 'current': { const minutes = Math.round((now - state.checkedAt) / 60_000); return t`Up to date · checked ${minutes < 1 ? t('just now') : minutes < 60 ? t`${minutes}m ago` : t`${Math.round(minutes / 60)}h ago`}`; }
+    case 'current': { const minutes = Math.round((now - state.checkedAt) / 60_000); return `Up to date · checked ${minutes < 1 ? t('just now') : minutes < 60 ? t`${minutes}m ago` : t`${Math.round(minutes / 60)}h ago`}`; }
     case 'available': return installable ? t`PandaCode ${state.version} is available.` : t`PandaCode ${state.version} is available. Updates for this copy are installed by its package or a new AppImage.`;
-    case 'downloading': return t`Downloading ${state.version}${state.percent === null ? '…' : t` · ${state.percent}%`}`;
-    case 'ready': return t`${state.version} is ready. ${mode === 'automatic' ? t('PandaCode restarts when your agents are done and you step away.') : t('Restart to finish.')}`;
+    case 'downloading': return `Downloading ${state.version}${state.percent === null ? '…' : t` · ${state.percent}%`}`;
+    case 'ready': return `${state.version} is ready. ${mode === 'automatic' ? t('PandaCode restarts when your agents are done and you step away.') : t('Restart to finish.')}`;
     case 'installing': return t`Installing ${state.version}…`;
     case 'error': return t`Couldn’t check for updates: ${state.message}`;
     default: return mode === 'off' ? t('Automatic updates are off.') : t('Checks GitHub Releases automatically.');

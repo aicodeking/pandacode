@@ -1,6 +1,6 @@
+import { t } from './i18n.ts';
 import { subscribe } from './bridge';
 import { escape, icon } from './dom';
-import { t } from './i18n.ts';
 
 /* PandaCode Connect start progress (docs/remote-access.md): while `remote_start_task`
  * waits for another computer to find or clone the project, the host reports its stages
@@ -28,10 +28,10 @@ export function startStageText(start: Pick<RemoteStart, 'stage' | 'repo' | 'perc
   switch (start.stage) {
     case 'connecting': return t('Connecting to computer');
     case 'finding': return start.repo ? t`Finding ${repo}` : t('Finding the project');
-    case 'downloading': return t`Downloading ${repo}${start.percent == null ? '' : t` · ${Math.round(start.percent)}%`}`;
+    case 'downloading': return `Downloading ${repo}${start.percent == null ? '' : t` · ${Math.round(start.percent)}%`}`;
     case 'preparing': return t('Preparing checkout');
-    case 'starting': return t('Starting agent');
-    case 'error': return t`Could not start: ${start.detail || t('the other computer did not answer')}`;
+    case 'starting': return start.detail || 'Starting agent';
+    case 'error': return `Could not start: ${start.detail || t('the other computer did not answer')}`;
   }
 }
 
@@ -43,7 +43,7 @@ export function remoteStartStrip(sessionId: string): string {
   const start = starts.get(sessionId); if (!start || (start.onStage && start.stage !== 'error')) return '';
   const failed = start.stage === 'error', determinate = start.stage === 'downloading' && start.percent != null;
   const lead = failed ? icon('alert') : '<span class="support-spinner" aria-hidden="true"></span>';
-  const step = failed ? '' : ` aria-description="${t`Step ${STAGES.indexOf(start.stage) + 1} of ${STAGES.length - 1}`}"`;
+  const step = failed ? '' : ` aria-description="Step ${STAGES.indexOf(start.stage) + 1} of ${STAGES.length - 1}"`;
   const bar = determinate ? `<progress class="remote-start-bar" max="100" value="${Math.round(start.percent!)}" aria-label="${t('Download progress')}"></progress>` : '';
   const actions = failed ? `<button type="button" class="remote-start-retry" data-remote-start="retry">${icon('refresh')}<span>${t('Retry')}</span></button><button type="button" class="remote-start-dismiss" data-remote-start="dismiss" aria-label="${t('Dismiss')}" title="${t('Dismiss')}">${icon('close')}</button>` : '';
   return `<div class="remote-start-strip" data-stage="${start.stage}"><span class="remote-start-status" role="${failed ? 'alert' : 'status'}"${step}>${lead}<span class="remote-start-text"><span class="remote-start-device">${escape(start.device)}</span> · ${escape(startStageText(start))}</span></span>${bar}${actions}</div>`;
@@ -81,7 +81,7 @@ export function onRemoteStartProgress(event: RemoteStartProgress): void {
   Object.assign(start, { stage: event.stage, repo: event.repo ?? start.repo, percent: event.stage === 'downloading' ? event.percent ?? null : null, detail: event.stage === 'error' || event.stage === 'starting' ? event.detail ?? null : null });
   start.onStage?.(start);
   // A start being cancelled, or one whose reply was lost, ends with this frame.
-  if (event.stage === 'error' && (start.cancelling || start.waiting)) start.settle?.(new Error(start.detail || 'the other computer did not answer'));
+  if (event.stage === 'error' && (start.cancelling || start.waiting)) start.settle?.(new Error(start.detail || t('the other computer did not answer')));
   syncRemoteStartStrip();
 }
 const waitingFor = (start: RemoteStart): boolean => start.stage === 'starting' && Boolean(start.detail?.startsWith('Waiting for'));

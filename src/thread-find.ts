@@ -1,6 +1,6 @@
+import { t } from './i18n.ts';
 import './thread-find.css';
 import { icon, isImeKey } from './dom';
-import { t } from './i18n.ts';
 
 /* ⌘F in a thread: a slim find bar over the conversation. Matches in your messages, the
  * agent's and its tools' details are highlighted with the CSS Custom Highlight API, so the message

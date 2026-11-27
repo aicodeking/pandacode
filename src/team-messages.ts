@@ -1,6 +1,6 @@
+import { t } from './i18n.ts';
 import './team-messages.css';
 import { call } from './bridge';
-import { t } from './i18n.ts';
 import type { TeamMessagePage, TeamSnapshot } from './architect-types';
 
 /** Fetch coordination only while expanded, using team events rather than timers. */

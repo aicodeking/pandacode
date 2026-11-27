@@ -27,8 +27,8 @@ function refreshTheme(): void {
   }
 }
 refreshTheme();
-// The workspace changed light/dark, its palette or the UI language: start over with the new look.
-window.addEventListener('storage', event => { if (event.key === 'pandacode.theme' || event.key === 'pandacode.palette' || event.key === 'pandacode.language') location.reload(); });
+// The workspace changed light/dark or its palette: start over with the new colors.
+window.addEventListener('storage', event => { if (event.key === 'pandacode.theme' || event.key === 'pandacode.palette') location.reload(); });
 
 const host = document.querySelector<HTMLDivElement>('#app')!;
 host.innerHTML = `<main class="tray" aria-label="PandaCode"><header class="tray-header"><img class="tray-mark" src="/icon.svg" alt=""><strong>PandaCode</strong><span class="tray-summary"></span><button type="button" class="tray-icon-button tray-open-app" aria-label="Open PandaCode" title="Open PandaCode">${icon('external')}</button></header><div class="tray-alert"><span class="tray-alert-icon" data-state-tone="danger" aria-hidden="true" hidden>${icon('alert')}</span><span class="tray-alert-text" role="alert"></span><button type="button" class="tray-icon-button tray-alert-dismiss" aria-label="Dismiss error" hidden>${icon('close')}</button></div><div class="tray-body"></div><footer class="tray-footer"><button type="button" class="tray-open-app">Open PandaCode</button><button type="button" class="tray-quit">Quit</button></footer></main>`;
@@ -114,7 +114,7 @@ function render(): void {
   const parts = [running.length && `${running.length} running`, (waiting.length + finished.length) && `${waiting.length + finished.length} to review`].filter(Boolean);
   summary.textContent = parts.length ? parts.join(' · ') : 'All quiet';
   const sections = ([['Running', running, 'running'], ['Needs you', waiting, 'waiting'], ['Finished', finished, 'finished']] as const)
-    .filter(([, tasks]) => tasks.length)
+    .filter(([t, tasks]) => tasks.length)
     .map(([label, tasks, kind]) => `<section class="tray-section"><h2>${label}</h2>${tasks.map(task => row(task, kind)).join('')}</section>`).join('');
   const usageBody = usage.length ? usage.map(item => usageBlock(item, Boolean(snapshot!.askingClaude))).join('') : `<p class="tray-quiet">${checking ? 'Checking plan limits…' : 'No plan limits reported.'}</p>`;
   const focused = (document.activeElement as HTMLElement | null)?.dataset.id;

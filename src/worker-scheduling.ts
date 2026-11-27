@@ -1,5 +1,5 @@
-import type { TeamWorker } from './architect-types';
 import { t } from './i18n.ts';
+import type { TeamWorker } from './architect-types';
 
 /** The same eligibility rule drives preview launches and queued-worker explanations. */
 export function workerQueueReason(worker: TeamWorker, workers: TeamWorker[], maxParallel: number): string | undefined {

@@ -1,5 +1,5 @@
-import type { ProviderId } from './types';
 import { t } from './i18n.ts';
+import type { ProviderId } from './types';
 import { formatUsd, formatUsdAxis } from './usage-ledger.ts';
 
 export interface CostSeries { provider: ProviderId; name: string; values: number[]; }

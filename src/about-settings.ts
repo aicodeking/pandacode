@@ -1,7 +1,7 @@
+import { t } from './i18n.ts';
 import { call, preview, webMode } from './bridge';
 import { icon } from './dom';
 import { appUpdates, describeUpdate, type UpdateMode } from './app-updates';
-import { t } from './i18n.ts';
 
 /** Public project links. Opening one is user-initiated; only the update check runs on its own. */
 export const PROJECT_LINKS = {
@@ -30,3 +30,59 @@ export function aboutSettingsHtml(): string {
 /** Reads the bundle version from Tauri; the browser preview has no app bundle. */
 async function appVersion(): Promise<string> {
   if (preview) return t('Preview');
+  // A browser tab has no bundle of its own: ask the PandaCode it is connected to.
+  if (webMode) return call<string>('app_version');
+  return (await import('@tauri-apps/api/app')).getVersion();
+}
+
+export function mountAboutSettings(host: HTMLElement): () => void {
+  const version = host.querySelector<HTMLElement>('.settings-about-version');
+  let disposed = false;
+  const cleanupUpdates = mountUpdates(host);
+  const notices = host.querySelector<HTMLButtonElement>('[data-about-notices]');
+  notices?.addEventListener('click', openNotices);
+  if (version) {
+    appVersion()
+      .then(value => { if (!disposed) version.textContent = t`Version ${value}`; })
+      .catch(() => { if (!disposed) version.textContent = t('Version unavailable'); });
+  }
+  return () => { disposed = true; cleanupUpdates(); notices?.removeEventListener('click', openNotices); };
+}
+
+/** Opens the notices bundled with the app; the preview (no bundle) opens the GitHub copy. */
+function openNotices(): void {
+  const online = () => call('open_external_url', { url: PROJECT_LINKS.notices });
+  void (preview || webMode ? online() : call('open_third_party_notices').catch(error => {
+    console.error('Could not open the bundled third-party notices', error);
+    return online();
+  })).catch(error => console.error('Could not open the third-party notices', error));
+}
+
+/** The Updates rows follow the updater: status, Check now / Install / Restart now, and the mode. */
+function mountUpdates(host: HTMLElement): () => void {
+  const updates = appUpdates();
+  const status = host.querySelector<HTMLElement>('.settings-update-status')!;
+  const action = host.querySelector<HTMLButtonElement>('.settings-update-action')!;
+  const modeSelect = host.querySelector<HTMLSelectElement>('[data-update-mode]')!;
+  if (!updates?.supported) {
+    status.textContent = describeUpdate({ kind: 'off' }, 'off');
+    host.querySelector<HTMLElement>('.settings-updates-auto')?.remove();
+    return () => {};
+  }
+  const paint = () => {
+    const state = updates.state;
+    status.textContent = describeUpdate(state, updates.mode, Date.now(), updates.installable);
+    modeSelect.value = updates.mode;
+    const restartable = updates.installable && (state.kind === 'ready' || state.kind === 'available');
+    action.hidden = state.kind === 'downloading' || state.kind === 'installing';
+    action.disabled = state.kind === 'checking';
+    action.textContent = restartable ? (state.kind === 'ready' ? t('Restart now') : t('Install')) : t('Check now');
+  };
+  const click = () => { void (updates.installable && (updates.state.kind === 'ready' || updates.state.kind === 'available') ? updates.restart() : updates.check()); };
+  const change = () => updates.setMode(modeSelect.value as UpdateMode);
+  action.addEventListener('click', click);
+  modeSelect.addEventListener('change', change);
+  const unsubscribe = updates.subscribe(paint);
+  paint();
+  return () => { unsubscribe(); action.removeEventListener('click', click); modeSelect.removeEventListener('change', change); };
+}

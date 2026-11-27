@@ -1,9 +1,9 @@
+import { t } from './i18n.ts';
 // Jujutsu (jj) in the Changes tab: the working-copy change, its files, Describe/New/Commit,
 // and a short log. A non-colocated jj repo gets this panel instead of the Git one; a
 // colocated repo keeps the Git UI and shows `jjChip()` beside the branch. Native side: jj.rs.
 import { escape, icon } from './dom';
 import { errorText } from './error-text';
-import { t } from './i18n.ts';
 
 export interface JjChange { changeId: string; commitId: string; description: string; bookmarks: string[]; author: string; when: string; conflict: boolean; empty: boolean; current: boolean; }
 export interface JjFile { status: string; path: string; }
@@ -41,12 +41,12 @@ export function jjPanelHtml(status: JjStatus, log: JjChange[] | null, busy = fal
   const disabled = busy ? 'disabled' : '';
   return `<div class="jj-panel" aria-busy="${busy}">
 <div class="branch-card"><span>${icon('branch')}<span><code>${escape(change?.changeId.slice(0, 8) ?? '')}</code> ${escape(change ? title(change) : t('No working-copy change'))}</span></span>${change ? bookmarks(change) : ''}</div>
-${change?.conflict ? `<p class="inspector-hint" role="alert">${icon('alert')}${t('This change has conflicts. Resolve them with ')}<code>jj resolve</code>${t('.')}</p>` : ''}
-<div class="change-summary"><span>${status.files.length ? status.files.length === 1 ? t('1 changed files') : t`${status.files.length} changed files` : t('No changes in this change')}</span>${status.files.length ? '' : icon('check')}</div>
-${files ? `<section class="change-group"><div class="change-group-title"><span>${t('Changes')} <small>${status.files.length}</small></span></div>${files}</section>` : ''}
+${change?.conflict ? `<p class="inspector-hint" role="alert">${icon('alert')}This change has conflicts. Resolve them with <code>jj resolve</code>${t('.')}</p>` : ''}
+<div class="change-summary"><span>${status.files.length ? status.files.length + ' changed files' : 'No changes in this change'}</span>${status.files.length ? '' : icon('check')}</div>
+${files ? `<section class="change-group"><div class="change-group-title"><span>Changes <small>${status.files.length}</small></span></div>${files}</section>` : ''}
 <form class="commit-form jj-form"><label for="jj-message">${t('Description')}</label><textarea id="jj-message" rows="3" placeholder="${t('Describe this change…')}" aria-label="${t('Change description')}">${escape(change?.description ?? '')}</textarea>
-<div class="jj-actions"><button type="button" class="secondary-button" data-jj="describe" ${disabled}>${t('Describe')}</button><button type="button" class="secondary-button" data-jj="new" ${disabled}>${icon('plus')}${t('New')}</button><button class="commit-button" data-jj="commit" ${disabled}>${icon('check')}${t('Commit')}</button></div></form>
-<section class="change-group jj-log"><div class="change-group-title"><span>${t('Log')}${log ? ` <small>${log.length}</small>` : ''}</span></div>${log ? rows || `<p class="inspector-hint">${t('No changes yet.')}</p>` : `<p class="inspector-hint" role="status">${t('Loading log…')}</p>`}</section>
+<div class="jj-actions"><button type="button" class="secondary-button" data-jj="describe" ${disabled}>${t('Describe')}</button><button type="button" class="secondary-button" data-jj="new" ${disabled}>${icon('plus')}New</button><button class="commit-button" data-jj="commit" ${disabled}>${icon('check')}Commit</button></div></form>
+<section class="change-group jj-log"><div class="change-group-title"><span>Log${log ? ` <small>${log.length}</small>` : ''}</span></div>${log ? rows || `<p class="inspector-hint">${t('No changes yet.')}</p>` : `<p class="inspector-hint" role="status">${t('Loading log…')}</p>`}</section>
 </div>`;
 }
 

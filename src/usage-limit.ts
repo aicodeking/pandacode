@@ -1,5 +1,5 @@
-/** Usage limits hit by a task's run: the composer banner and when a limit counts as current. */
 import { t } from './i18n.ts';
+/** Usage limits hit by a task's run: the composer banner and when a limit counts as current. */
 import { escape, icon } from './dom';
 import type { Session } from './types';
 

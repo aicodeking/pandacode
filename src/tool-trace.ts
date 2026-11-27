@@ -673,5 +673,6 @@ export function toolFailed(tool: Tool): boolean {
 
 /** A call the turn ended before it reported (`Interrupted: …`): quiet, tallied apart, never a failure. */
 export function toolInterrupted(tool: Tool): boolean { return isInterruptedOutput(tool.status, tool.output) && !toolBlocked(tool); }
+
 /** A call the user turned down (`Denied: …`), as opposed to one a harness rule blocked. */
 export function toolDenied(tool: Tool): boolean { return isDeniedOutput(tool.status, tool.output); }

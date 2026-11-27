@@ -1,7 +1,7 @@
+import { t } from './i18n.ts';
 import './capabilities-panel.css';
 import { preview } from './bridge';
 import { escape, icon } from './dom';
-import { t } from './i18n.ts';
 
 export type CapabilityHarness = { id: string; name: string };
 export type CapabilityEntry = { harness: string; kind: string; name: string; state: string; source: string; command: string | null };
@@ -83,7 +83,7 @@ export function mount(host: HTMLElement, call: CapabilityCall, taskId?: string):
     if (disposed) return;
     host.innerHTML = `<div class="settings-group capabilities-panel" aria-labelledby="capabilities-heading">
       <div class="capabilities-panel-head"><div><strong id="capabilities-heading">${t('Capability and cache alignment')}</strong><small>${t('Read-only metadata from local harness configs and recorded usage.')}</small></div>
-        <button type="button" class="secondary-button capabilities-refresh" ${loading ? 'disabled' : ''}>${icon('refresh')}${t('Refresh')}</button>
+        <button type="button" class="secondary-button capabilities-refresh" ${loading ? 'disabled' : ''}>${icon('refresh')}Refresh</button>
       </div>
       <section class="capabilities-section" aria-labelledby="capabilities-inventory-heading">
         <h3 id="capabilities-inventory-heading">${t('Capability inventory')}</h3>
@@ -92,7 +92,7 @@ export function mount(host: HTMLElement, call: CapabilityCall, taskId?: string):
       <section class="capabilities-section" aria-labelledby="capabilities-cache-heading">
         <h3 id="capabilities-cache-heading">${t('Cache alignment')}</h3>
         ${cacheTable(cache, loading && !cache, cacheFailed)}
-        <p class="capabilities-note">${preview ? t('Browser preview values are samples.') : t('Counts are observed from local usage records.')} ${t('No prompt text or cache key is shown.')}</p>
+        <p class="capabilities-note">${preview ? t('Browser preview values are samples.') : t('Counts are observed from local usage records.')} No prompt text or cache key is shown.</p>
       </section>
     </div>`;
   };

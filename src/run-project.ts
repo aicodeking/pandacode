@@ -1,7 +1,7 @@
+import { t } from './i18n.ts';
 import { call } from './bridge';
 import { icon } from './dom';
 import { errorText } from './error-text';
-import { t } from './i18n.ts';
 
 export interface RunContext { projectId: string; sessionId?: string }
 export interface RunScript { path: string; previewUrl?: string; previewPath?: string }
@@ -33,6 +33,8 @@ export class ProjectRunner {
       button.hidden = !available || Boolean(button.dataset.sessionId && button.dataset.sessionId !== context?.sessionId);
       button.disabled = busy;
       button.setAttribute('aria-busy', String(busy));
+      button.toggleAttribute('data-running', running);
+      if (running) button.setAttribute('aria-description', 'Running'); else button.removeAttribute('aria-description');
       const label = busy ? t('Starting…') : t('Run');
       if (button.dataset.label !== label) { button.innerHTML = `${icon('play')}<span>${label}</span>`; button.dataset.label = label; }
     });

@@ -1,6 +1,6 @@
+import { t } from './i18n.ts';
 import './slash-commands.css';
 import { icon, isImeKey } from './dom';
-import { t } from './i18n.ts';
 import { providerLogo } from './provider-logos';
 import { hidePopover, showPopover } from './popover-motion';
 import type { ProviderId } from './types';
@@ -99,7 +99,6 @@ export function mountSlashCommands(textarea: HTMLTextAreaElement, options: Optio
         const name = document.createElement('strong'); name.textContent = command.name;
         title.append(name);
         if (command.argumentHint) { const hint = document.createElement('span'); hint.textContent = command.argumentHint; title.append(hint); }
-        // Descriptions come from Rust (ours) or the harness (data): t() passes unknown ones through.
         const description = document.createElement('small'); description.textContent = command.kind === 'unsupported' ? command.reason || t('This command is not available in the app yet.') : t(command.description);
         copy.append(title, description);
         const source = document.createElement('span'); source.className = 'slash-menu-source'; source.textContent = command.source; source.title = command.source;
@@ -117,8 +116,7 @@ export function mountSlashCommands(textarea: HTMLTextAreaElement, options: Optio
     refreshButton.setAttribute('aria-label', loadError ? t('Retry commands') : t('Refresh commands'));
     refreshButton.title = loadError ? t('Retry commands') : t('Refresh commands');
     list.setAttribute('aria-busy', String(loading && !commands.length));
-    const count = `${visibleCommands.length}${matches.length > visibleCommands.length ? t` of ${matches.length}` : ''}`;
-    status.textContent = loading ? `${slow ? t('Waiting for the harness to start…') : t('Loading commands…')}${commands.length ? t(' Available commands can be used now.') : ''}` : loadError || (!matches.length ? query ? t`Unknown command /${query}. Refresh commands or edit the name.` : t('No commands are available for this agent.') : matches.length === 1 ? t`${count} command` : t`${count} commands`);
+    status.textContent = loading ? `${slow ? t('Waiting for the harness to start…') : t('Loading commands…')}${commands.length ? t(' Available commands can be used now.') : ''}` : loadError || (!matches.length ? query ? t`Unknown command /${query}. Refresh commands or edit the name.` : t('No commands are available for this agent.') : `${visibleCommands.length}${matches.length > visibleCommands.length ? t` of ${matches.length}` : ''} command${matches.length === 1 ? '' : 's'}`);
     warning.hidden = !warnings.length;
     warning.textContent = warnings.slice(0, 3).join('\n');
     position();

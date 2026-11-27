@@ -205,8 +205,8 @@ function handlePoints(b: { x: number; y: number; w: number; h: number }): [numbe
 function hit(shape: Shape, x: number, y: number): boolean {
   const b = bounds(shape), pad = 6;
   if (shape.type === 'line' || shape.type === 'arrow') {
-    const len = Math.hypot(shape.w, shape.h) || 1, at = Math.max(0, Math.min(1, ((x - shape.x) * shape.w + (y - shape.y) * shape.h) / (len * len)));
-    return Math.hypot(x - (shape.x + at * shape.w), y - (shape.y + at * shape.h)) <= pad + shape.weight;
+    const len = Math.hypot(shape.w, shape.h) || 1, t = Math.max(0, Math.min(1, ((x - shape.x) * shape.w + (y - shape.y) * shape.h) / (len * len)));
+    return Math.hypot(x - (shape.x + t * shape.w), y - (shape.y + t * shape.h)) <= pad + shape.weight;
   }
   if (shape.type === 'pen') {
     const p = shape.points ?? [];
@@ -236,8 +236,8 @@ export function showSketch(options: SketchOptions): void {
         <div class="sketch-group sketch-group-end" role="group" aria-label="${t('History')}"><button type="button" class="icon-button" data-history="undo" aria-label="${t('Undo (⌘Z)')}" title="${t('Undo · ⌘Z')}" disabled>${icon('undo')}</button><button type="button" class="icon-button" data-history="redo" aria-label="${t('Redo (⇧⌘Z)')}" title="${t('Redo · ⇧⌘Z')}" disabled>${icon('redo')}</button><button type="button" class="icon-button" data-edit="duplicate" aria-label="${t('Duplicate (⌘D)')}" title="${t('Duplicate · ⌘D')}" disabled>${icon('copy')}</button><button type="button" class="icon-button" data-edit="delete" aria-label="${t('Delete selection')}" title="${t('Delete')}" disabled>${icon('trash')}</button></div>
       </div>
       <div class="sketch-toolbar sketch-toolbar-secondary">
-        <div class="sketch-group" role="group" aria-label="${t('Add a component')}"><span class="sketch-group-label">${icon('widget')}${t('Add')}</span>${STENCILS.map(s => `<button type="button" class="sketch-option sketch-stencil" data-stencil="${s.id}" aria-label="${t`Add ${s.label.toLowerCase()}`}" title="${t`Add ${s.label.toLowerCase()}`}">${s.label}</button>`).join('')}</div>
-        <div class="sketch-group sketch-group-end" role="group" aria-label="${t('Canvas')}"><label class="sketch-select">${t('Canvas')}<select aria-label="${t('Canvas size')}">${PRESETS.map(p => `<option value="${p.id}">${p.label} · ${p.width} × ${p.height}</option>`).join('')}</select></label><button type="button" class="sketch-option" data-grid aria-pressed="true" title="${t('Toggle grid')}">${icon('grid')}${t('Grid')}</button><button type="button" class="sketch-option" data-edit="clear" title="${t('Clear the canvas')}">${t('Clear')}</button></div>
+        <div class="sketch-group" role="group" aria-label="${t('Add a component')}"><span class="sketch-group-label">${icon('widget')}Add</span>${STENCILS.map(s => `<button type="button" class="sketch-option sketch-stencil" data-stencil="${s.id}" aria-label="Add ${s.label.toLowerCase()}" title="Add ${s.label.toLowerCase()}">${s.label}</button>`).join('')}</div>
+        <div class="sketch-group sketch-group-end" role="group" aria-label="${t('Canvas')}"><label class="sketch-select">${t('Canvas')}<select aria-label="${t('Canvas size')}">${PRESETS.map(p => `<option value="${p.id}">${p.label} · ${p.width} × ${p.height}</option>`).join('')}</select></label><button type="button" class="sketch-option" data-grid aria-pressed="true" title="${t('Toggle grid')}">${icon('grid')}Grid</button><button type="button" class="sketch-option" data-edit="clear" title="${t('Clear the canvas')}">${t('Clear')}</button></div>
       </div>
       <div class="sketch-stage"><div class="sketch-paper"><canvas role="img" aria-label="${t('Mockup canvas')}"></canvas></div></div>
       <div class="dialog-footer sketch-footer"><span class="sketch-hint" role="status">${t('Drag to draw. Double-click a component or text to edit its label.')}</span><button type="button" class="secondary-button" data-action="close-dialog">${t('Cancel')}</button><button type="button" class="primary-button sketch-attach">${options.existing ? t('Update mockup') : t('Attach to message')}</button></div>
@@ -268,7 +268,7 @@ export function showSketch(options: SketchOptions): void {
     editor.querySelector<HTMLButtonElement>('[data-history=undo]')!.disabled = !history.length;
     editor.querySelector<HTMLButtonElement>('[data-history=redo]')!.disabled = !future.length;
     for (const button of editor.querySelectorAll<HTMLButtonElement>('[data-edit=duplicate],[data-edit=delete]')) button.disabled = !shape;
-    canvas.setAttribute('aria-label', `${t('Mockup canvas')}, ${scene.shapes.length === 1 ? t`${scene.shapes.length} shape` : t`${scene.shapes.length} shapes`}${shape ? t`, ${shape.type === 'stencil' ? shape.stencil : shape.type} selected` : ''}`);
+    canvas.setAttribute('aria-label', `Mockup canvas, ${scene.shapes.length} ${scene.shapes.length === 1 ? 'shape' : 'shapes'}${shape ? t`, ${shape.type === 'stencil' ? shape.stencil : shape.type} selected` : ''}`);
     editor.dataset.tool = tool; editor.dataset.selection = shape ? 'true' : 'false';
     drafts.set(options.taskId, clone(scene));
   }

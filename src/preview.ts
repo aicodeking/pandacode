@@ -1974,6 +1974,675 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       if (args.enabled && !(s.limitedAt && s.limitedUntil)) throw new Error('This task has no usage limit with a known reset time.');
       s.resumeAtReset = Boolean(args.enabled) && Boolean(s.limitedAt); result = s; break;
     }
+    case 'set_ui_language': result = null; break;
     case 'tray_seen': result = null; break;
-    case 'set_ui_language': result = null; break; // the language preference itself lives in localStorage
-    case 'clear_usage_limit': { const s = session(args.sessionId); s.limitedAt = null; s.limitedUntil = null; s.resumeAtReset = false; result = null; break; }
+    case 'clear_usage_limit': {
+      const s = session(args.sessionId);
+      s.limitedAt = null; s.limitedUntil = null; s.resumeAtReset = false;
+      if (previewQueueHolds.get(s.id) === 'limited') {
+        previewQueueHolds.set(s.id, 'reset');
+        emit('queue-changed', { sessionId: s.id, held: true, reason: 'reset', holdSeq: ++previewHoldSeq });
+      }
+      result = null; break;
+    }
+    case 'queue_holds': result = Object.fromEntries(previewQueueHolds); break;
+    case 'set_queue_hold': {
+      const { sessionId } = args, held = Boolean(args.held), reason = args.reason ?? 'stopped';
+      if (held) previewQueueHolds.set(sessionId, reason);
+      else previewQueueHolds.delete(sessionId);
+      emit('queue-changed', { sessionId, held, holdSeq: ++previewHoldSeq, ...(held ? { reason } : {}) });
+      break;
+    }
+    case 'queue_list': result = previewQueue().filter(entry => !args.sessionId || entry.sessionId === args.sessionId); break;
+    case 'queue_add': {
+      session(args.sessionId);
+      const text = String(args.text ?? ''), list = Array.isArray(args.attachments) ? args.attachments : [];
+      if (!text.trim() && !list.length) throw new Error('Write a message or add an attachment to queue.');
+      const queue = previewQueue(), at = Date.now();
+      const entry = { id: crypto.randomUUID(), sessionId: args.sessionId, position: Math.max(-1, ...queue.filter(e => e.sessionId === args.sessionId).map(e => e.position)) + 1, text, attachments: list, createdAt: at, updatedAt: at };
+      savePreviewQueue([...queue, entry]);
+      emit('queue-changed', { sessionId: entry.sessionId });
+      result = entry; break;
+    }
+    case 'queue_update': {
+      const queue = previewQueue(), entry = queue.find(e => e.id === args.id);
+      if (!entry) throw new Error('This queued message was already sent or removed.');
+      Object.assign(entry, { text: String(args.text ?? ''), attachments: args.attachments ?? [], updatedAt: Date.now() });
+      savePreviewQueue(queue);
+      emit('queue-changed', { sessionId: entry.sessionId });
+      result = entry; break;
+    }
+    case 'queue_remove': case 'queue_take_steered': {
+      const queue = previewQueue(), entry = queue.find(e => e.id === args.id);
+      savePreviewQueue(queue.filter(e => e.id !== args.id));
+      if (entry) emit('queue-changed', { sessionId: entry.sessionId });
+      result = null; break;
+    }
+    case 'queue_reorder': {
+      const queue = previewQueue(), own = queue.filter(e => e.sessionId === args.sessionId);
+      if ([...own.map(e => e.id)].sort().join() !== [...args.ids].sort().join()) throw new Error('The queue changed. Try reordering again.');
+      (args.ids as string[]).forEach((id, position) => { queue.find(e => e.id === id)!.position = position; });
+      savePreviewQueue(queue);
+      emit('queue-changed', { sessionId: args.sessionId });
+      result = previewQueue().filter(e => e.sessionId === args.sessionId); break;
+    }
+    case 'queue_take': {
+      const queue = previewQueue(), entry = queue.find(e => e.id === args.id);
+      if (!entry) throw new Error('This queued message was already sent or removed.');
+      savePreviewQueue(queue.filter(e => e.id !== args.id));
+      emit('queue-changed', { sessionId: entry.sessionId });
+      result = entry; break;
+    }
+    case 'queue_restore': {
+      const queue = previewQueue(), entry = args.entry as PreviewQueued;
+      if (queue.some(e => e.id === entry.id)) throw new Error('This message is already queued.');
+      const position = Math.min(1, ...queue.filter(e => e.sessionId === entry.sessionId).map(e => e.position)) - 1;
+      const restored = { ...entry, position, updatedAt: Date.now() };
+      savePreviewQueue([...queue, restored]);
+      emit('queue-changed', { sessionId: restored.sessionId });
+      result = restored; break;
+    }
+    case 'steer_task': {
+      const s = session(args.sessionId), w = window as any;
+      if (!timers.has(s.id) && s.status !== 'running' && !previewBotBusy(s.id)) throw new Error('The agent is not running; the message stays queued.');
+      if (w.__remoteRefuse && s.remoteDevice) throw new Error(w.__remoteRefuse);
+      if (w.__remoteSteerHold && s.remoteDevice) await new Promise<void>(resolve => { w.__remoteSteerRelease = () => { w.__remoteSteerHold = false; resolve(); }; });
+      // Claude-family, Codex, Pi, Muse and Devin take it live; others hold it for the next turn of the same run.
+      const text = String(args.text).trim(), steerId = `steer-${++id}`;
+      const mode = ['claude', 'glm', 'mimo', 'alibaba', 'codex', 'pi', 'muse', 'devin'].includes(s.provider) ? 'live' : 'next-turn';
+      const report = (status: string) => agent({ sessionId: s.id, kind: 'steer' as AgentEvent['kind'], text, data: { id: steerId, status, mode } });
+      window.setTimeout(() => report('pending'));
+      window.setTimeout(() => {
+        // Test hook: a steer whose text mentions this fails, as when the process exits before taking it.
+        if (text.includes('[steer-fails]')) return report('failed');
+        (messages[s.id] ??= []).push({ id: ++id, sessionId: s.id, role: 'user', content: text, createdAt: Date.now() });
+        report('delivered');
+        // A sample bot shown as working has no preview run to answer it, so it answers here.
+        if (previewBotBusy(s.id)) agent({ sessionId: s.id, kind: 'text', text: 'Got it, I will fold that in. (browser preview)' });
+      }, mode === 'live' ? 900 : 1500);
+      result = { steered: true, id: steerId, mode }; break;
+    }
+    case 'list_importable_conversations': {
+      const query = String(args.search ?? '').toLowerCase();
+      const source = args.provider === 'zcode' ? 'zcode' : args.provider === 'codex' ? 'codex' : 'claude';
+      const imported = (id: string) => sessions.find(task => task.provider === source && task.resumeId === id)?.id ?? null;
+      const items = previewImportables[source].filter(item => !query || `${item.title} ${item.folder}`.toLowerCase().includes(query))
+        .map(item => ({ ...item, importedTaskId: imported(item.id), unavailable: item.folder.startsWith('/missing') ? 'Its folder no longer exists on this computer.' : null }));
+      const label = source === 'codex' ? 'Codex' : source === 'zcode' ? 'ZCode' : 'Claude Code';
+      result = { items, cursor: null, note: items.length ? null : `No ${label} conversations were found on this computer.` }; break;
+    }
+    case 'import_conversations': {
+      const source = args.provider === 'zcode' ? 'zcode' : args.provider === 'codex' ? 'codex' : 'claude';
+      const imported: Session[] = [], existing: string[] = [], failed: { id: string; message: string }[] = [];
+      for (const conversationId of args.ids as string[]) {
+        const found = previewImportables[source].find(item => item.id === conversationId);
+        const already = sessions.find(task => task.provider === source && task.resumeId === conversationId);
+        if (already) { existing.push(already.id); continue; }
+        if (!found || found.folder.startsWith('/missing')) { failed.push({ id: conversationId, message: 'Its folder no longer exists on this computer.' }); continue; }
+        let project = projects.find(p => p.path === found.folder);
+        if (!project) { project = { id: crypto.randomUUID(), name: found.folder.split('/').pop()!, path: found.folder }; projects.push(project); }
+        const created = await invoke<Session>('create_session', { projectId: project.id, provider: source, model: found.model ?? args.model, mode: 'full' });
+        const task = session(created.id);
+        Object.assign(task, { resumeId: conversationId, title: found.title, taskStage: 'in_progress', createdAt: found.updatedAt - 600000, updatedAt: found.updatedAt, lastPromptAt: found.updatedAt - 600000, lastResponseAt: found.updatedAt });
+        messages[task.id] = [{ id: ++id, sessionId: task.id, role: 'user', content: `Imported: ${found.title}`, createdAt: found.updatedAt - 600000 }, { id: ++id, sessionId: task.id, role: 'assistant', content: 'This conversation was imported into PandaCode.', createdAt: found.updatedAt }];
+        imported.push(taskSummary(task));
+      }
+      if (imported.length) emit('sessions-changed', undefined);
+      result = { imported, existing, failed }; break;
+    }
+    case 'discard_draft': {
+      const task = sessions.find(item => item.id === args.sessionId);
+      if (!task) { result = false; break; }
+      settleDraft(task);
+      if (!task.draft || (messages[task.id] ?? []).length) { result = false; break; }
+      sessions = sessions.filter(item => item.id !== task.id); delete messages[task.id]; architect.remove([task.id]);
+      result = true; break;
+    }
+    case 'pin_session': {
+      const task = session(args.sessionId);
+      if (typeof args.pinned !== 'boolean') throw new Error('Choose whether to pin this task.');
+      saveThreadOrder(sessions.map(item => ({ ...threadOrder(item), ...(item.id === task.id ? { pinned: args.pinned } : {}) })));
+      emit('sessions-changed', undefined);
+      result = task; break;
+    }
+    case 'reorder_sessions': {
+      const ids: unknown = args.sessionIds;
+      if (!Array.isArray(ids) || !ids.length || ids.length > 500 || ids.some(id => typeof id !== 'string') || new Set(ids).size !== ids.length) throw new Error('Choose between 1 and 500 different tasks to reorder.');
+      const tasks = ids.map(id => session(id));
+      if (tasks.some(task => Boolean(task.pinned) !== Boolean(tasks[0].pinned))) throw new Error('Reorder tasks within the same group.');
+      const selected = new Set(ids), order = [...sessions].sort(compareThreadOrder);
+      let index = 0;
+      const reordered = order.map(task => selected.has(task.id) ? tasks[index++] : task);
+      saveThreadOrder(reordered.map((task, sidebarOrder) => ({ ...threadOrder(task), sidebarOrder })));
+      emit('sessions-changed', undefined);
+      result = reordered.map(taskSummary); break;
+    }
+    case 'get_task': result = settleDraft(session(args.sessionId)); break;
+    case 'list_providers': result = args.deviceId ? remoteProviders() : listPreviewProviders(Boolean(args.force)); break;
+    case 'provider_check_connection': result = { installed: true, acpReady: true, sessionReady: true, state: 'ready', message: 'Sample connection check. No prompt sent.' }; break;
+    case 'list_slash_commands': result = slashCatalog(session(args.sessionId).provider); break;
+    case 'resolve_slash_command': result = resolveSlash(session(args.sessionId).provider, String(args.text)); break;
+    case 'list_agent_integrations': result = { servers: [{ name: 'Preview documentation', description: 'Sample MCP integration', status: 'ready', authStatus: 'not required', tools: [{ name: 'search_docs', description: 'Search sample documentation.' }] }], skills: [{ name: 'Project guidelines', description: 'Sample skill', status: 'enabled' }], apps: [], warnings: [] }; break;
+    case 'list_app_tools': result = [{ name: 'pandacode_list_tasks', description: 'List project tasks.' }, { name: 'pandacode_code_search', description: 'Search the checkout with the local codedb index.' }, { name: 'pandacode_open_browser', description: 'Open a URL in the app browser.' }]; break;
+    case 'run_turn_checks': result = { checked: false, reason: 'Browser preview has no project checks.' }; break;
+    case 'agent_ui_request_active': result = true; break;
+    case 'resolve_agent_ui_action': break;
+    case 'open_external_url': { const url = new URL(args.url); if (!['http:', 'https:'].includes(url.protocol)) throw new Error('Use an HTTP or HTTPS URL.'); window.open(url.href, '_blank', 'noopener,noreferrer'); break; }
+    case 'open_support': window.open('https://github.com/aicodeking/pandacode/issues', '_blank', 'noopener,noreferrer'); break;
+    case 'local_sign_app': break;
+    case 'app_update_install_supported': result = true; break;
+    case 'support_details': result = { version: 'Preview', platform: 'Browser preview', architecture: 'Not reported' }; break;
+    case 'browser_inspect': result = args.action === 'read' ? { url: browserState.url, title: browserState.title, text: 'Browser preview sample page', elements: [] } : { dispatched: true }; break;
+    case 'list_provider_models': result = args.deviceId ? remoteCatalog(args.provider as ProviderId) : args.provider === 'opencode' ? previewOpenCodeChoices() : catalogs[args.provider as ProviderId] ?? []; break;
+    case 'list_opencode_models': result = {models: openCodePreviewModels, selectedModelIds: previewOpenCodeSelection(), error: null}; break;
+    case 'save_opencode_models': {
+      if (!Array.isArray(args.modelIds) || args.modelIds.length > 100 || args.modelIds.some((id: unknown) => typeof id !== 'string' || !id.includes('/') || id.length > 200)) throw new Error('Choose valid OpenCode models.');
+      result = [...new Set(args.modelIds)];
+      localStorage.setItem(openCodePreviewKey, JSON.stringify(result));
+      emit('provider-models-changed', {provider:'opencode'});
+      window.dispatchEvent(new Event('pandacode-preview-models-changed'));
+      break;
+    }
+    case 'add_project': { const p = { id: crypto.randomUUID(), name: args.path.split('/').pop() || 'Project', path: args.path }; projects.push(p); result = p; break; }
+    case 'remove_project': architect.remove(sessions.filter(s => s.projectId === args.projectId).map(s => s.id)); projects = projects.filter(p => p.id !== args.projectId); break;
+    case 'relink_project': {
+      const project = projects.find(p => p.id === args.projectId);
+      if (!project) throw new Error('Project not found.');
+      project.path = String(args.path ?? '');
+      // The located folder reads again, like the real relink.
+      (window as any).__filesFail = false;
+      result = { ...project, addedOrder: projects.indexOf(project) + 1 }; break;
+    }
+    case 'delete_session': {
+      const task = session(args.sessionId); assertIdle(task);
+      if (architect.isActive(task.id)) throw new Error('Stop the team before deleting this task.');
+      if (task.goalState?.status === 'active') throw new Error('Pause the goal before deleting this task.');
+      const deletedSessionIds = [...new Set([task.id, ...(architect.get(task.id)?.workers.map(worker => worker.sessionId) ?? [])])];
+      for (const id of deletedSessionIds) { const worker = sessions.find(task => task.id === id); if (worker) assertIdle(worker); }
+      architect.remove(deletedSessionIds);
+      turnChanges.remove(deletedSessionIds);
+      sessions = sessions.filter(task => !deletedSessionIds.includes(task.id));
+      saveThreadOrder(sessions.map(threadOrder));
+      for (const id of deletedSessionIds) { delete messages[id]; previewQueueHolds.delete(id); }
+      emit('sessions-deleted', { sessionIds: deletedSessionIds }); emit('sessions-changed', undefined);
+      result = { deletedSessionIds }; break;
+    }
+    case 'create_session': { const { team, mainSessionId: _mainSessionId, ...fields } = args; const s: Session = { id: crypto.randomUUID(), ...fields, pinned: false, sidebarOrder: null, draft: Boolean(args.draft), mode: args.mode ?? 'full', title: 'New conversation', status: 'idle', createdAt: Date.now(), updatedAt: Date.now(), archived: false, worktreePath: null, resumeId: null, lastResponseAt: null, lastPromptAt: null, reasoningEffort: null, contextUsage: null, taskStage: 'pending', taskDescription: '', completedAt: null } as Session; sessions.unshift(s); messages[s.id] = []; if (team !== false) architect.inherit(s.id); result = s; break; }
+    case 'chat_create': {
+      const project = { id: crypto.randomUUID(), name: 'Chat', path: `/Users/you/PandaCode Chats/chat-${crypto.randomUUID().slice(0, 8)}` }; projects.push(project);
+      result = await invoke<Session>('create_session', { projectId: project.id, provider: args.provider, model: args.model, mode: args.mode });
+      emit('sessions-changed', undefined); break; // As chat_create does natively, before it returns.
+    }
+    case 'chat_cleanup': {
+      const chat = projects.some(p => p.id === args.projectId && p.path.includes('/PandaCode Chats/')) && !sessions.some(s => s.projectId === args.projectId);
+      if (chat) projects = projects.filter(p => p.id !== args.projectId);
+      result = chat; break;
+    }
+    case 'create_board_task': {
+      const details = taskDetails(args.title, args.description);
+      if (!projects.some(p => p.id === args.projectId)) throw new Error('Project not found.');
+      if (!providers.some(p => p.id === args.provider) || typeof args.model !== 'string' || args.model.length > 200) throw new Error('Invalid harness or model.');
+      if (!['ask', 'auto', 'plan', 'full'].includes(args.mode)) throw new Error('Unknown permission mode.');
+      const s = await invoke<Session>('create_session', { projectId: args.projectId, provider: args.provider, model: args.model, mode: args.mode });
+      Object.assign(session(s.id), details);
+      result = session(s.id); break;
+    }
+    case 'update_task_details': {
+      const s = session(args.sessionId); assertIdle(s);
+      if (s.archived) throw new Error('Restore this task before editing it.');
+      Object.assign(s, taskDetails(args.title, args.description), { updatedAt: Date.now() }); result = s; break;
+    }
+    case 'set_task_stage': {
+      const s = session(args.sessionId); assertIdle(s);
+      if (s.archived) throw new Error('Restore this task before changing its stage.');
+      const stage = args.stage as TaskStage;
+      // Like the native store: work in progress only by undoing the completion of a stopped run.
+      const undoing = s.taskStage === 'completed' && ['error', 'interrupted'].includes(s.status);
+      if (!['pending', 'review', 'completed'].includes(stage) && !(stage === 'in_progress' && undoing)) throw new Error('Start the task to move it to work in progress.');
+      s.completedAt = stage === 'completed' ? s.completedAt ?? Date.now() : null;
+      s.taskStage = stage; s.updatedAt = Date.now(); result = s; break;
+    }
+    case 'start_task': {
+      const s = session(args.sessionId);
+      await invoke('send_message', { sessionId: s.id, text: s.taskDescription?.trim() || s.title }); break;
+    }
+    case 'update_session': {
+      const s = session(args.sessionId);
+      if (args.archived === false && s.archived && s.taskStage === 'completed') s.completedAt = Date.now();
+      Object.assign(s, Object.fromEntries(Object.entries(args).filter(([key]) => key !== 'sessionId')), { updatedAt: Date.now() }); break;
+    }
+    case 'set_reasoning_effort': {
+      const s = session(args.sessionId);
+      if (s.status === 'running' || s.status === 'waiting' || timers.has(s.id)) throw new Error('Stop the agent before changing reasoning effort.');
+      const effort = args.reasoningEffort ?? null;
+      const team = architect.get(s.id);
+      if (team && (team.round > 0 || team.workers.length) && effort !== (s.reasoningEffort ?? null)) throw new Error('This run keeps its architect model and reasoning effort. Start a new task to change them.');
+      const supported = catalogs[s.provider].find(model => model.id === (s.model || 'default'))?.reasoningEfforts ?? [];
+      if (effort !== null && !supported.some(option => option.id === effort)) throw new Error('This model does not support that reasoning effort.');
+      s.reasoningEffort = effort; s.updatedAt = Date.now(); result = s; break;
+    }
+    case 'configure_session': {
+      const s = session(args.sessionId);
+      if (!providers.some(p => p.id === args.provider) || typeof args.model !== 'string' || args.model.length > 200) throw new Error('Invalid harness or model.');
+      const projectId = args.projectId ?? s.projectId;
+      if (!projects.some(p => p.id === projectId)) throw new Error('Project not found.');
+      if (s.worktreePath && projectId !== s.projectId) throw new Error('A worktree task must stay in its original project.');
+      if (s.status === 'running' || s.status === 'waiting' || timers.has(s.id)) throw new Error('Stop the agent before changing its project, harness, or model.');
+      const team = architect.get(s.id);
+      if (team && (team.round > 0 || team.workers.length) && (args.provider !== s.provider || args.model !== s.model)) throw new Error('This run keeps its architect model. Start a new task to change it.');
+      if (projectId !== s.projectId && (s.resumeId !== null || messages[s.id]?.length)) throw new Error('Start a new task to change its project or harness after a conversation has started.');
+      if (args.provider !== s.provider || (args.model || 'default') !== (s.model || 'default')) { s.reasoningEffort = null; s.contextUsage = null; }
+      if (args.provider !== s.provider) {
+        if (s.resumeId || messages[s.id]?.some(message => ['user', 'assistant', 'coordination'].includes(message.role))) (messages[s.id] ??= []).push({ id: ++id, sessionId: s.id, role: 'handoff', content: JSON.stringify({ fromProvider: s.provider, toProvider: args.provider, summary: 'Switched harness. The next message includes up to 200 recent conversation entries (64 KiB). Files and project stay in place. Older text may be shortened; private reasoning, native tool state, and image contents are not transferred. Reattach images if needed.' }), createdAt: Date.now() });
+        s.resumeId = null; s.goalState = null; s.codexSettings = null;
+      }
+      s.projectId = projectId; s.provider = args.provider; s.model = args.model; s.updatedAt = Date.now(); result = s; break;
+    }
+    case 'dismiss_error_messages': {
+      const ids: unknown = args.ids;
+      if (!Array.isArray(ids) || ids.length > DISMISS_BATCH || ids.some(id => !Number.isInteger(id))) throw new Error(`Dismiss at most ${DISMISS_BATCH} errors at a time.`);
+      const wanted = new Set<number>(ids), list = messages[session(args.sessionId).id] ?? [];
+      const kept = list.filter(message => !(message.role === 'error' && wanted.has(message.id)));
+      messages[args.sessionId] = kept; result = list.length - kept.length; break;
+    }
+    case 'get_messages': {
+      const synced = mirrorSynced.get(args.sessionId);
+      const history = (messages[args.sessionId] ?? []).filter(message => synced == null || message.id <= synced);
+      const current = session(args.sessionId).provider;
+      const eligible = history.filter(m => args.beforeId == null || m.id < args.beforeId);
+      result = { messages: eligible.slice(-100).map(message => message.role === 'assistant'
+        ? { ...message, authorProvider: historicalProvider(message, history, current) } : message), hasOlder: eligible.length > 100 } satisfies MessagePage;
+      break;
+    }
+    case 'send_message': {
+      if (resolveSlash(session(args.sessionId).provider, String(args.text)).action) throw new Error('This command opens a PandaCode control.');
+      const s = session(args.sessionId), w = window as any; assertIdle(s);
+      // Tests: `__previewSendFails` sends are rejected before anything is saved.
+      if (w.__previewSendFails > 0) { w.__previewSendFails -= 1; throw new Error('The agent could not start.'); }
+      if (w.__remoteRefuse && s.remoteDevice) throw new Error(w.__remoteRefuse);
+      if (w.__remoteSendHold && s.remoteDevice) await new Promise<void>(resolve => { w.__remoteSendRelease = () => { w.__remoteSendHold = false; resolve(); }; });
+      let moodboardContext = '';
+      for (const boardId of args.moodboardIds ?? []) {
+        const board = await invoke<import('./moodboards').MoodboardDetail>('read_moodboard', { projectId: s.projectId, boardId });
+        moodboardContext += `\n\nMoodboard: ${board.name} (ID: ${board.id}). Use pandacode_read_moodboard and pandacode_read_moodboard_image to see these visual references.`;
+      }
+      if (architect.get(s.id)) { architect.start(s.id, String(args.text) + moodboardContext, args.imageIds); break; }
+      if (s.archived) throw new Error('Restore this task before starting it.');
+      if (s.taskStage === 'completed') throw new Error('Reopen this task before starting it.');
+      const text = typeof args.text === 'string' ? args.text.trim() + moodboardContext : '';
+      if (!text) throw new Error('Write a message first.');
+      if (new TextEncoder().encode(text).length > MESSAGE_LIMIT) throw new Error('Message and attached context must be under 16 MiB.');
+      s.status = 'running'; s.taskStage = 'in_progress'; s.completedAt = null; s.updatedAt = Date.now(); s.lastPromptAt = s.updatedAt; s.limitedAt = null; s.limitedUntil = null; s.resumeAtReset = false; if (s.title === 'New conversation') s.title = text.slice(0, 48); messages[s.id] ??= []; messages[s.id].push({ id: ++id, sessionId: s.id, role: 'user', content: text, createdAt: Date.now() });
+      if (s.id === BRIEF_ID) { replayBrief(s); break; }
+      agent({ sessionId: s.id, kind: 'status', text: 'Previewing response' });
+      const tool: ToolActivity = { id: `preview-tool-${crypto.randomUUID()}`, name: 'Bash', status: 'running', input: 'npm test -- --runInBand', output: '' };
+      const toolMessage: Message = { id: ++id, sessionId: s.id, role: 'tool', content: encodeTool(tool), createdAt: Date.now() };
+      messages[s.id].push(toolMessage);
+      activeTools.set(s.id, { activity: tool, message: toolMessage });
+      agent({ sessionId: s.id, kind: 'tool', text: 'Bash', tool: { ...tool } });
+      const output = shortReply ? 'All tests pass in the preview.' : 'This is the browser preview. Your task and conversation are saved in this preview session, but no agent or shell is running here.\n\nOpen the native PandaCode app to work with your files using Claude Code, Codex, or Kimi Code. The desktop app connects to the CLI tools installed on your machine.';
+      let cursor = 0;
+      const tick = () => {
+        const next = output.slice(cursor, cursor + 13); cursor += 13;
+        if (next.trim()) s.lastResponseAt = Date.now();
+        agent({ sessionId: s.id, kind: 'text', text: next });
+        if (tool.status === 'running' && cursor >= (shortReply ? 13 : slowTurn ? 26 : 130)) {
+          tool.status = 'completed'; tool.output = sampleTestOutput;
+          toolMessage.content = encodeTool(tool);
+          agent({ sessionId: s.id, kind: 'tool', text: 'Bash completed', tool: { ...tool } });
+          activeTools.delete(s.id);
+        }
+        // ?slowturn streams at a real agent's pace: the command runs ~2 s, then the reply arrives a few words at a time.
+        if (cursor < output.length) timers.set(s.id, window.setTimeout(tick, shortReply ? 600 : slowTurn ? (cursor === 13 ? 2000 : 70) : 24)); else finish(s.id, output);
+      };
+      timers.set(s.id, window.setTimeout(tick, 200)); break;
+    }
+    case 'stop_session': {
+      if (architect.isActive(args.sessionId)) { result = architect.control(args.sessionId, 'stop'); break; }
+      const w = window as any;
+      if (w.__stopHold) await new Promise<void>(resolve => { w.__stopRelease = () => { w.__stopHold = false; resolve(); }; });
+      window.clearTimeout(timers.get(args.sessionId)); timers.delete(args.sessionId);
+      finishTiming(args.sessionId);
+      const pending = activeTools.get(args.sessionId);
+      if (pending) {
+        pending.activity.status = 'failed'; pending.activity.output = 'Canceled before completion (browser preview). No command was executed.';
+        pending.message.content = encodeTool(pending.activity);
+        agent({ sessionId: args.sessionId, kind: 'tool', text: 'Bash canceled', tool: { ...pending.activity } });
+        activeTools.delete(args.sessionId);
+      }
+      const stopped = session(args.sessionId); stopped.status = 'idle'; if (stopped.goalState?.status === 'active') { stopped.goalState.status = 'paused'; emitGoal(stopped); } syncMirror(args.sessionId); agent({ sessionId: args.sessionId, kind: 'done', text: 'Stopped' }); break;
+    }
+    case 'respond_approval': case 'respond_user_input': break;
+    case 'git_status': result = checkoutGit(args.sessionId); break;
+    case 'git_diff': if (benchDiffs && BENCH_DIFFS[args.path]) { result = BENCH_DIFFS[args.path](); break; } result = `diff --git a/${args.path ?? 'src/components/search.ts'} b/${args.path ?? 'src/components/search.ts'}\nindex 64d221a..0e6c9ef 100644\n--- a/${args.path ?? 'src/components/search.ts'}\n+++ b/${args.path ?? 'src/components/search.ts'}\n@@ -12,5 +12,6 @@ export function mountSearch(items) {\n+  const index = createSearchIndex(items);\n+\n   input.addEventListener("input", () => {\n-    const index = createSearchIndex(items);\n-    renderAll(index.search(input.value));\n+    renderResults(index.search(input.value));\n   });\n }`; break;
+    case 'git_stage': checkoutGit(args.sessionId).files.forEach(file => { if (args.paths.includes(file.path)) { file.index = args.staged ? 'M' : ' '; file.working = args.staged ? ' ' : 'M'; } }); break;
+    case 'git_commit': {
+      const checkout = checkoutGit(args.sessionId);
+      if (!checkout.files.some(file => file.index !== ' ' && file.index !== '?')) throw new Error('Stage changes before committing.');
+      checkout.files = checkout.files.filter(file => file.index === ' ' || file.index === '?'); result = 'Preview commit created'; break;
+    }
+    case 'create_worktree': {
+      const source = session(args.sessionId);
+      const worktree = previewWorktree(source, args);
+      const created: Session = { ...source, id: crypto.randomUUID(), pinned: false, sidebarOrder: null, worktreePath: worktree.path, worktreeBranch: worktree.branch, title: 'New conversation', mode: 'full', status: 'idle', createdAt: Date.now(), updatedAt: Date.now(), archived: false, resumeId: null, lastResponseAt: null, lastPromptAt: null, contextUsage: null, taskStage: 'pending', taskDescription: '', completedAt: null, issue: null, pullRequest: null };
+      sessions.unshift(created); messages[created.id] = []; architect.inherit(created.id); result = created; break;
+    }
+    case 'attach_worktree': {
+      const s = session(args.sessionId);
+      if (s.worktreePath || s.resumeId || (messages[s.id] ?? []).length || s.status === 'running' || s.status === 'waiting') throw new Error('This conversation already started. Create a new task in a worktree instead.');
+      const worktree = previewWorktree(s, args);
+      Object.assign(s, { worktreePath: worktree.path, worktreeBranch: worktree.branch, updatedAt: Date.now() }); result = s; break;
+    }
+    case 'git_branches': { const checkout = checkoutGit(args.sessionId); result = { current: checkout.branch, defaultBranch: 'main', branches: [...new Set([checkout.branch, 'main', 'release/1.4', ...previewBranches])].filter(Boolean) }; break; }
+    case 'git_switch_branch': {
+      if (args.sessionId && session(args.sessionId).worktreePath) throw new Error('This task works in its own worktree; its branch stays as it is.');
+      const checkout = checkoutGit(args.sessionId), branches = [...new Set([checkout.branch, 'main', 'release/1.4', ...previewBranches])].filter(Boolean);
+      if (!branches.includes(String(args.branch))) throw new Error(`There is no local branch named ${args.branch}.`);
+      checkout.branch = String(args.branch);
+      result = { current: checkout.branch, defaultBranch: 'main', branches }; break;
+    }
+    case 'worktree_status': {
+      const s = session(args.sessionId); if (!s.worktreePath) throw new Error('This task uses the main checkout.');
+      const checkout = worktreeGit.get(s.worktreePath);
+      result = checkout ? { exists: true, branch: checkout.branch, changes: checkout.files.length, clean: !checkout.files.length, hasUpstream: pushedBranches.has(checkout.branch), ahead: pushedBranches.has(checkout.branch) ? 0 : 1, merged: mergedBranches.has(checkout.branch) } : { exists: false, branch: s.worktreeBranch ?? '', changes: 0, clean: true, hasUpstream: false, ahead: 0, merged: false };
+      break;
+    }
+    case 'merge_worktree': {
+      const s = session(args.sessionId); if (!s.worktreePath) throw new Error('This task uses the main checkout.');
+      assertIdle(s);
+      const checkout = worktreeGit.get(s.worktreePath); if (!checkout) throw new Error('The worktree folder is missing; recreate it first.');
+      if (checkout.files.length) throw new Error('The worktree has uncommitted changes. Commit or discard them first; only committed work is merged.');
+      const commits = mergedBranches.has(checkout.branch) ? 0 : 1;
+      mergedBranches.add(checkout.branch);
+      result = { branch: checkout.branch, target: 'main', commits, switchedFrom: null }; break;
+    }
+    case 'remove_worktree': {
+      const s = session(args.sessionId); if (!s.worktreePath) throw new Error('This task uses the main checkout.');
+      assertIdle(s);
+      const checkout = worktreeGit.get(s.worktreePath), branch = checkout?.branch ?? s.worktreeBranch ?? '';
+      if (checkout?.files.length) throw new Error(`fatal: '${s.worktreePath}' contains modified or untracked files, use --force to delete it`);
+      worktreeGit.delete(s.worktreePath);
+      const deletable = args.deleteBranch && mergedBranches.has(branch);
+      if (deletable) previewBranches.delete(branch);
+      result = { removed: Boolean(checkout), branch, branchDeleted: Boolean(deletable), note: args.deleteBranch && !deletable && branch ? `Branch ${branch} was kept: error: the branch '${branch}' is not fully merged` : '' }; break;
+    }
+    case 'recreate_worktree': {
+      const s = session(args.sessionId); if (!s.worktreePath) throw new Error('This task uses the main checkout.');
+      if (worktreeGit.has(s.worktreePath)) throw new Error('The worktree folder already exists.');
+      if (!s.worktreeBranch || !previewBranches.has(s.worktreeBranch)) throw new Error('The worktree\u2019s branch is unknown; create a new worktree instead.');
+      worktreeGit.set(s.worktreePath, { branch: s.worktreeBranch, isRepo: true, files: [] }); result = s; break;
+    }
+    case 'git_push': { const checkout = checkoutGit(args.sessionId); pushedBranches.add(checkout.branch); result = `branch '${checkout.branch}' set up to track 'origin/${checkout.branch}'.`; break; }
+    case 'github_status': result = previewGithub.status(args.projectId); break;
+    case 'github_repos': result = structuredClone(previewRepos); break;
+    // The sample orbit project has an app icon; others show the sidebar's default.
+    case 'project_icon': result = args.projectId === 'project-1' ? 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCAzMiAzMic+PGRlZnM+PGxpbmVhckdyYWRpZW50IGlkPSdnJyB4MT0nMCcgeTE9JzAnIHgyPScxJyB5Mj0nMSc+PHN0b3Agb2Zmc2V0PScwJyBzdG9wLWNvbG9yPScjN2M5Y2ZmJy8+PHN0b3Agb2Zmc2V0PScxJyBzdG9wLWNvbG9yPScjNWI1YmQ2Jy8+PC9saW5lYXJHcmFkaWVudD48L2RlZnM+PHJlY3Qgd2lkdGg9JzMyJyBoZWlnaHQ9JzMyJyByeD0nOCcgZmlsbD0ndXJsKCNnKScvPjxjaXJjbGUgY3g9JzE2JyBjeT0nMTYnIHI9JzcnIGZpbGw9J25vbmUnIHN0cm9rZT0nd2hpdGUnIHN0cm9rZS13aWR0aD0nMycvPjxjaXJjbGUgY3g9JzIzJyBjeT0nOScgcj0nMi41JyBmaWxsPSd3aGl0ZScvPjwvc3ZnPg==' : null; break;
+    case 'github_repo_pulls': result = previewHub.pulls(String(args.repo)); break;
+    case 'github_repo_issues': result = previewHub.issues(String(args.repo)); break;
+    case 'github_repo_runs': result = previewHub.runs(String(args.repo)); break;
+    case 'github_run_details': result = previewHub.runDetails(String(args.repo), Number(args.id)); break;
+    case 'github_project_repos': result = projects.filter(p => p.id === 'project-1' || previewClones.has(p.id)).map(p => ({ projectId: p.id, repo: previewClones.get(p.id) ?? 'orbit-labs/orbit' })); break;
+    case 'github_clone_repo': {
+      const repo = String(args.repo), name = repo.split('/')[1] ?? repo, path = `${String(args.parent).replace(/\/$/, '')}/${name}`;
+      if (projects.some(p => p.path === path)) throw new Error(`${path} already exists. Open it as a project instead, or choose another folder.`);
+      const added: Project = { id: `project-${++id}`, name, path };
+      projects = [...projects, added]; previewClones.set(added.id, repo); result = added; break;
+    }
+    case 'github_search': result = previewGithub.search(args.projectId, String(args.query ?? '')); break;
+    case 'github_issues': result = previewGithub.issues(args.projectId, args.filter ?? {}); break;
+    case 'github_resolve': result = previewGithub.resolve(args.projectId, (args.numbers ?? []) as number[]); break;
+    case 'github_refresh_links': result = sessions.filter(s => s.projectId === args.projectId).flatMap(s => [s.issue, s.pullRequest].filter(Boolean).map(link => ({ sessionId: s.id, link: previewGithub.refresh(s.projectId, link!) }))); break;
+    case 'set_task_link': {
+      const s = session(args.sessionId);
+      if (!['issue', 'pull'].includes(args.kind)) throw new Error('Unknown link kind.');
+      const link = args.link ? { ...args.link, checkedAt: Date.now() } : null;
+      if (args.kind === 'pull') s.pullRequest = link; else s.issue = link;
+      result = s; break;
+    }
+    case 'github_create_pull_request': {
+      const s = session(args.sessionId), checkout = checkoutGit(s.id), repo = previewGithub.status(s.projectId).repo;
+      if (!repo) throw new Error('This project has no GitHub remote.');
+      if (checkout.files.length) throw new Error('Commit or stash your changes before opening a pull request. The Changes tab can commit them.');
+      if (!checkout.branch || checkout.branch === args.base) throw new Error(`Create a branch other than ${args.base} before opening a pull request.`);
+      if (!String(args.title ?? '').trim()) throw new Error('Give the pull request a title of up to 256 characters.');
+      pushedBranches.add(checkout.branch);
+      const number = previewGithub.nextNumber(s.projectId);
+      s.pullRequest = { kind: 'pull', number, url: `${repo.url}/pull/${number}`, title: String(args.title).trim(), state: args.draft ? 'draft' : 'open', checkedAt: Date.now() };
+      previewGithub.pulls.push({ projectId: s.projectId, number, title: s.pullRequest.title, body: String(args.body ?? ''), base: args.base, head: checkout.branch });
+      result = s; break;
+    }
+    case 'github_pull_request': {
+      const s = session(args.sessionId); if (!s.pullRequest) throw new Error('This task has no linked pull request.');
+      result = previewGithub.detail(s.projectId, s.pullRequest.number); break;
+    }
+    case 'github_merge_pull_request': {
+      const s = session(args.sessionId); if (!s.pullRequest) throw new Error('This task has no linked pull request.');
+      if (!['squash', 'merge', 'rebase'].includes(String(args.method))) throw new Error('Choose squash, merge or rebase.');
+      previewGithub.merged.set(`${s.projectId}:${s.pullRequest.number}`, new Date().toISOString());
+      s.pullRequest = { ...s.pullRequest, state: 'merged', checkedAt: Date.now() };
+      result = s; break;
+    }
+    case 'github_pull_request_diff': {
+      const s = session(args.sessionId); if (!s.pullRequest) throw new Error('This task has no linked pull request.');
+      result = { patch: previewGithub.diff, truncated: false }; break;
+    }
+    case 'github_detect_pull_request': {
+      // The sample agent never mentions a PR; tests hook this command to simulate one.
+      result = null; break;
+    }
+    case 'github_link_pull_request': {
+      const s = session(args.sessionId), repo = previewGithub.status(s.projectId).repo;
+      if (!repo) throw new Error('This project has no GitHub remote.');
+      const reference = String(args.reference ?? '').trim();
+      const number = /^#?\d+$/.test(reference) ? Number(reference.replace('#', '')) : Number(reference.match(new RegExp(`github\\.com/${repo.nameWithOwner}/pull/(\\d+)`, 'i'))?.[1] ?? NaN);
+      if (!(number > 0)) throw new Error(reference.includes('/pull/') ? `That pull request is not in ${repo.nameWithOwner}.` : 'Enter a pull request number or its GitHub URL.');
+      const pull = previewGithub.pulls.find(p => p.projectId === s.projectId && p.number === number);
+      if (!pull) throw new Error(`Pull request #${number} was not found.`);
+      s.pullRequest = { kind: 'pull', number, url: `${repo.url}/pull/${number}`, title: pull.title, state: 'open', checkedAt: Date.now() };
+      result = s; break;
+    }
+    case 'task_token_usage': result = { input: 91234, cacheRead: 1000000, cacheWrite: 45000, output: 152340, firstUsed: Date.now() - 86400000, lastUsed: Date.now() - 300000 }; break;
+    case 'token_saver_tools': result = { rtk: previewRtk, rtkVersion: previewRtk ? '1.0.1' : '', rtkInstall: 'brew install rtk' }; break;
+    case 'token_saver_install': {
+      if (args.tool !== 'rtk') throw new Error('Unknown tool.');
+      await new Promise(resolve => setTimeout(resolve, 500));
+      previewRtk = true;
+      result = { rtk: true, rtkVersion: '1.0.1', rtkInstall: 'brew install rtk' }; break;
+    }
+    case 'themes_list': result = previewThemes.list(); break;
+    case 'theme_import': result = previewThemes.import(String(args.path ?? '')); break;
+    case 'theme_install': result = previewThemes.install(String(args.extensionId ?? '')); break;
+    case 'theme_remove': previewThemes.remove(String(args.id ?? '')); result = null; break;
+    case 'android_setup': {
+      for (const [step, label] of ['Installing Java (openjdk@21)…', 'Installing Android command-line tools…', 'Accepting the Android SDK licenses…', 'Downloading the emulator and Android 15 (about 2 GB)…', 'Creating a Pixel 9 emulator…'].entries()) {
+        emit('android-setup', { step: step + 1, total: 5, label, done: false, error: null });
+        await new Promise(resolve => setTimeout(resolve, 120));
+      }
+      emit('android-setup', { step: 5, total: 5, label: 'Android emulator ready', done: true, error: null });
+      result = 'Pixel_9_API_35'; break;
+    }
+    case 'cloud_connections': result = previewCloud.connections(); break;
+    case 'cloud_connect': result = previewCloud.connect(args.provider, args.key, args.options ?? {}); emit('vm-changed', {}); break;
+    case 'cloud_disconnect': result = previewCloud.disconnect(args.provider); emit('vm-changed', {}); break;
+    case 'cloud_set_inherit_environment': result = previewCloud.setInheritEnvironment(args.provider, args.inherit); break;
+    case 'cloud_setup_sandboxes': result = previewCloud.setupSandboxes(); emit('vm-changed', {}); break;
+    case 'cloud_colab_sign_in_start': result = previewCloud.colabSignInStart(args.authMode, args.oauthConfigPath); break;
+    case 'cloud_colab_sign_in_status': result = previewCloud.colabSignInStatus(); break;
+    case 'cloud_colab_usage': result = previewCloud.colabUsage(); break;
+    case 'cloud_colab_sign_in_cancel': result = previewCloud.colabSignInCancel(); break;
+    case 'cloud_colab_config': result = previewCloud.colabConfig(); break;
+    case 'cloud_colab_set_config': result = await previewCloud.colabSetConfig(args); break;
+    case 'cloud_colab_install_cli': result = previewCloud.colabInstallCli(); break;
+    case 'cloud_colab_thread_runtimes': result = previewCloud.colabThreadRuntimes(args.sessionId, args.refresh); break;
+    case 'cloud_colab_runtime_action': result = await previewCloud.colabRuntimeAction(args.sessionId, args.endpoint, args.action); break;
+    case 'cloud_instabox_images': result = previewCloud.instaboxImages(); break;
+    case 'cloud_instabox_set_image': result = previewCloud.setInstaboxImage(args.image); break;
+    case 'cloud_digitalocean_catalog': result = previewCloud.digitalOceanCatalog(); break;
+    case 'cloud_digitalocean_set_options': result = previewCloud.setDigitalOceanOptions(args.region, args.size); break;
+    case 'cloud_machines': result = previewCloud.list(); break;
+    case 'cloud_create': result = previewCloud.create(args.provider, args.name); break;
+    case 'cloud_power': result = previewCloud.power(args.id, args.action); break;
+    case 'cloud_frame': result = await previewCloud.frame(args.id); break;
+    case 'cloud_input': result = previewCloud.input(args.id, args.input); break;
+    case 'vm_status': result = previewVm.status(); break;
+    case 'vm_setup': result = previewVm.setup(); break;
+    case 'vm_show': result = previewVm.show(args.name); break;
+    case 'vm_create': result = previewVm.create(args.image, args.name); break;
+    case 'vm_power': result = previewVm.power(args.name, args.action, args.share); break;
+    case 'vm_frame': result = await previewVm.frame(args.name); break;
+    case 'vm_input': result = previewVm.input(args.name, args.input); break;
+    case 'vm_desktop': result = previewVm.desktop(args.name); break;
+    case 'progress_list': result = previewProgress.list(args.sessionId); break;
+    case 'progress_media': result = previewProgress.media(args.sessionId, args.id); break;
+    case 'progress_thumb': result = previewProgress.thumb(args.sessionId, args.id); break;
+    case 'progress_clear': result = previewProgress.clear(args.sessionId); break;
+    case 'design_list': result = previewDesign.list(); break;
+    case 'design_read': result = previewDesign.read(args.name); break;
+    case 'design_comments': result = previewDesign.comments(); break;
+    case 'design_save_comments': result = previewDesign.saveComments(args.comments); break;
+    case 'skills_list': case 'skills_import_folder': case 'skills_import_github': case 'skills_activate':
+    case 'skills_deactivate': case 'skills_deactivate_all': case 'skills_matrix': case 'skills_scan': case 'skills_remove':
+      result = previewSkills.call(command, args); break;
+    case 'skill_manager_list': result = previewSkillManager.list(args); break;
+    case 'skill_manager_set': result = previewSkillManager.set(args as { name: string; enabled: boolean; projectId?: string }); break;
+    case 'skill_manager_preview': result = await previewSkillManager.preview(args as { source: string }); break;
+    case 'skill_manager_add': result = await previewSkillManager.add(args as { source: string; skills: string[]; harnesses: string[]; projectId?: string }); break;
+    case 'skill_manager_add_library': result = await previewSkillManager.addLibrary(args as { source: string; skills: string[] }); break;
+    case 'skill_manager_reset': result = previewSkillManager.reset(args as { projectId?: string }); break;
+    case 'skill_manager_restore': result = previewSkillManager.restore(args as { name: string; projectId?: string }); break;
+    case 'skill_manager_uninstall': result = previewSkillManager.uninstall(args as { name: string; projectId?: string }); break;
+    case 'skill_manager_undo_uninstall': result = previewSkillManager.undoUninstall(args as { id: string; projectId?: string }); break;
+    case 'simulator_status': result = previewSimulator.status(); break;
+    case 'simulator_pose': result = await previewSimulator.pose(args.udid, args.pose); break;
+    case 'simulator_create_duo': result = previewSimulator.createDuo(); break;
+    case 'simulator_select': result = previewSimulator.select(args.udid); break;
+    case 'simulator_power': result = previewSimulator.power(args.udid, Boolean(args.on)); break;
+    case 'simulator_frame': result = await previewSimulator.frame(args.udid, Number(args.after ?? 0)); break;
+    case 'simulator_input': result = previewSimulator.input(args.udid, args.input); break;
+    case 'simulator_appearance': result = previewSimulator.appearance(args.mode); break;
+    case 'simulator_capture': result = await previewSimulator.capture(args.udid); break;
+    case 'list_files': result = previewExplorer.list(args); break;
+    case 'search_files': {
+      const query = String(args.query ?? '').trim().toLocaleLowerCase().replace(/\/$/, '');
+      const files = previewWorkspaceFiles.map(path => ({ path, isDir: false }));
+      // Folders join typed queries only, like the native index.
+      const folders = query ? ['src', 'src/components', 'src/lib', 'public', 'docs'].map(path => ({ path, isDir: true })) : [];
+      result = [...files, ...folders]
+        .filter(entry => entry.path.toLocaleLowerCase().includes(query))
+        .map(entry => ({ name: entry.path.split('/').pop()!, ...entry }))
+        .sort((a, b) => Number(b.name.toLocaleLowerCase().startsWith(query)) - Number(a.name.toLocaleLowerCase().startsWith(query)) || Number(a.isDir) - Number(b.isDir) || a.path.localeCompare(b.path))
+        .slice(0, Math.min(100, Math.max(1, Number(args.limit) || 40))) satisfies FileEntry[];
+      break;
+    }
+    case 'search_text': {
+      // Sample source stands in for every script; Markdown files read as the sample README.
+      const query = String(args.query ?? '');
+      let pattern: RegExp;
+      try {
+        const source = args.regex ? query : query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        pattern = new RegExp(args.wholeWord ? `\\b(?:${source})\\b` : source, args.matchCase ? 'g' : 'gi');
+      } catch (error) { throw new Error(`Invalid regular expression: ${(error as Error).message}`); }
+      const files = previewWorkspaceFiles.filter(path => /\.(ts|md)$/.test(path)).map(path => {
+        const lines = (path.endsWith('.md') ? sampleReadme : sampleSource).split('\n');
+        const matches = lines.flatMap((line, index) => {
+          const text = line.trimStart(), ranges = [...text.matchAll(pattern)].filter(m => m[0]).map(m => [m.index!, m.index! + m[0].length]);
+          return ranges.length ? [{ line: index + 1, text, ranges }] : [];
+        });
+        return { path, matches };
+      }).filter(file => file.matches.length);
+      result = { files, truncated: false };
+      break;
+    }
+    case 'import_prompt_image': {
+      // Any picked or pasted image becomes a small PNG id; the thumbnail is a yellow swatch.
+      if (!args.path && !args.dataUrl) throw new Error('Choose an image to attach.');
+      const name = String(args.name || String(args.path ?? '').split('/').pop() || 'Image.png');
+      if (/\.(svg|gif|heic)$/i.test(name)) throw new Error('Choose a PNG, JPEG or WebP image. HEIC, GIF and SVG are not supported yet.');
+      result = { id: crypto.randomUUID(), name, width: 1280, height: 800, thumbnail: String(args.dataUrl ?? '').startsWith('data:image/png') ? args.dataUrl : 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==' };
+      break;
+    }
+    // Any registry ID shows the yellow swatch; native reads browser-captures/<id>.png.
+    case 'prompt_image': result = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(String(args.id)) ? 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==' : null; break;
+    // The preview browser exposes pasted images as files, so the native fallback only
+    // matters to tests, which provide the base64 through the invoke hook.
+    case 'read_clipboard_image': result = null; break;
+    case 'reveal_path': if (!String(args.path ?? '').startsWith('/')) throw new Error('This attachment is no longer on this computer.'); break;
+    case 'dragged_file_paths': result = []; break;
+    case 'read_document': {
+      const path = String(args.path ?? ''), name = path.split('/').pop() || 'Document';
+      if (!path.startsWith('/')) throw new Error('Choose the document with the picker or drop it onto the message.');
+      if (/\.(zip|dmg|bin)$/i.test(name)) throw new Error('No readable text was found in this document. It may be scanned images only.');
+      const pdf = /\.pdf$/i.test(name);
+      result = { name, path, size: pdf ? 48210 : 1830, method: pdf ? 'spotlight' : /\.(docx?|rtf|odt)$/i.test(name) ? 'textutil' : 'text', truncated: /large/i.test(name), text: pdf ? 'Product brief\n\nGoal: make search feel instant.\nSuccess: results appear while typing, under 100 ms.' : '# Notes\n\nKeyboard shortcuts should mirror the menu bar.' };
+      break;
+    }
+    case 'describe_folder': {
+      const path = String(args.path ?? '');
+      if (!path.startsWith('/')) throw new Error('Choose the folder with the picker or drop it onto the message.');
+      if (/\.[a-z0-9]{1,5}$/i.test(path)) throw new Error('This is not a folder.');
+      result = { name: path.split('/').pop() || path, path, files: 14, folders: 4, truncated: false, listing: 'src/\n  components/\n    Button.tsx\n    Card.tsx\n  main.ts\npublic/\n  favicon.svg\nREADME.md\npackage.json' };
+      break;
+    }
+    case 'resolve_workspace_files': {
+      const root = (args.sessionId ? session(args.sessionId).worktreePath : undefined) || projects.find(project => project.id === args.projectId)?.path;
+      result = (args.paths as string[]).slice(0, 32).flatMap(input => {
+        let path = input.replace(/(?::\d+(?::\d+)?|#L\d+(?:-L?\d+)?)$/, '').replace(/^\.\//, '');
+        if (path.startsWith('file://')) { try { path = decodeURIComponent(new URL(path).pathname); } catch { return []; } }
+        if (root && path.startsWith(root + '/')) path = path.slice(root.length + 1);
+        const matches = previewWorkspaceFiles.filter(file => file === path || (!path.includes('/') && file.endsWith('/' + path)));
+        return matches.length === 1 ? [{ input, path: matches[0], previewable: isPreviewableFile(matches[0]) }] : [];
+      }); break;
+    }
+    case 'prepare_file_preview': {
+      const path = String(args.path);
+      if (!previewWorkspaceFiles.includes(path) || !isPreviewableFile(path)) throw new Error('This file cannot be previewed in the browser.');
+      result = { path, name: path.split('/').pop(), url: 'http://127.0.0.1:4179/preview/' + encodeURIComponent(args.sessionId ?? args.projectId) + '/' + path.split('/').map(encodeURIComponent).join('/') }; break;
+    }
+    case 'tool_image': {
+      // A drawn stand-in for an image an agent viewed (tool-row thumbnails).
+      // Absolute or checkout-relative, like the real command; never `..` or network paths.
+      if (!/^(file:\/\/)?[^\\]*\.(png|jpe?g|gif|webp)$/i.test(String(args.path)) || /(^|\/)\.\.(\/|$)|^(file:)?\/\//.test(String(args.path).replace(/^file:\/\/(?=\/[^/])/, ''))) throw new Error('Only PNG, JPEG, GIF and WebP images can be shown');
+      const name = String(args.path).split('/').pop()?.replace(/[<>&"']/g, '') ?? '';
+      const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="320" height="200"><rect width="320" height="200" rx="10" fill="#1f3a5f"/><rect x="16" y="16" width="288" height="24" rx="6" fill="#3d6aa8"/><rect x="16" y="52" width="180" height="132" rx="8" fill="#e8eef7"/><text x="250" y="124" fill="#fffcef" font-family="sans-serif" font-size="14" text-anchor="middle">${name}</text></svg>`;
+      result = `data:image/svg+xml;base64,${btoa(svg)}`; break;
+    }
+    case 'workspace_image': {
+      // A drawn stand-in for any workspace image a question shows.
+      if (!/\.(png|jpe?g|gif|webp|svg)$/i.test(String(args.path)) || String(args.path).includes('..')) throw new Error('Only workspace images can be shown');
+      const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="320" height="180"><defs><linearGradient id="g" x1="0" x2="1"><stop stop-color="#2e513b"/><stop offset="1" stop-color="#ffd43b"/></linearGradient></defs><rect width="320" height="180" rx="12" fill="url(#g)"/><text x="160" y="96" fill="#fffcef" font-family="sans-serif" font-size="18" text-anchor="middle">${String(args.path).split('/').pop()}</text></svg>`;
+      result = `data:image/svg+xml;base64,${btoa(svg)}`; break;
+    }
+    // Sample documents are the test fixtures, served by the dev server.
+    case 'read_document_file': {
+      const sample = ({ pdf: 'sample.pdf', docx: 'sample.docx', xlsx: 'sample.xlsx', png: 'sample.png', svg: 'sample.svg' } as Record<string, string>)[String(args.path).split('.').pop()!.toLowerCase()];
+      const response = sample && await fetch(`/tests/fixtures/${sample}`);
+      if (!response || !response.ok) throw new Error('Only PDF, Word (.docx) and spreadsheet files can be shown');
+      result = await response.arrayBuffer();
+      break;
+    }
+    // Like `Store::workspace_root`: a task on another computer has no checkout here.
+    case 'read_file': { const mirror = args.sessionId ? sessions.find(s => s.id === args.sessionId)?.remoteDevice : null; if (mirror) throw new Error(`This task runs on ${mirror.name}.`); }
+      result = previewExplorer.read(args, /\.(md|markdown)$/i.test(args.path) ? sampleReadme : args.path.endsWith('.json') ? '{\n  "name": "orbit",\n  "private": true,\n  "type": "module"\n}' : args.path.endsWith('.html') ? '<!doctype html>\n<html><head><title>Orbit</title></head><body><h1>Orbit</h1></body></html>' : args.path.endsWith('.svg') ? '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6"/></svg>' : sampleSource); break;
+    case 'workspace_file_stamp': result = previewExplorer.stamp(args); break;
+    case 'manage_workspace_entry': result = previewExplorer.manage(args, projects.find(project => project.id === args.projectId)?.path ?? ''); break;
+    case 'write_workspace_file': {
+      const original = await invoke<string>('read_file', args);
+      previewExplorer.save(args, original); result = null; break;
+    }
+    case 'open_workspace_file': result = null; break;
+    case 'get_metrics': result = { coreRssBytes: 0, activeAgents: timers.size, activeTerminals: 0, databaseBytes: 0 }; break;
+    case 'get_terminal_activity': result = { running: false, processNames: [], uncertain: false }; break;
+    case 'get_run_script': result = null; break;
+    case 'get_run_script_preview': result = null; break;
+    case 'get_terminal_preferences': result = {}; break;
+    case 'start_run_script_terminal':
+    case 'start_harness_terminal': case 'start_terminal': {
+      const terminalId = 'preview-terminal-' + crypto.randomUUID(); result = terminalId;
+      window.setTimeout(() => emit('terminal-event', { terminalId, data: '\x1b[38;5;108mPandaCode browser preview\x1b[0m\r\nA real PTY is available in the desktop app.\r\n\r\n$ ' }), 100); break;
+    }
+    case 'write_terminal': emit('terminal-event', { terminalId: args.terminalId, data: args.data === '\r' ? '\r\nPreview mode — no commands executed.\r\n$ ' : args.data }); break;
+    case 'resize_terminal': case 'close_terminal': break;
+    default: throw new Error(`Unknown preview command: ${command}`);
+  }
+  return structuredClone(result) as T;
+}

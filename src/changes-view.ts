@@ -1,7 +1,7 @@
+import { t } from './i18n.ts';
 import type { GitFile, GitStatus } from './types';
 import type { DiffViewerController } from './diff-viewer';
 import { escape, fileIcon, icon } from './dom';
-import { t } from './i18n.ts';
 import './changes-view.css';
 import { errorText } from './error-text';
 
@@ -58,13 +58,8 @@ const SHADOW_CSS = `
   [data-utility-button] { border-radius: var(--ds-control-radius); }
   [data-separator-content] { border-start-end-radius: var(--radius-chip); border-end-end-radius: var(--radius-chip); }`;
 const TRUNCATED = /\n*\[Preview truncated at [^\]]*\]\n*$/;
-/** Labels built at the render site so a language switch never shows stale text. */
-const scopeLabels = (): Record<Scope, string> => ({ all: t('All changes'), unstaged: t('Unstaged'), staged: t('Staged') });
-/** English status names: the CSS hooks `[data-status=…]` on the lowercased value, so these stay untranslated. */
-const STATUS: Record<string, string> = { A: 'Added', M: 'Modified', D: 'Deleted', R: 'Renamed', C: 'Copied', T: 'Modified', U: 'Conflict', '?': 'Untracked' };
-/** The pill's visible label, translated at the render site. */
-const statusLabel = (code: string): string =>
-  ({ A: t('Added'), M: t('Modified'), D: t('Deleted'), R: t('Renamed'), C: t('Copied'), T: t('Modified'), U: t('Conflict'), '?': t('Untracked') })[code] ?? t('Modified');
+const SCOPES: Record<Scope, string> = { all: t('All changes'), unstaged: t('Unstaged'), staged: t('Staged') };
+const STATUS: Record<string, string> = { A: t('Added'), M: t('Modified'), D: t('Deleted'), R: t('Renamed'), C: t('Copied'), T: t('Modified'), U: t('Conflict'), '?': t('Untracked') };
 const FOLD = '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m7 4 5 5 5-5M7 20l5-5 5 5"/></svg>';
 const UNFOLD = '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m7 9 5-5 5 5M7 15l5 5 5-5"/></svg>';
 
@@ -208,7 +203,7 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
     let adds = 0, dels = 0;
     for (const entry of entries.values()) if (entry.load === 'loaded') { adds += entry.adds; dels += entry.dels; }
     const n = entries.size;
-    filesLabel.textContent = n ? (n === 1 ? t`1 file` : t`${n} files`) : '';
+    filesLabel.textContent = n ? `${n} file${n === 1 ? '' : 's'}` : '';
     addsLabel.textContent = n ? `+${adds}` : '';
     delsLabel.textContent = n ? `-${dels}` : '';
     const allFolded = n > 0 && [...entries.keys()].every(p => collapsed.has(p));
@@ -228,7 +223,7 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
     el.dataset.path = path;
     el.innerHTML = `
       <div class="cv-file-header">
-        <button type="button" class="cv-toggle" data-cv-action="toggle" aria-expanded="true" aria-label="${t`Collapse ${escape(path)}`}">${icon('chevron', 'cv-chevron')}</button>
+        <button type="button" class="cv-toggle" data-cv-action="toggle" aria-expanded="true" aria-label="Collapse ${escape(path)}">${icon('chevron', 'cv-chevron')}</button>
         <span class="cv-file-icon">${fileIcon(name, false)}</span>
         <button type="button" class="cv-file-name" data-cv-action="toggle" title="${escape(path)}"><span class="cv-name">${escape(name)}</span>${dir ? `<span class="cv-dir" data-dir="${escape(dir)}" title="${escape(dir)}">${escape(dir)}</span>` : ''}</button>
         ${iconButton('copy', t('Copy path'), icon('copy'), 'tabindex="-1"').replace('cv-icon', 'cv-icon cv-copy')}
@@ -259,15 +254,15 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
 
   function paint(entry: Entry, code: string): void {
     entry.code = code;
-    const label = statusLabel(code);
+    const label = STATUS[code] ?? 'Modified';
     const pill = entry.el.querySelector<HTMLElement>('.cv-pill')!;
     pill.textContent = label;
-    pill.dataset.status = (STATUS[code] ?? 'Modified').toLowerCase();
+    pill.dataset.status = label.toLowerCase();
     const folded = collapsed.has(entry.path);
     entry.el.classList.toggle('collapsed', folded);
     const toggle = entry.el.querySelector<HTMLElement>('.cv-toggle')!;
     toggle.setAttribute('aria-expanded', String(!folded));
-    toggle.setAttribute('aria-label', folded ? t`Expand ${entry.path}` : t`Collapse ${entry.path}`);
+    toggle.setAttribute('aria-label', `${folded ? 'Expand' : 'Collapse'} ${entry.path}`);
     entry.body.hidden = folded;
   }
 
@@ -353,7 +348,7 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
   }
 
   function render(): void {
-    scopeLabel.textContent = scopeLabels()[scope];
+    scopeLabel.textContent = SCOPES[scope];
     const branch = status?.isRepo ? status.branch || t('No commits yet') : '';
     branchLabel.hidden = !branch;
     branchLabel.textContent = branch;
@@ -474,15 +469,13 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
     event.stopPropagation();
     const path = target.closest<HTMLElement>('.cv-file')?.dataset.path ?? '';
     switch (target.dataset.cvAction) {
-      case 'scope': {
-        const labels = scopeLabels();
-        deps.choose(target, t('Show'), (Object.keys(labels) as Scope[]).map(id => ({ id, label: labels[id], selected: id === scope })), id => {
-          if (id === scope || !(id in labels)) return;
+      case 'scope':
+        deps.choose(target, 'Show', (Object.keys(SCOPES) as Scope[]).map(id => ({ id, label: SCOPES[id], selected: id === scope })), id => {
+          if (id === scope || !(id in SCOPES)) return;
           scope = id as Scope;
           render();
         });
         break;
-      }
       case 'fold-all': {
         const fold = ![...entries.keys()].every(p => collapsed.has(p));
         for (const p of entries.keys()) toggle(p, fold);

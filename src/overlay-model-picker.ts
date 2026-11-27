@@ -1,7 +1,7 @@
+import { t } from './i18n.ts';
 import './model-picker.css';
 import './overlay-model-picker.css';
 import { openModelPicker } from './model-picker';
-import { t } from './i18n.ts';
 import { nativeOverlay, overlayCall, type LaunchContext } from './overlay-client';
 import type { Provider, ProviderId, ProviderModel } from './types';
 

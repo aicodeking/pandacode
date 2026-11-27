@@ -1,3 +1,4 @@
+import { LANGUAGES, setLanguagePref, t, type LanguagePref } from './i18n.ts';
 import './settings.css';
 import { mountSkillManager } from './skill-manager';
 import type { SkillManagerHost } from './skill-manager-model';
@@ -30,7 +31,7 @@ import { SECTIONS, type SettingsPage, type SettingsSection } from './settings-se
 import { mountRecommended } from './recommended-settings';
 import { enabled as turnChecksEnabled } from './turn-checks';
 import { crashRestartSettingsHtml, mountCrashRestartSettings, type KeepDrafts } from './crash-restart-settings';
-import { LANGUAGES, setLanguagePref, t, type LanguagePref } from './i18n.ts';
+import { setStillSkyEnabled, stillSkyEnabled } from './sky-window';
 
 /** Panels that live elsewhere and are embedded here: each mounts into a host and returns its cleanup. */
 type Embed = (host: HTMLElement) => Promise<() => void>;
@@ -38,6 +39,7 @@ type Embed = (host: HTMLElement) => Promise<() => void>;
 export type { SettingsSection };
 
 interface SettingsOptions {
+  language: LanguagePref;
   providers: Provider[];
   defaultProvider: ProviderId;
   defaultModel: string;
@@ -48,10 +50,12 @@ interface SettingsOptions {
   preview: boolean;
   /** Runs the checkout's fast check after a clean turn and queues one repair on failure. */
   turnChecks: boolean;
-  /** The current UI language preference; changing it reloads every window. */
-  language: LanguagePref;
   section?: SettingsSection;
   discover(): Promise<Provider[]>;
+  /** True while this harness's version is still being probed: installed with no version, it says "Checking…". */
+  versionPending?(id: Provider['id']): boolean;
+  /** True until the real harness list has answered: rows are the last launch's, so none is called missing yet. */
+  listPending?(): boolean;
   /** Mounts the optional GitHub row; returns its cleanup. */
   github?(host: HTMLElement): () => void;
   /** Projects listed under General; remove() rejects with the native refusal text. */
@@ -74,7 +78,12 @@ interface SettingsOptions {
   /** Leaves Settings for the workspace. */
   close(): void;
 }
-export interface SettingsView { show(section: SettingsSection): void; dispose(): void }
+export interface SettingsView {
+  show(section: SettingsSection): void;
+  /** Agents rows follow a changed harness list (versions reported later) in place: open rows stay open. */
+  providersChanged(providers: Provider[]): void;
+  dispose(): void;
+}
 
 const sectionOf = (page: SettingsPage) => SECTIONS.find(section => section.pages.some(item => item.id === page))!;
 
@@ -147,39 +156,6 @@ function mountAgentsDockSettings(host: HTMLElement): () => void {
   };
 }
 
-/** Settings → Agents → Start agents ahead (`warm_launch.rs`). The switch stays off and disabled, assuming nothing,
- * until the saved value arrives; if it can't be read the switch is hidden (an unchecked one would read as off) and a
- * note says why. Each flip saves, and a failed save
- * puts the switch back and says why. Each saved value is announced (`pandacode:start-ahead`) for warming. */
-function mountStartAhead(input: HTMLInputElement): void {
-  const note = document.createElement('small');
-  note.className = 'settings-embed-error'; note.setAttribute('role', 'alert'); note.hidden = true;
-  input.closest('.setting-row')?.querySelector(':scope > div')?.append(note);
-  const say = (text: string) => { note.textContent = text; note.hidden = !text; };
-  input.checked = false; input.disabled = true; input.setAttribute('aria-busy', 'true');
-  void call<{ on: boolean }>('start_ahead_get')
-    .then(value => { input.checked = value.on; input.disabled = false; })
-    // Inline: the switch's own display rule (settings.css) would override the hidden attribute.
-    .catch(() => { input.style.display = 'none'; say('Couldn’t read this setting. Close Settings and try again.'); })
-    .finally(() => input.removeAttribute('aria-busy'));
-  input.addEventListener('change', async () => {
-    const on = input.checked;
-    say('');
-    input.disabled = true;
-    try {
-      input.checked = (await call<{ on: boolean }>('start_ahead_set', { on })).on;
-      // Warming (model-switch.ts) follows the saved value at once.
-      window.dispatchEvent(new CustomEvent('pandacode:start-ahead', { detail: { on: input.checked } }));
-    } catch (error) {
-      input.checked = !on;
-      say(`Couldn’t save: ${error instanceof Error ? error.message : String(error)}`);
-    }
-    input.disabled = false;
-    // Disabling blurred it; keep keyboard focus on the switch.
-    input.focus({ preventScroll: true });
-  });
-}
-
 function sectionHtml(id: SettingsPage, options: SettingsOptions): string {
   const defaultName = options.providers.find(provider => provider.id === options.defaultProvider)?.name ?? options.defaultProvider;
   switch (id) {
@@ -187,11 +163,13 @@ function sectionHtml(id: SettingsPage, options: SettingsOptions): string {
     case 'voice': return '<div id="voice-settings"></div>';
     case 'general': return `<div class="settings-group">
         <div class="setting-row"><div><strong>${t('Language')}</strong><small>${t('Follows the system language until you pick one here.')}</small></div><select class="settings-select" data-language aria-label="${t('Language')}"><option value="auto">${t('System default')}</option>${LANGUAGES.map(language => `<option value="${language.id}">${language.native}</option>`).join('')}</select></div>
-        ${uiSizeControls()}${switchRow('compact-mode', 'Compact conversation', '', options.compact)}${switchRow('expand-tool-activity', 'Expand tool activity', '', options.activityExpanded)}</div>
+${uiSizeControls()}${switchRow('compact-mode', 'Compact conversation', '', options.compact)}${switchRow('expand-tool-activity', 'Expand tool activity', '', options.activityExpanded)}</div>
       <h3 class="settings-heading">Quick launcher</h3><div id="launcher-settings"></div><h3 class="settings-heading">Running agents widget</h3><div id="agents-dock-settings"></div><h3 class="settings-heading">Crash recovery</h3>${crashRestartSettingsHtml()}${options.projects ? '<h3 class="settings-heading">Projects</h3><div id="projects-settings" class="settings-group"></div>' : ''}`;
     case 'appearance': return `<div class="settings-group">
-        ${settingRow(t('Theme'), `<button type="button" class="secondary-button" data-action="toggle-theme">${icon(options.theme === 'dark' ? 'sun' : 'moon')}${t`Use ${options.theme === 'dark' ? t('light') : t('dark')}`}</button>`, t('Imported VS Code themes keep their own.'))}
+        ${settingRow('Theme', `<button type="button" class="secondary-button" data-action="toggle-theme">${icon(options.theme === 'dark' ? 'sun' : 'moon')}Use ${options.theme === 'dark' ? t('light') : t('dark')}</button>`, 'Imported VS Code themes keep their own.')}
         ${switchRow('daily-wallpapers', t('Wallpapers'), t('Off, the thread shows a live sky that follows the time of day.'), options.wallpapers)}
+        ${switchRow('still-sky', 'Still sky', 'Keep the live sky as a still frame without animating clouds or pointer motion.', stillSkyEnabled())}
+        ${settingRow('Reading width', readingWidthControl(), 'Comfortable keeps thread lines near 100 characters. Wide fits more code and tables, at longer lines.')}
       </div>
       <h3 class="settings-heading">${t('Colors')}</h3><div class="settings-embed settings-colors" data-embed="colors"></div>
       <div class="settings-wallpapers" ${options.wallpapers ? '' : 'hidden'}><h3 class="settings-heading">${t('Wallpapers')}</h3><div class="settings-embed" data-embed="wallpapers"></div></div>`;
@@ -200,39 +178,38 @@ function sectionHtml(id: SettingsPage, options: SettingsOptions): string {
         <div class="setting-row settings-default-row"><div><strong>Default model</strong></div><button type="button" id="default-model" class="settings-select" data-action="default-model" aria-label="Default model for new tasks" aria-haspopup="dialog" aria-expanded="false"><span>${escape(options.defaultModel)}</span>${icon('down')}</button></div>
         <div class="setting-row"><div><strong>Agent updates</strong></div><button type="button" class="secondary-button" data-action="agent-updates" aria-haspopup="dialog">Check updates</button></div>
         ${switchRow('turn-checks', 'Project checks after turns', 'When a turn ends, runs the project’s own test or check command with your environment (your shell, PATH and credentials); a failure queues one fix.', options.turnChecks)}
-        ${switchRow('start-ahead', 'Start agents ahead', 'Starts your agent in the background after a turn, when you pick a model, effort, permissions or harness, or when you start typing, so replies begin sooner. Your agent’s startup hooks and MCP servers run then.', false)}
       </div>
       <div class="settings-heading settings-agents-heading"><h3>${t('Installed agents')}</h3><button type="button" class="settings-refresh" aria-label="${t('Refresh agents')}" title="${t('Refresh agents')}">${icon('refresh')}</button></div>
       <div class="settings-provider-status" role="status" hidden></div>
       <div class="provider-diagnostics settings-group"></div>
       ${options.preview ? `<p class="settings-preview-note">${t('Browser preview · sample agent availability.')}</p>` : ''}
-      ${fold(t('Advanced'), `<h3 class="settings-heading">${t('Privacy')}</h3><div class="settings-embed" data-embed="harnessPrivacy"></div><h3 class="settings-heading">${t('OpenCode models')}</h3><div class="settings-embed" data-embed="openCodeModels"></div>`)}`;
+      ${fold('Advanced', `<h3 class="settings-heading">${t('Privacy')}</h3><div class="settings-embed" data-embed="harnessPrivacy"></div><h3 class="settings-heading">${t('OpenCode models')}</h3><div class="settings-embed" data-embed="openCodeModels"></div>`)}`;
     case 'providers': return '<div class="settings-embed" data-embed="providerConnections"></div>';
     case 'teams': return '<div id="agent-teams-settings"></div>';
     case 'routing': return '<div id="model-routing-settings"></div>';
     case 'tools': return `<div class="settings-group">
         <div class="setting-row"><div><strong>${t('Tools & integrations')}</strong></div><button type="button" class="secondary-button" data-action="agent-integrations">${t('Manage')}</button></div>
-        ${settingRow(t('Jev'), `<button type="button" class="secondary-button" data-action="jev-settings">${t('Set up Jev')}</button>`, t('Optional add-on for browser tests and decision assistance. Your agents work without it.'))}
+        ${settingRow('Jev', `<button type="button" class="secondary-button" data-action="jev-settings">${t('Set up Jev')}</button>`, 'Optional add-on for browser tests and decision assistance. Your agents work without it.')}
       </div>
       ${fold(t('Capabilities and cache'), '<div id="capabilities-settings"></div>')}`;
     case 'schedules': return '<div id="schedules-settings"></div>';
     case 'skills': return '<div id="skill-manager"></div>';
     case 'rules': return '<div id="skills-library"></div>';
     case 'cloud': return '<div id="cloud-settings"></div>';
-    case 'remote': return '<div id="remote-settings"></div>';
+    case 'remote': return '<div id="remote-settings"></div><h3 class="settings-heading">Web access</h3><div id="web-server-settings"></div><p class="web-server-notice" role="status" aria-live="polite"></p><p class="web-server-notice web-server-notice-error" role="alert"></p>';
     case 'github': return '<div id="github-settings"></div>';
     case 'about': return `${aboutSettingsHtml()}${resourceUsageHtml()}
-      <div class="settings-group settings-support"><div class="setting-row"><div><strong>Help & support</strong></div><button type="button" class="secondary-button" data-action="support">Open issues${icon('forward')}</button></div><details class="support-details"><summary>App details for support${icon('chevron')}</summary><p>Only the app version, platform, and architecture. Nothing is sent automatically.</p><textarea aria-label="App details for support" rows="3" readonly spellcheck="false"></textarea><div class="support-details-actions"><button type="button" class="secondary-button support-copy" disabled>${icon('copy')}Copy app details</button><button type="button" class="secondary-button support-retry" hidden>Try again</button></div><p role="status" aria-live="polite"></p></details></div>`;
+      <div class="settings-group settings-support"><div class="setting-row"><div><strong>${t('Help & support')}</strong></div><button type="button" class="secondary-button" data-action="support">Open issues${icon('forward')}</button></div><details class="support-details"><summary>App details for support${icon('chevron')}</summary><p>${t('Only the app version, platform, and architecture. Nothing is sent automatically.')}</p><textarea aria-label="${t('App details for support')}" rows="3" readonly spellcheck="false"></textarea><div class="support-details-actions"><button type="button" class="secondary-button support-copy" disabled>${icon('copy')}Copy app details</button><button type="button" class="secondary-button support-retry" hidden>${t('Try again')}</button></div><p role="status" aria-live="polite"></p></details></div>`;
   }
 }
 
 /** Settings as a full page: groups on the left, the chosen group's settings on the right. */
 export function mountSettings(host: HTMLElement, options: SettingsOptions): SettingsView {
   host.classList.add('settings-page-root');
-  host.innerHTML = `<nav class="settings-nav" aria-label="Settings sections">
-      <div class="settings-nav-head" data-tauri-drag-region><button type="button" class="settings-back" data-settings-close aria-label="Back to the workspace" title="Back (Esc)">${icon('back')}<span>Back</span></button></div>
-      <h1 class="settings-nav-title" data-tauri-drag-region>Settings</h1>
-      <div class="settings-nav-list" role="tablist" aria-orientation="vertical" aria-label="Settings">${SECTIONS.map(section => `<button type="button" role="tab" id="settings-tab-${section.id}" data-section="${section.id}" title="${section.label}" aria-controls="settings-panel-${section.id}" aria-selected="false" tabindex="-1">${icon(section.icon)}<span>${section.label}</span></button>`).join('')}</div>
+  host.innerHTML = `<nav class="settings-nav" aria-label="${t('Settings sections')}">
+      <div class="settings-nav-head" data-tauri-drag-region><button type="button" class="settings-back" data-settings-close aria-label="${t('Back to the workspace')}" title="${t('Back (Esc)')}">${icon('back')}<span>${t('Back')}</span></button></div>
+      <h1 class="settings-nav-title" data-tauri-drag-region>${t('Settings')}</h1>
+      <div class="settings-nav-list" role="tablist" aria-orientation="vertical" aria-label="${t('Settings')}">${SECTIONS.map(section => `<button type="button" role="tab" id="settings-tab-${section.id}" data-section="${section.id}" title="${section.label}" aria-controls="settings-panel-${section.id}" aria-selected="false" tabindex="-1">${icon(section.icon)}<span>${section.label}</span></button>`).join('')}</div>
     </nav>
     <div class="settings-content">${SECTIONS.filter(section => section.pages.length > 1).map(section => `<div class="settings-subnav" data-section-pages="${section.id}" data-tauri-drag-region hidden><div class="ds-seg" role="tablist" aria-label="${section.label}">${section.pages.map(page => `<button type="button" role="tab" id="settings-subtab-${page.id}" data-section="${page.id}" aria-controls="settings-panel-${page.id}" aria-selected="false" tabindex="-1">${page.label}</button>`).join('')}</div></div>`).join('')}${SECTIONS.flatMap(section => section.pages.map(page => {
       const paged = section.pages.length > 1;
@@ -243,14 +220,13 @@ export function mountSettings(host: HTMLElement, options: SettingsOptions): Sett
   const pageTabs = subnavs.flatMap(subnav => [...subnav.querySelectorAll<HTMLButtonElement>('[role="tab"]')]);
   const panels = new Map(SECTIONS.flatMap(section => section.pages).map(page => [page.id, host.querySelector<HTMLElement>(`#settings-panel-${page.id}`)!]));
   const cleanups: (() => void)[] = [];
-  const mounted = new Set<SettingsPage>();
-  let disposed = false;
-
   const language = host.querySelector<HTMLSelectElement>('[data-language]');
   if (language) {
     language.value = options.language;
     language.addEventListener('change', () => setLanguagePref(language.value as LanguagePref));
   }
+  const mounted = new Set<SettingsPage>();
+  let disposed = false;
 
   const list = host.querySelector<HTMLElement>('.provider-diagnostics')!;
   const refreshButton = host.querySelector<HTMLButtonElement>('.settings-refresh')!;
@@ -269,18 +245,26 @@ export function mountSettings(host: HTMLElement, options: SettingsOptions): Sett
       if (!row) {
         row = document.createElement('details');
         row.className = 'provider-diagnostic'; row.dataset.provider = provider.id;
-        row.innerHTML = `<summary aria-label="${escape(provider.name)} details"><span class="provider-avatar ${provider.id}">${providerLogo(provider.id)}</span><strong></strong><span class="provider-availability"><span class="status-dot"></span><span class="settings-installed"></span></span>${icon('chevron')}</summary><div class="settings-provider-details"><span>Version</span><span class="settings-provider-version"></span><span>Location</span><code></code></div>`;
+        row.innerHTML = `<summary aria-label="${escape(provider.name)} details"><span class="provider-avatar ${provider.id}">${providerLogo(provider.id)}</span><strong></strong><span class="provider-availability"><span class="status-dot"></span><span class="settings-installed"></span></span>${icon('chevron')}</summary><div class="settings-provider-details"><span>${t('Version')}</span><span class="settings-provider-version"></span><span>${t('Location')}</span><code></code></div>`;
       }
       if (provider.id === 'antigravity' && !row.querySelector('.provider-readiness')) {
         const check = document.createElement('div');
         row.append(check); readinessCleanup.push(mountProviderReadiness(check));
       }
       row.querySelector('strong')!.textContent = provider.name;
-      row.querySelector('summary')!.setAttribute('aria-label', `${provider.name} details, ${provider.installed ? 'Installed' : 'Not installed'}`);
+      row.querySelector('summary')!.setAttribute('aria-label', t`${provider.name} details, ${provider.installed ? t('Installed') : t('Not installed')}`);
       row.querySelector('.provider-availability')!.classList.toggle('available', provider.installed);
-      row.querySelector('.settings-installed')!.textContent = provider.installed ? (provider.id === 'antigravity' ? 'ACP installed' : 'Installed') : 'Not installed';
-      row.querySelector('.settings-provider-version')!.textContent = provider.version || 'Not reported';
-      row.querySelector('code')!.textContent = provider.path || 'Install the agent, then refresh.';
+      // `providers.rs` reports "ACP" only for the standalone server binary; an `agy` CLI that
+      // answers no version reports "", so it reads as any other installed agent.
+      const antigravityAcpOnly = provider.id === 'antigravity' && provider.version.trim() === 'ACP';
+      row.querySelector('.settings-installed')!.textContent = provider.installed ? (antigravityAcpOnly ? 'ACP installed' : 'Installed') : 'Not installed';
+      // The last launch's installed harness, before the real list answers: pending, never "Install the agent".
+      const listing = provider.installed && !provider.path && Boolean(options.listPending?.());
+      const version = row.querySelector('.settings-provider-version')!;
+      const versionText = provider.version || (provider.installed && (listing || options.versionPending?.(provider.id)) ? 'Checking…' : 'Not reported');
+      if (version.textContent !== versionText) version.textContent = versionText;
+      const location = row.querySelector('code')!, locationText = provider.path || (listing ? 'Checking…' : 'Install the agent, then refresh.');
+      if (location.textContent !== locationText) location.textContent = locationText;
       if (list.children[index] !== row) list.insertBefore(row, list.children[index] ?? null);
       rows.delete(provider.id);
     }
@@ -289,7 +273,7 @@ export function mountSettings(host: HTMLElement, options: SettingsOptions): Sett
   async function refresh(): Promise<void> {
     if (!live() || pending) return;
     pending = true; refreshButton.disabled = true;
-    status.hidden = false; status.textContent = 'Checking agents…';
+    status.hidden = false; status.textContent = t('Checking agents…');
     try {
       const providers = await options.discover();
       if (!live()) return;
@@ -297,7 +281,7 @@ export function mountSettings(host: HTMLElement, options: SettingsOptions): Sett
       status.textContent = ''; status.hidden = true;
     } catch {
       if (!live()) return;
-      status.textContent = 'Couldn’t check agents. Try refreshing again.';
+      status.textContent = t('Couldn’t check agents. Try refreshing again.');
     } finally { pending = false; if (live()) refreshButton.disabled = false; }
   }
 
@@ -307,9 +291,9 @@ export function mountSettings(host: HTMLElement, options: SettingsOptions): Sett
     const draw = () => {
       const rows = projects.list();
       slot.innerHTML = rows.length ? rows.map(project => confirming === project.id
-        ? `<div class="setting-row project-row" data-project="${escape(project.id)}"><div><strong>Remove ${escape(project.name)}?</strong><small>Its tasks are removed from PandaCode. The folder stays on disk.</small>${error ? `<small class="settings-embed-error" role="alert">${escape(error)}</small>` : ''}</div><div class="project-row-actions"><button type="button" class="secondary-button" data-project-cancel>Cancel</button><button type="button" class="secondary-button" data-project-confirm>Remove project</button></div></div>`
-        : `<div class="setting-row project-row" data-project="${escape(project.id)}"><div><strong>${escape(project.name)}</strong><small class="project-path">${escape(project.path)}</small></div><button type="button" class="secondary-button" data-project-remove aria-label="Remove ${escape(project.name)}">Remove</button></div>`).join('')
-        : '<div class="setting-row"><div><small>No projects yet.</small></div></div>';
+        ? `<div class="setting-row project-row" data-project="${escape(project.id)}"><div><strong>Remove ${escape(project.name)}?</strong><small>${t('Its tasks are removed from PandaCode. The folder stays on disk.')}</small>${error ? `<small class="settings-embed-error" role="alert">${escape(error)}</small>` : ''}</div><div class="project-row-actions"><button type="button" class="secondary-button" data-project-cancel>${t('Cancel')}</button><button type="button" class="secondary-button" data-project-confirm>${t('Remove project')}</button></div></div>`
+        : `<div class="setting-row project-row" data-project="${escape(project.id)}"><div><strong>${escape(project.name)}</strong><small class="project-path">${escape(project.path)}</small></div><button type="button" class="secondary-button" data-project-remove aria-label="Remove ${escape(project.name)}">${t('Remove')}</button></div>`).join('')
+        : `<div class="setting-row"><div><small>${t('No projects yet.')}</small></div></div>`;
     };
     const onClick = async (event: MouseEvent) => {
       const target = event.target instanceof Element ? event.target : null;
@@ -349,6 +333,43 @@ export function mountSettings(host: HTMLElement, options: SettingsOptions): Sett
     };
   };
   let recommended: ReturnType<typeof mountRecommended> | undefined;
+  let routingCleanup: (() => void) | undefined;
+  let routingKey = '';
+  let teamsCleanup: (() => void) | undefined;
+  let teamsKey = '';
+  const providerRosterKey = (all: Provider[]) => options.listPending?.()
+    ? 'pending'
+    : `ready:${all.map(p => `${p.id}:${p.installed ? 1 : 0}:${p.name}`).join('\n')}`;
+
+  function mountRouting(): void {
+    if (!options.teams || !mounted.has('routing')) return;
+    const slot = panels.get('routing')!.querySelector<HTMLElement>('#model-routing-settings')!;
+    const key = providerRosterKey(providersNow);
+    if (key === 'pending') {
+      if (!routingCleanup) slot.innerHTML = `<p class="dialog-loading">${t('Loading…')}</p>`;
+      return;
+    }
+    if (routingCleanup && routingKey === key) return;
+    routingCleanup?.();
+    routingCleanup = mountModelRouting(slot, { ...options.teams, providers: providersNow });
+    routingKey = key;
+  }
+
+  function mountTeams(): void {
+    if (!options.teams || !mounted.has('teams')) return;
+    const slot = panels.get('teams')!.querySelector<HTMLElement>('#agent-teams-settings')!;
+    const key = providerRosterKey(providersNow);
+    if (key === 'pending') {
+      if (!teamsCleanup) slot.innerHTML = `<p class="dialog-loading">${t('Loading…')}</p>`;
+      return;
+    }
+    if (teamsCleanup && teamsKey === key) return;
+    // Keep an open team edit form intact until the editor closes or the tab is revisited.
+    if (teamsCleanup && slot.querySelector('.agent-team-editor:not([hidden])')) return;
+    teamsCleanup?.();
+    teamsCleanup = mountAgentTeams(slot, { ...options.teams, providers: providersNow });
+    teamsKey = key;
+  }
 
   /** A group's live parts mount the first time it opens, and stay mounted while Settings is open. */
   function mountSection(id: SettingsPage): void {
@@ -359,17 +380,54 @@ export function mountSettings(host: HTMLElement, options: SettingsOptions): Sett
       recommended = mountRecommended(panel.querySelector<HTMLElement>('#recommended-settings')!, knownRecommended, askRecommended);
       cleanups.push(() => recommended?.dispose());
     }
-    if (id === 'voice') cleanups.push(mountVoiceSettings(panel.querySelector<HTMLElement>('#voice-settings')!));
+    // In a browser tab the microphone would be this device's, not the PandaCode machine's: say so instead of failing voice_* calls.
+    if (id === 'voice' && webMode) panel.querySelector<HTMLElement>('#voice-settings')!.innerHTML = '<div class="settings-group"><div class="setting-row"><div><strong>Voice input</strong><small>Voice dictation uses the microphone on the PandaCode machine and is only available in the desktop app.</small></div></div></div>';
+    else if (id === 'voice') cleanups.push(mountVoiceSettings(panel.querySelector<HTMLElement>('#voice-settings')!));
+    if (id === 'appearance') {
+      const stillSky = panel.querySelector<HTMLInputElement>('#still-sky')!;
+      const row = stillSky.closest<HTMLElement>('.setting-row')!;
+      const wallpapers = panel.querySelector<HTMLElement>('.settings-wallpapers')!;
+      const syncVisibility = () => { row.hidden = !wallpapers.hidden; };
+      const observer = new MutationObserver(syncVisibility);
+      observer.observe(wallpapers, { attributes: true, attributeFilter: ['hidden'] });
+      syncVisibility();
+      cleanups.push(() => observer.disconnect());
+      stillSky.addEventListener('change', () => setStillSkyEnabled(stillSky.checked));
+      cleanups.push(mountReadingWidthControl(panel));
+    }
     if (id === 'general') {
-      cleanups.push(mountOverlaySettings(panel.querySelector<HTMLElement>('#launcher-settings')!));
+      // The global shortcut belongs to the desktop app; a browser tab would only show preview data.
+      if (webMode) panel.querySelector<HTMLElement>('#launcher-settings')!.innerHTML = '<div class="settings-group"><div class="setting-row"><div><strong>Quick launcher</strong><small>The global quick launcher shortcut is only available in the desktop app.</small></div></div></div>';
+      else cleanups.push(mountOverlaySettings(panel.querySelector<HTMLElement>('#launcher-settings')!));
       cleanups.push(mountAgentsDockSettings(panel.querySelector<HTMLElement>('#agents-dock-settings')!));
       cleanups.push(mountCrashRestartSettings(panel.querySelector<HTMLElement>('#crash-restart-settings')!, options.clearDrafts, options.keepDrafts));
     }
     if (id === 'remote' && options.remote) cleanups.push(mountRemoteSettings(panel.querySelector<HTMLElement>('#remote-settings')!, options.remote));
+    if (id === 'remote') {
+      // Without the app's notifier: confirmations go to a polite status that clears itself; errors to an
+      // alert that stays until the next notice or until Settings closes.
+      const notice = panel.querySelector<HTMLElement>('.web-server-notice[role="status"]');
+      const alertNotice = panel.querySelector<HTMLElement>('.web-server-notice[role="alert"]');
+      let noticeTimer: number | undefined;
+      const clearNotices = () => { window.clearTimeout(noticeTimer); if (notice) notice.textContent = ''; if (alertNotice) alertNotice.textContent = ''; };
+      const inlineNotify = (text: string) => { clearNotices(); if (!notice) return; notice.textContent = text; noticeTimer = window.setTimeout(() => { notice.textContent = ''; }, 4000); };
+      // The danger tone goes on a leading icon; the message stays a text node in normal ink (never parsed as HTML).
+      const inlineError = (text: string) => {
+        clearNotices();
+        if (!alertNotice) return;
+        const mark = document.createElement('span');
+        mark.className = 'web-server-notice-icon'; mark.dataset.stateTone = 'danger'; mark.setAttribute('aria-hidden', 'true');
+        mark.innerHTML = icon('alert');
+        alertNotice.replaceChildren(mark, document.createTextNode(text));
+      };
+      cleanups.push(clearNotices);
+      const webHost: WebServerHost = options.remote ?? { call, listen: (_name, cb) => subscribe('web-server-changed', cb), notify: inlineNotify, notifyError: inlineError, openUrl: url => call('open_external_url', { url }) };
+      cleanups.push(mountWebServerSettings(panel.querySelector<HTMLElement>('#web-server-settings')!, webHost));
+    }
     if (id === 'general' && options.projects) cleanups.push(mountProjects(panel.querySelector<HTMLElement>('#projects-settings')!, options.projects));
     if (id === 'github' && options.github) cleanups.push(options.github(panel.querySelector<HTMLElement>('#github-settings')!));
-    if (id === 'routing' && options.teams) cleanups.push(mountModelRouting(panel.querySelector<HTMLElement>('#model-routing-settings')!, { ...options.teams, providers: options.providers }));
-    if (id === 'teams' && options.teams) cleanups.push(mountAgentTeams(panel.querySelector<HTMLElement>('#agent-teams-settings')!, { ...options.teams, providers: options.providers }));
+    if (id === 'routing' && options.teams) mountRouting();
+    if (id === 'teams' && options.teams) mountTeams();
     if (id === 'schedules') cleanups.push(mountSchedulesSettings(panel.querySelector<HTMLElement>('#schedules-settings')!, options.schedules ?? { openThread: () => {} }));
     if (id === 'tools') {
       const slot = panel.querySelector<HTMLElement>('#capabilities-settings')!;
@@ -383,14 +441,13 @@ export function mountSettings(host: HTMLElement, options: SettingsOptions): Sett
       cleanups.push(mountAboutSettings(panel.querySelector<HTMLElement>('.settings-about')!));
       cleanups.push(mountResourceUsage(panel.querySelector<HTMLElement>('.settings-resources')!));
     }
-    if (id === 'agents') mountStartAhead(panel.querySelector<HTMLInputElement>('#start-ahead')!);
     if (id === 'agents' && !discovered) void refresh();
     for (const slot of panel.querySelectorAll<HTMLElement>('[data-embed]')) {
       const mount = () => {
         const embed = options.embed[slot.dataset.embed as keyof SettingsOptions['embed']];
-        slot.innerHTML = '<p class="dialog-loading">Loading…</p>';
+        slot.innerHTML = `<p class="dialog-loading">${t('Loading…')}</p>`;
         embed(slot).then(cleanup => { if (disposed) cleanup(); else cleanups.push(cleanup); })
-          .catch(() => { if (!disposed) slot.innerHTML = '<p class="settings-embed-error" role="alert">This section couldn’t load. Close Settings and try again.</p>'; });
+          .catch(() => { if (!disposed) slot.innerHTML = `<p class="settings-embed-error" role="alert">${t('This section couldn’t load. Close Settings and try again.')}</p>`; });
       };
       const closed = slot.closest<HTMLDetailsElement>('details.settings-fold');
       if (closed) closed.addEventListener('toggle', mount, { once: true }); else mount();
@@ -410,6 +467,7 @@ export function mountSettings(host: HTMLElement, options: SettingsOptions): Sett
     subnavs.forEach(subnav => { subnav.hidden = subnav.dataset.sectionPages !== section.id; });
     panels.forEach((panel, key) => { panel.hidden = key !== page; });
     if (page === 'recommended' && mounted.has(page)) recommended?.refresh();
+    if (page === 'teams' && mounted.has(page)) mountTeams();
     mountSection(page);
     const selected = pageTabs.find(tab => tab.dataset.section === page);
     if (selected) trackSegment(selected.parentElement!, selected);
@@ -463,9 +521,18 @@ export function mountSettings(host: HTMLElement, options: SettingsOptions): Sett
   show(options.section ?? 'recommended', true);
   return {
     show: id => show(id, true),
+    providersChanged: providers => {
+      if (disposed) return;
+      updateProviders(providers);
+      recommended?.refresh();
+      mountRouting();
+      mountTeams();
+    },
     dispose: () => {
       if (disposed) return;
       disposed = true; readinessCleanup.forEach(cleanup => cleanup());
+      routingCleanup?.(); routingCleanup = undefined;
+      teamsCleanup?.(); teamsCleanup = undefined;
       cleanups.forEach(cleanup => cleanup());
       host.removeEventListener('click', click); host.removeEventListener('keydown', keydown);
       refreshButton.removeEventListener('click', refresh);

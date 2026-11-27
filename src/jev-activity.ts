@@ -1,6 +1,6 @@
+import { t } from './i18n.ts';
 import './jev-activity.css';
 import { call, subscribe } from './bridge';
-import { t } from './i18n.ts';
 import { icon } from './dom';
 import type { JevReport } from './jev';
 

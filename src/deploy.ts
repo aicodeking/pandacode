@@ -1,7 +1,7 @@
+import { t } from './i18n.ts';
 /* Deploy: a header menu that starts an agent task to ship the project to Vercel,
  * Cloudflare, Railway, Netlify, AWS or Google Cloud end to end. The agent deploys with the pandacode_cloud_cli tool,
  * which is already signed in, so no keys appear in prompts. */
-import { t } from './i18n.ts';
 import type { CloudConnection } from './cloud-settings';
 
 export type DeployTarget = 'vercel' | 'cloudflare' | 'railway' | 'netlify' | 'aws' | 'gcloud';

@@ -1,6 +1,6 @@
+import { t } from './i18n.ts';
 import { subscribe } from './bridge';
 import { escape, icon } from './dom';
-import { t } from './i18n.ts';
 import { showPopover, hidePopover } from './popover-motion';
 import type { TerminalActivity, TerminalContext, TerminalController } from './terminal';
 import { initializeTerminalResizing, type TerminalResizer } from './terminal-resize';
@@ -244,7 +244,7 @@ function closePopover(anchor: HTMLElement, activity: TerminalActivity, choose: (
   const panel = document.createElement('section'); panel.className = 'floating-menu terminal-close-popover';
   panel.setAttribute('role', 'dialog'); panel.setAttribute('aria-label', t('Close terminal?')); panel.tabIndex = -1;
   const title = activity.uncertain ? t('Keep this terminal running?') : t('Processes are still running');
-  panel.innerHTML = `<strong>${title}</strong><p>${t`Closing may stop ${activity.processNames.length ? escape(activity.processNames.slice(0, 3).join(', ')) : t('running processes')}. Minimize to keep them running.`}</p><div><button class="primary-button" data-choice="minimize">${t('Minimize instead')}</button><button class="secondary-button" data-choice="close">${t('Close terminal')}</button></div>`;
+  panel.innerHTML = `<strong>${title}</strong><p>Closing may stop ${activity.processNames.length ? escape(activity.processNames.slice(0, 3).join(', ')) : t('running processes')}. Minimize to keep them running.</p><div><button class="primary-button" data-choice="minimize">${t('Minimize instead')}</button><button class="secondary-button" data-choice="close">${t('Close terminal')}</button></div>`;
   let closed = false;
   const position = () => {
     if (!anchor.isConnected) { close(false); return; }

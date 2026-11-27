@@ -146,6 +146,64 @@ test('MCP: input key/values and JSON records as reference rows with +N more', ()
   assert.match(html, /<dt>team<\/dt><dd>ENG<\/dd>/);
   assert.equal(count(html, 'class="tc-row"'), 6);
   assert.match(html, /\+3 more/);
-  // The row time is a short date in the runtime's locale — derive it with the same formatter instead of pinning one.
-  const rowTime = new Date('2024-10-28T08:12:00Z').toLocaleDateString([], { month: 'short', day: 'numeric' }).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  assert.match(html, new RegExp(`tc-row-time">${rowTime}<`));
+  // The row time is the record's own date in the user's locale ("Oct 28", "28 Oct"), so it is
+  // formatted here the same way rather than pinned to one locale's order.
+  const updated = new Date('2024-10-28T08:12:00Z').toLocaleDateString([], { month: 'short', day: 'numeric' });
+  assert.ok(html.includes(`tc-row-time">${updated}`), `the row time shows ${updated}`);
+  assert.match(html, /Body 0/);
+  assert.match(richCard(tool('mcp__x__get', {}, { a: 1, nested: { b: 2 } })), /<dt>nested<\/dt><dd>1 field<\/dd>/);
+  // Docs-style results with only a title and a link use the link as the meta.
+  const docs = richCard(tool('mcp__docs__search_docs', { query: 'q' }, { results: [{ title: 'Search index', url: 'https://docs.example.com/search-index' }, { name: 'Ask', prompt: 'How to?' }] }));
+  assert.match(docs, /Search index<\/span><span class="tc-row-meta">docs\.example\.com\/search-index</);
+  assert.match(docs, /How to\?/);
+  // The query is the step row's object (`Searched docs for q`), so it is not repeated as a field.
+  assert.doesNotMatch(docs, /tc-kv|<dt>query/);
+});
+
+test('running status line and failed state', () => {
+  const running = richCard(tool('Bash', { command: 'sleep 1' }, '', 'running'));
+  assert.match(running, /<p class="tc-running" role="status">Running command…<\/p>/);
+  assert.doesNotMatch(running, /tc-bar|tc-skeleton/);
+  // The terminal header is already the final one, so only the output area changes when output lands.
+  const head = '<div class="tc-term-head"><span class="tc-dollar" aria-hidden="true">$</span><code class="tc-command">sleep 1</code></div>';
+  assert.ok(running.includes(head));
+  assert.ok(richCard(tool('Bash', { command: 'sleep 1' }, 'done')).includes(head));
+  assert.equal(richCard(tool('Grep', { pattern: 'x' }, '', 'running')), '<div class="tc" data-kind="search"><p class="tc-running" role="status">Searching…</p></div>');
+  const failed = richCard(tool('mcp__gh__get_pr', { n: 1 }, 'Error: <boom>', 'failed'));
+  assert.match(failed, /tc-failed/);
+  assert.match(failed, /&lt;boom&gt;/);
+  assert.equal(richCard(tool('unknown_tool', {}, 'x')), '');
+});
+
+test('escapes every user-controlled string', () => {
+  const evil = '<img src=x onerror=alert(1)>"\'';
+  const cases = [
+    tool('Bash', { command: evil }, evil),
+    tool('Read', { file_path: evil }, evil),
+    tool('Write', { file_path: evil, content: evil }),
+    tool('Edit', { file_path: evil, old_string: evil, new_string: 'b' }),
+    tool('Grep', { pattern: evil }, `${evil}:1:${evil}`),
+    tool('WebSearch', { query: evil }, [{ title: evil, url: 'https://e.com', snippet: evil }]),
+    tool('WebFetch', { url: 'https://e.com', prompt: evil }, evil),
+    tool('TodoWrite', { todos: [{ content: evil, status: evil }] }),
+    tool('Task', { subagent_type: evil, description: evil }, evil),
+    tool('Skill', { skill: evil }, evil),
+    tool('pandacode_dispatch_workers', { workers: [{ name: evil, model: evil }] }),
+    tool('mcp__s__t', { [evil]: evil }, [{ title: evil, body: evil }]),
+  ];
+  for (const t of cases) {
+    const html = richCard(t);
+    assert.ok(html, `${t.name} renders`);
+    assert.doesNotMatch(html, /<img src=x|onerror=alert\(1\)>"/, t.name);
+  }
+});
+
+test('bounds huge inputs', () => {
+  const big = Array.from({ length: 5000 }, (_, i) => `src/f${i}.ts:${i}:match ${'x'.repeat(500)}`).join('\n');
+  const html = richCard(tool('Grep', { pattern: 'match' }, big));
+  assert.ok(count(html, 'class="tc-row"') <= 6);
+  assert.match(html, /more files/);
+  assert.ok(html.length < 20_000);
+  const diff = richCard(tool('Edit', { file_path: 'a', old_string: Array(200).fill('o').join('\n'), new_string: Array(200).fill('n').join('\n') }));
+  assert.ok(count(diff, 'tc-diff-line') <= 18);
+});

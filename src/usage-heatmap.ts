@@ -1,5 +1,5 @@
-import './usage-heatmap.css';
 import { t } from './i18n.ts';
+import './usage-heatmap.css';
 
 export interface DailyTokens { date: string; tokens: number; }
 interface Day { date: Date; key: string; tokens: number; level: number; }
@@ -29,8 +29,7 @@ export type HeatmapUnit = 'tokens' | 'prompts';
 export interface HeatmapOptions { unit?: HeatmapUnit; label?: string; }
 function amountLabel(value: number, unit: HeatmapUnit): string {
   if (!value) return unit === 'tokens' ? t('No tokens') : t('No prompts');
-  if (unit === 'prompts') return value === 1 ? t`1 prompt` : t`${count.format(value)} prompts`;
-  return t`${count.format(value)} tokens`;
+  return `${count.format(value)} ${unit === 'prompts' && value === 1 ? 'prompt' : unit}`;
 }
 
 /** Totals per local calendar day; malformed or negative buckets from the harness are dropped. */
@@ -97,9 +96,7 @@ function summary(days: readonly Day[], unit: HeatmapUnit): string {
   const total = active.reduce((sum, day) => sum + day.tokens, 0);
   const weeks = Math.ceil(days.length / 7);
   const period = weeks >= MAX_WEEKS ? t('past year') : t`past ${Math.round(weeks / 4.345)} months`;
-  const totalText = unit === 'tokens' ? t`${compact.format(total)} tokens` : t`${compact.format(total)} prompts`;
-  const activeText = active.length === 1 ? t`1 active day` : t`${active.length} active days`;
-  return `${totalText} · ${activeText} · ${period}`;
+  return `${compact.format(total)} ${unit} · ${active.length} active ${active.length === 1 ? 'day' : 'days'} · ${period}`;
 }
 
 function cells(days: readonly Day[], prefix: string, unit: HeatmapUnit): HTMLElement[] {

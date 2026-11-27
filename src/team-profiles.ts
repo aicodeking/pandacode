@@ -1,6 +1,6 @@
+import { t } from './i18n.ts';
 import { call } from './bridge';
 import { icon, isImeKey } from './dom';
-import { t } from './i18n.ts';
 import { openChoiceMenu } from './choice-menu';
 import type { TeamLibrary, TeamProfile, TeamSetup } from './architect-types';
 import { sameTeamSetup } from './team-mode';
@@ -18,7 +18,7 @@ export function mountTeamProfiles(host: HTMLElement, options: {
   let selected = library.profiles.find(profile => profile.id === library.activeProfileId && sameTeamSetup(profile.setup, options.read()))?.id
     ?? library.profiles.find(profile => sameTeamSetup(profile.setup, options.read()))?.id ?? null;
   host.className = 'team-library';
-  host.innerHTML = `<div class="team-library-heading"><span>${t('Team profile')}</span><span class="team-library-state" role="status"></span></div><div class="team-library-row"><button type="button" class="team-library-picker" aria-label="${t('Choose team profile')}" aria-haspopup="dialog" aria-expanded="false"><span></span>${icon('down')}</button><button type="button" class="icon-button team-library-manage" aria-label="${t('Manage team profile')}" aria-haspopup="dialog">${icon('more')}</button></div><div class="team-library-actions"><button type="button" class="team-library-create">${icon('plus')} ${t('Save as…')}</button><button type="button" class="team-library-update" hidden>${t('Update profile')}</button></div><div class="team-library-editor" hidden><label>${t('Profile name')}<input type="text" maxlength="80" autocomplete="off" aria-label="${t('Profile name')}"></label><div><button type="button" class="secondary-button team-library-cancel">${t('Cancel')}</button><button type="button" class="primary-button team-library-confirm">${t('Save profile')}</button></div></div><p class="team-library-error" role="alert" hidden></p>`;
+  host.innerHTML = `<div class="team-library-heading"><span>${t('Team profile')}</span><span class="team-library-state" role="status"></span></div><div class="team-library-row"><button type="button" class="team-library-picker" aria-label="${t('Choose team profile')}" aria-haspopup="dialog" aria-expanded="false"><span></span>${icon('down')}</button><button type="button" class="icon-button team-library-manage" aria-label="${t('Manage team profile')}" aria-haspopup="dialog">${icon('more')}</button></div><div class="team-library-actions"><button type="button" class="team-library-create">${icon('plus')} Save as…</button><button type="button" class="team-library-update" hidden>${t('Update profile')}</button></div><div class="team-library-editor" hidden><label>${t('Profile name')}<input type="text" maxlength="80" autocomplete="off" aria-label="${t('Profile name')}"></label><div><button type="button" class="secondary-button team-library-cancel">${t('Cancel')}</button><button type="button" class="primary-button team-library-confirm">${t('Save profile')}</button></div></div><p class="team-library-error" role="alert" hidden></p>`;
   const picker = host.querySelector<HTMLButtonElement>('.team-library-picker')!;
   const manage = host.querySelector<HTMLButtonElement>('.team-library-manage')!;
   const create = host.querySelector<HTMLButtonElement>('.team-library-create')!;
@@ -63,12 +63,8 @@ export function mountTeamProfiles(host: HTMLElement, options: {
     if (menu) { menu(); return; }
     // Named agent teams live in Settings and the model picker, not among classic profiles.
     const profiles = library.profiles.filter(profile => !profile.setup.config.rosterOnly);
-    const items = profiles.map(profile => {
-      const size = profile.setup.config.workers.length;
-      const atOnce = profile.setup.config.maxParallel === 0 ? t('Unlimited at once') : t`${profile.setup.config.maxParallel} at once`;
-      return { id: profile.id, label: profile.name, provider: profile.setup.architect.provider,
-        description: size === 1 ? t`1 worker model · ${atOnce}` : t`${size} worker models · ${atOnce}`, selected: selected === profile.id };
-    });
+    const items = profiles.map(profile => ({ id: profile.id, label: profile.name, provider: profile.setup.architect.provider,
+      description: `${profile.setup.config.workers.length} worker model${profile.setup.config.workers.length === 1 ? '' : 's'} · ${profile.setup.config.maxParallel === 0 ? t('Unlimited at once') : t`${profile.setup.config.maxParallel} at once`}`, selected: selected === profile.id }));
     if (library.lastSetup) items.unshift({ id: 'last-saved', label: t('Last saved setup'), provider: library.lastSetup.architect.provider,
       description: library.enabled ? t('Default for new tasks') : t('Remembered · single agent default'), selected: !selected && sameTeamSetup(library.lastSetup, options.read()) });
     menu = openChoiceMenu({ anchor: picker, title: t('Team profiles'), items, width: 310,

@@ -1,8 +1,8 @@
+import { t } from './i18n.ts';
 import './wallpaper-settings.css';
 import { escape, icon } from './dom';
 import { infoMark } from './tooltip';
 import { wallpaperAt, wallpaperPeriods, wallpaperSets, type WallpaperController, type WallpaperPreferences } from './wallpapers';
-import { t } from './i18n.ts';
 
 const thumbnail = (id: string): string => `/wallpapers/thumbnails/${id}.webp`;
 
@@ -10,6 +10,7 @@ const thumbnail = (id: string): string => `/wallpapers/thumbnails/${id}.webp`;
 export function mountWallpaperSettings(host: HTMLElement, controller: WallpaperController): () => void {
   host.classList.add('wallpaper-settings');
   host.innerHTML = `
+    <div class="wallpaper-card">
     <figure class="wallpaper-settings-preview" aria-label="${t('Wallpaper preview')}">
       <img class="wallpaper-preview-image" alt="" decoding="async">
       <div class="wallpaper-preview-scrim"></div>
@@ -34,17 +35,16 @@ export function mountWallpaperSettings(host: HTMLElement, controller: WallpaperC
     </div>
     </div>
     <section aria-labelledby="wallpaper-set-heading">
-      <div class="wallpaper-section-heading"><h3 id="wallpaper-set-heading">${t('Wallpaper set')}</h3><span>${t('Three scenes per day')}</span></div>
+      <div class="wallpaper-section-heading"><h3 id="wallpaper-set-heading">${t('Wallpaper set')}</h3>${infoMark('Each set has three scenes per day: morning, afternoon and night.', 'About wallpaper sets')}<span class="sr-only">Each set has three scenes per day: morning, afternoon and night.</span></div>
       <div class="wallpaper-set-grid" role="group" aria-label="${t('Wallpaper sets')}">
         <button type="button" class="wallpaper-set-card wallpaper-set-automatic" data-wallpaper-set="automatic" aria-label="${t('Automatic weekly rotation')}" aria-pressed="false"><span class="wallpaper-set-art">${icon('refresh')}<small>${t('7 days · 21 scenes')}</small></span><span class="wallpaper-set-label">${t('Automatic')}<span class="wallpaper-selection-check">${icon('check')}</span></span></button>
-        ${wallpaperSets.map(set => `<button type="button" class="wallpaper-set-card" data-wallpaper-set="${escape(set.id)}" aria-label="${t`${escape(set.label)} wallpaper set`}" aria-pressed="false"><span class="wallpaper-set-art"><img src="${thumbnail(`${set.id}-morning`)}" alt="" loading="lazy" decoding="async"></span><span class="wallpaper-set-label">${escape(set.label)}<span class="wallpaper-selection-check">${icon('check')}</span></span></button>`).join('')}
+        ${wallpaperSets.map(set => `<button type="button" class="wallpaper-set-card" data-wallpaper-set="${escape(set.id)}" aria-label="${escape(set.label)} wallpaper set" aria-pressed="false"><span class="wallpaper-set-art"><img src="${thumbnail(`${set.id}-morning`)}" alt="" loading="lazy" decoding="async"></span><span class="wallpaper-set-label">${escape(set.label)}<span class="wallpaper-selection-check">${icon('check')}</span></span></button>`).join('')}
       </div>
     </section>
     <section aria-labelledby="wallpaper-default-heading">
-      <div class="wallpaper-section-heading"><h3 id="wallpaper-default-heading">${t('Keep a favorite')}</h3><button type="button" class="wallpaper-resume" hidden>${t('Resume rotation')}</button></div>
-      <p class="wallpaper-default-help">${t('Choose a scene to use it every day.')}</p>
+      <div class="wallpaper-section-heading"><h3 id="wallpaper-default-heading">${t('Keep a favorite')}</h3>${infoMark('Choose a scene to use it every day.', 'About a favorite wallpaper')}<span class="sr-only">${t('Choose a scene to use it every day.')}</span><button type="button" class="wallpaper-resume" hidden>${t('Resume rotation')}</button></div>
       <div class="wallpaper-period-grid" role="group" aria-label="${t('Default wallpaper')}">
-        ${wallpaperPeriods.map(period => `<button type="button" class="wallpaper-period-card" data-wallpaper-period="${escape(period.id)}" aria-pressed="false"><span class="wallpaper-period-art"><img alt="" loading="lazy" decoding="async"><span class="wallpaper-default-badge">${icon('check')} ${t('Default')}</span></span><span class="wallpaper-period-label">${escape(period.label)}<small>${period.id === 'morning' ? t('6 am – noon') : period.id === 'afternoon' ? t('Noon – 6 pm') : t('6 pm – 6 am')}</small></span></button>`).join('')}
+        ${wallpaperPeriods.map(period => `<button type="button" class="wallpaper-period-card" data-wallpaper-period="${escape(period.id)}" aria-pressed="false"><span class="wallpaper-period-art"><img alt="" loading="lazy" decoding="async"><span class="wallpaper-default-badge">${icon('check')} Default</span></span><span class="wallpaper-period-label">${escape(period.label)}<small>${period.id === 'morning' ? t('6 am – noon') : period.id === 'afternoon' ? t('Noon – 6 pm') : t('6 pm – 6 am')}</small></span></button>`).join('')}
       </div>
       <p class="wallpaper-schedule-description" role="status"></p>
     </section>`;

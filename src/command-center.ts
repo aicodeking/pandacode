@@ -1,5 +1,5 @@
-import './command-center.css';
 import { t } from './i18n.ts';
+import './command-center.css';
 import { icon } from './dom';
 import { usageHeatmap } from './usage-heatmap';
 import { errorText } from './error-text';

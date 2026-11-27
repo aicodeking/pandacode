@@ -1,10 +1,10 @@
+import { t } from './i18n.ts';
 import './opencode-model-settings.css';
 import { call } from './bridge';
 import { icon } from './dom';
 import { tokenCount } from './model-catalog';
 import { errorText } from './error-text';
 import type { ProviderModel } from './types';
-import { t } from './i18n.ts';
 
 interface Catalog {
   models: ProviderModel[];

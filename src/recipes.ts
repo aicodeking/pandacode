@@ -1,3 +1,4 @@
+import { t } from './i18n.ts';
 /* Workflow recipes: pick a saved recipe, see a dry run against this task's harness, then
  * queue its steps as ordinary messages. Recipes are plain JSON (`.pandacode/recipes/<name>.json`
  * in the project, or the global folder); the native side (`recipes.rs`) validates, saves and
@@ -5,7 +6,6 @@
 import './recipes.css';
 import { escape } from './dom';
 import { errorText } from './error-text';
-import { t } from './i18n.ts';
 
 export interface RecipeStep { kind: 'prompt' | 'slash' | 'check' | 'approval'; text?: string; command?: string; requires?: string[] }
 export interface Recipe { name: string; description: string; steps: RecipeStep[]; scope?: 'project' | 'global' }
@@ -50,7 +50,7 @@ export function mountRecipes(root: HTMLElement, host: RecipesHost): void {
     }).join('');
     const blocked = !plan || plan.steps.some(s => s.status === 'blocked');
     return `<h3>${escape(selected.name)}</h3><p class="recipe-description">${escape(selected.description)}</p>
-      <table class="recipe-steps" aria-label="${t`Dry run for ${escape(selected.name)}`}"><thead><tr><th>#</th><th>${t('Step')}</th><th>${t('What')}</th><th>${t('Status')}</th><th>${t('Why')}</th></tr></thead><tbody>${rows}</tbody></table>
+      <table class="recipe-steps" aria-label="Dry run for ${escape(selected.name)}"><thead><tr><th>#</th><th>${t('Step')}</th><th>${t('What')}</th><th>${t('Status')}</th><th>${t('Why')}</th></tr></thead><tbody>${rows}</tbody></table>
       <div class="recipe-actions"><button type="button" class="secondary-button" data-action="recipe-delete">${t('Delete')}</button><button type="button" class="secondary-button" data-action="recipe-edit">${t('Edit')}</button><button type="button" class="primary-button" data-action="recipe-run" ${blocked || busy ? 'disabled' : ''}>${t('Run')}</button></div>`;
   }
 
@@ -94,7 +94,7 @@ export function mountRecipes(root: HTMLElement, host: RecipesHost): void {
         busy = true; draw();
         const messages = plan.messages;
         for (const text of messages) await host.enqueue(text);
-        busy = false; message = messages.length === 1 ? t`Queued ${messages.length} message.` : t`Queued ${messages.length} messages.`; draw();
+        busy = false; message = `Queued ${messages.length} ${messages.length === 1 ? 'message' : 'messages'}.`; draw();
         host.done?.(messages.length);
       }
     } catch (error) { busy = false; message = error instanceof SyntaxError ? `Not valid JSON: ${error.message}` : errorText(error); draw(); }

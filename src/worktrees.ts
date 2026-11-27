@@ -1,8 +1,8 @@
+import { t } from './i18n.ts';
 import './worktrees.css';
 import { escape, icon } from './dom';
 import { toned } from './approval-modes';
 import { githubEnabled } from './github';
-import { t } from './i18n.ts';
 import type { BranchList, GitStatus, Project, Session, WorktreeMerge, WorktreeStatus, WorktreeRemoval } from './types';
 import { errorText } from './error-text';
 
@@ -74,14 +74,11 @@ export function createWorktrees(host: WorktreeHost) {
     const project = host.project(), git = host.git(), missing = worktreeMissing(session, host.gitError());
     const branch = session.worktreePath && (missing || !git?.branch) ? session.worktreeBranch || '' : git?.branch || '';
     const path = session.worktreePath ?? project?.path ?? '';
-    const projectControl = fresh
-      ? `<button type="button" id="composer-project" class="composer-project" data-action="change-task-project" aria-label="${t('Change task project')}" aria-haspopup="dialog" aria-expanded="false" title="${escape(project?.path)}" ${session.worktreePath ? 'disabled' : ''}>${icon('folder')}<span>${escape(project?.name)}</span>${icon('down')}</button>`
-      : `<span class="composer-project composer-project-fixed" title="${escape(project?.path)}">${icon('folder')}<span>${escape(project?.name)}</span></span>`;
     // A task on another computer has its checkout there: name the branch, offer no local actions.
     const chip = session.remoteDevice
-      ? `<span class="branch-chip branch-chip-fixed" title="${t`Branch actions run on ${escape(session.remoteDevice.name)}, not here.`}">${icon(session.worktreePath ? 'worktree' : 'branch')}<span class="branch-chip-name">${escape(session.worktreeBranch || t('Remote checkout'))}</span></span>`
+      ? `<span class="branch-chip branch-chip-fixed" data-tip="${escape(`Branch ${session.worktreeBranch || 'unknown'} · actions run on ${session.remoteDevice.name}, not here`)}">${icon(session.worktreePath ? 'worktree' : 'branch')}<span class="branch-chip-name">${escape(session.worktreeBranch || t('Remote checkout'))}</span></span>`
       : git?.isRepo || session.worktreePath
-      ? `<button type="button" id="branch-chip" class="branch-chip ${missing ? 'branch-chip-missing' : ''}" data-action="branch-menu" aria-label="${t('Branch and worktree actions')}" aria-haspopup="dialog" aria-expanded="false" title="${escape(path)}">${icon(missing ? 'alert' : 'branch')}<span class="branch-chip-name">${escape(missing ? t('Worktree missing') : branch || t('Detached HEAD'))}</span>${icon('down')}</button>`
+      ? `<button type="button" id="branch-chip" class="branch-chip ${missing ? 'branch-chip-missing' : ''}" data-action="branch-menu" aria-label="${escape(missing ? 'Worktree missing' : `Branch ${branch || 'detached HEAD'}`)}" aria-description="Branch and worktree actions" aria-haspopup="dialog" aria-expanded="false" data-tip="${escape(missing ? `Worktree missing · was at ${path}` : `Branch ${branch || 'detached HEAD'} · ${session.worktreePath ? 'worktree' : 'checkout'} at ${path}`)}">${icon(missing ? 'alert' : 'branch')}<span class="branch-chip-name">${escape(missing ? t('Worktree missing') : branch || t('Detached HEAD'))}</span>${icon('down')}</button>`
       : '';
     const links = [session.issue, session.pullRequest].filter(Boolean).map(link => linkChip(link!, session.id)).join('');
     return `<div class="composer-context ${fresh ? '' : 'composer-context-compact'}">${host.computer(session, fresh)}<span class="composer-local" data-checkout="${session.worktreePath ? 'worktree' : 'local'}" role="img" tabindex="0" aria-label="${escape(`${checkoutLabel(session)}: ${path}`)}" data-tip="${escape(`${checkoutLabel(session)}: ${path}`)}">${icon(session.worktreePath ? 'worktree' : 'folder')}<span class="sr-only">${checkoutLabel(session)}</span></span>${chip}${links}</div>`;
@@ -92,7 +89,7 @@ export function createWorktrees(host: WorktreeHost) {
     const project = host.project(), git = host.git(), missing = worktreeMissing(session, host.gitError());
     const path = session.worktreePath ?? project?.path ?? '';
     const branch = missing ? session.worktreeBranch || t('unknown branch') : git?.branch || session.worktreeBranch || t('Detached HEAD');
-    const items: ChoiceItem[] = [{ id: 'checkout', label: branch, description: `${checkoutLabel(session)} · ${path}`, icon: session.worktreePath ? 'worktree' : 'branch', disabled: true }];
+    const items: ChoiceItem[] = [{ id: 'checkout', label: branch, description: `${checkoutLabel(session)} · ${path}`, ...session.worktreePath ? { leading: toned(icon('worktree'), 'worktree') } : { icon: 'branch' }, selected: true }];
     if (missing) {
       items.push({ id: 'worktree-recreate', label: t('Recreate worktree'), description: t('Check the branch out again at the same path.'), icon: 'refresh' });
       items.push({ id: 'settle-task', label: t('Settle task'), description: t('Keep the history; forget the checkout.'), icon: 'check' });
@@ -108,7 +105,7 @@ export function createWorktrees(host: WorktreeHost) {
       if (list) {
         const busy = host.running(), others = list.branches.filter(name => name !== list.current);
         if (list.defaultBranch && list.defaultBranch !== list.current) items.push({ id: 'switch-default', label: t`Switch to ${list.defaultBranch}`, description: busy ? t('Wait for the agent to finish.') : t('Uncommitted changes come along when they don’t conflict.'), icon: 'branch', disabled: busy });
-        if (others.length) items.push({ id: 'switch-other', label: t('Other branch…'), description: busy ? t('Wait for the agent to finish.') : others.length === 1 ? t`1 local branch` : t`${others.length} local branches`, icon: 'branch', disabled: busy });
+        if (others.length) items.push({ id: 'switch-other', label: t('Other branch…'), description: busy ? 'Wait for the agent to finish.' : `${others.length} local ${others.length === 1 ? 'branch' : 'branches'}`, icon: 'branch', disabled: busy });
       }
       if (host.attachable()) items.push({ id: 'worktree-attach', label: t('Work in a new worktree…'), description: t('Keeps this draft and task; isolates its changes.'), icon: 'worktree' });
       else items.push({ id: 'worktree-new', label: t('New task in a worktree…'), description: t('Same harness and model, in an isolated checkout.'), icon: 'worktree' });
@@ -166,11 +163,11 @@ export function createWorktrees(host: WorktreeHost) {
     const description = mode === 'attach'
       ? t`This task keeps its draft, harness, and model, and its changes stay in an isolated checkout beside ${escape(project?.name)}.`
       : t`Start a new task in an isolated checkout of ${escape(project?.name)}. It inherits this task's harness and model.`;
-    const dialog = host.modal(mode === 'attach' ? t('Work in a new worktree') : t('New task in a worktree'), `<form id="worktree-form" data-mode="${mode}" data-session-id="${escape(session.id)}"><p class="dialog-description">${description}</p><label class="field-label" for="branch-name">${t('Branch name')}</label><input id="branch-name" name="branch" value="${escape(suggested)}" placeholder="${t('my-feature')}" required pattern="[A-Za-z0-9_\\/\\-]+" maxlength="120" autocomplete="off" spellcheck="false"><p class="field-help worktree-preview" id="branch-preview" data-live></p><label class="field-label" for="branch-base">${t('Start from')}</label><select id="branch-base" name="base" aria-describedby="branch-base-help"><option value="">${escape(git?.branch ? t`Current branch (${git.branch})` : t('Current HEAD'))}</option></select><p class="field-help" id="branch-base-help">${t`Local branches load from the ${session.worktreePath ? t('worktree') : t('project')} checkout.`}</p><label class="worktree-existing" hidden><input type="checkbox" name="existing"><span>${t('Use the existing branch instead of creating one')}</span></label><p class="worktree-error field-help" role="alert" hidden></p><div class="dialog-footer"><button type="button" class="secondary-button" data-action="close-dialog">${t('Cancel')}</button><button class="primary-button">${mode === 'attach' ? t('Use a worktree') : t('Create worktree task')}</button></div></form>`, 'compact-dialog worktree-dialog');
+    const dialog = host.modal(mode === 'attach' ? t('Work in a new worktree') : t('New task in a worktree'), `<form id="worktree-form" data-mode="${mode}" data-session-id="${escape(session.id)}"><p class="dialog-description">${description}</p><label class="field-label" for="branch-name">${t('Branch name')}</label><input id="branch-name" name="branch" value="${escape(suggested)}" placeholder="${t('my-feature')}" required pattern="[A-Za-z0-9_\\/\\-]+" maxlength="120" autocomplete="off" spellcheck="false"><p class="field-help worktree-preview" id="branch-preview" data-live></p><label class="field-label" for="branch-base">${t('Start from')}</label><select id="branch-base" name="base" aria-describedby="branch-base-help"><option value="">${escape(git?.branch ? t`Current branch (${git.branch})` : t('Current HEAD'))}</option></select><p class="field-help" id="branch-base-help">Local branches load from the ${session.worktreePath ? t('worktree') : t('project')} checkout.</p><label class="worktree-existing" hidden><input type="checkbox" name="existing"><span>${t('Use the existing branch instead of creating one')}</span></label><p class="worktree-error field-help" role="alert" hidden></p><div class="dialog-footer"><button type="button" class="secondary-button" data-action="close-dialog">${t('Cancel')}</button><button class="primary-button">${mode === 'attach' ? t('Use a worktree') : t('Create worktree task')}</button></div></form>`, 'compact-dialog worktree-dialog');
     const input = dialog.querySelector<HTMLInputElement>('#branch-name')!, preview = dialog.querySelector<HTMLElement>('#branch-preview')!;
     const update = () => {
       const final = finalBranchName(input.value);
-      preview.innerHTML = final ? `${t('Creates ')}<code>${escape(final)}</code>${t(' in ')}<code>${escape((project?.path ?? '').replace(/\/[^/]*$/, ''))}/${escape(project?.name)}-worktrees/${escape(final.replaceAll('/', '-'))}</code>` : t('Names may use letters, numbers, hyphens, underscores, and slashes.');
+      preview.innerHTML = final ? `Creates <code>${escape(final)}</code>${t(' in ')}<code>${escape((project?.path ?? '').replace(/\/[^/]*$/, ''))}/${escape(project?.name)}-worktrees/${escape(final.replaceAll('/', '-'))}</code>` : 'Names may use letters, numbers, hyphens, underscores, and slashes.';
       preview.classList.toggle('worktree-preview-invalid', Boolean(input.value) && !BRANCH_PATTERN.test(input.value.trim()));
     };
     input.addEventListener('input', update); update();
@@ -220,11 +217,11 @@ export function createWorktrees(host: WorktreeHost) {
       const branch = status.branch || session.worktreeBranch || t('its branch');
       const unpublished = !status.merged && (!status.hasUpstream || status.ahead > 0);
       let summary: string, control = '';
-      if (!status.exists) summary = t`The worktree folder is already gone. ${intent === 'remove' ? t('Its registration is pruned and the task is settled.') : ''}`;
-      else if (!status.clean) summary = `${t`Its worktree has ${status.changes} uncommitted change${status.changes === 1 ? '' : 's'}, so the checkout stays at `}<code>${escape(session.worktreePath)}</code>.${intent === 'remove' ? t(' Commit or discard them first.') : ''}`;
+      if (!status.exists) summary = `The worktree folder is already gone. ${verb === 'Remove worktree' ? 'Its registration is pruned and the task is settled.' : ''}`;
+      else if (!status.clean) summary = `Its worktree has ${status.changes} uncommitted change${status.changes === 1 ? '' : 's'}, so the checkout stays at <code>${escape(session.worktreePath)}</code>.${intent === 'remove' ? t(' Commit or discard them first.') : ''}`;
       else {
-        summary = `${t('Its worktree is clean')}${status.merged ? t(' and its branch is merged') : unpublished ? `${t(', but ')}<strong>${escape(branch)}</strong>${t(' has commits that are not pushed or merged')}` : ''}.`;
-        control = `<label class="worktree-cleanup-option"><input type="checkbox" name="remove" ${intent === 'remove' || !unpublished ? 'checked' : ''}><span>${t('Remove the worktree folder')}${status.merged ? `${t(' and delete ')}<code>${escape(branch)}</code>` : `; <code>${escape(branch)}</code>${t(' is kept until it is merged')}`}</span></label>`;
+        summary = `Its worktree is clean${status.merged ? ' and its branch is merged' : unpublished ? `, but <strong>${escape(branch)}</strong> has commits that are not pushed or merged` : ''}.`;
+        control = `<label class="worktree-cleanup-option"><input type="checkbox" name="remove" ${intent === 'remove' || !unpublished ? 'checked' : ''}><span>Remove the worktree folder${status.merged ? ` and delete <code>${escape(branch)}</code>` : `; <code>${escape(branch)}</code> is kept until it is merged`}</span></label>`;
       }
       const canProceed = intent !== 'remove' || (status.exists ? status.clean : true);
       const dialog = host.modal(verb, `<form id="worktree-cleanup-form" data-session-id="${escape(session.id)}"><p class="dialog-description">${summary}</p>${control}<div class="dialog-footer"><button type="button" class="secondary-button" data-action="close-dialog">${t('Cancel')}</button><button class="primary-button" ${canProceed ? '' : 'disabled'}>${intent === 'remove' ? t('Remove and settle') : verb}</button></div></form>`, 'compact-dialog worktree-dialog');
@@ -257,7 +254,7 @@ export function createWorktrees(host: WorktreeHost) {
       return;
     }
     const moved = merged.switchedFrom ? t` (the project checkout moved from ${merged.switchedFrom})` : '';
-    host.notify(merged.commits ? merged.commits === 1 ? t`Merged 1 commit from ${merged.branch} into ${merged.target}${moved}` : t`Merged ${merged.commits} commits from ${merged.branch} into ${merged.target}${moved}` : t`${merged.target} already has everything from ${merged.branch}`);
+    host.notify(merged.commits ? `Merged ${merged.commits} commit${merged.commits === 1 ? '' : 's'} from ${merged.branch} into ${merged.target}${moved}` : t`${merged.target} already has everything from ${merged.branch}`);
     window.setTimeout(() => void host.branchChanged(), 0);
     // The merged branch can go now; the offer explains and asks first.
     await removeInteractive(session);
@@ -277,5 +274,5 @@ export function linkChip(link: NonNullable<Session['issue']>, sessionId?: string
   if (!githubEnabled()) return '';
   const label = link.kind === 'pull' ? t`PR #${link.number}` : `#${link.number}`;
   const action = link.kind === 'pull' && sessionId ? `data-action="open-pull" data-session-id="${escape(sessionId)}"` : `data-action="open-url" data-url="${escape(link.url)}"`;
-  return `<button type="button" class="link-chip link-chip-${escape(link.state || 'open')}" ${action} title="${escape(link.title)}" aria-label="${escape(link.kind === 'pull' ? t`Pull request ${link.number}: ${link.title} (${link.state})` : t`Issue ${link.number}: ${link.title} (${link.state})`)}">${icon(link.kind === 'pull' ? 'pull' : 'issue')}<span>${label}</span><span class="link-chip-state">${escape(link.state || 'open')}</span></button>`;
+  return `<button type="button" class="link-chip link-chip-${escape(link.state || 'open')}" ${action} title="${escape(link.title)}" aria-label="${escape(`${link.kind === 'pull' ? 'Pull request' : 'Issue'} ${link.number}: ${link.title} (${link.state})`)}">${icon(link.kind === 'pull' ? 'pull' : 'issue')}<span>${label}</span><span class="link-chip-state">${escape(link.state || 'open')}</span></button>`;
 }

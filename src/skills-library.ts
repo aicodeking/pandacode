@@ -1,3 +1,4 @@
+import { t } from './i18n.ts';
 /* Settings → Tools → Rules & library (issues #15 and #45): rules — import, where each is active per harness
  * and scope — plus the bot library's skills, the drift matrix and safety findings. Everything is native
  * (`skills_*` commands in src-tauri/src/skills.rs); this view only draws and asks. Skills are added in one place,
@@ -9,7 +10,6 @@ import { escape, icon } from './dom';
 import { errorText } from './error-text';
 import { infoMark } from './tooltip';
 import { harnessName, requestAddSkill, SKILLS_CHANGED_EVENT, type SkillInventory } from './skill-manager-model';
-import { t } from './i18n.ts';
 
 export type SkillKind = 'skill' | 'rule';
 export type SkillScope = 'user' | 'project';
@@ -155,7 +155,7 @@ export function mountSkillsLibrary(host: HTMLElement, options: SkillsLibraryHost
     const rows = matrix.harnesses, rules = items.filter(item => item.kind === 'rule');
     if (!rows.length || !rules.length) return '<p class="skills-empty">No installed harness found yet, or no rules in the library.</p>';
     const columns = rows.flatMap(row => scopes().map(scope => ({ row, scope })));
-    const head = columns.map(({ row, scope }) => `<th scope="col">${escape(harnessName(row.harness))}<small>${scope === 'user' ? 'User' : 'Project'}${row.prompt ? ' · prompt' : ''}</small></th>`).join('');
+    const head = columns.map(({ row, scope }) => `<th scope="col">${escape(harnessName(row.harness))}<small>${scope === 'user' ? t('User') : t('Project')}${row.prompt ? ' · prompt' : ''}</small></th>`).join('');
     const body = rules.map(item => `<tr><th scope="row">${escape(item.name)}</th>${columns.map(({ row, scope }) => {
       const cell = row.cells.find(c => c.id === item.id && c.scope === scope);
       const status = cell?.status ?? 'off';
@@ -203,7 +203,7 @@ export function mountSkillsLibrary(host: HTMLElement, options: SkillsLibraryHost
     if (!input.checked) {
       void run(async () => {
         const change = await options.call<{ kept: string[] }>('skills_deactivate', { id, harness, scope, ...scopeArgs(scope) });
-        return change.kept.length === 1 ? t`Left 1 edited file in place: ${change.kept.join(', ')}` : change.kept.length ? t`Left ${change.kept.length} edited files in place: ${change.kept.join(', ')}` : t`${item.name} is off for ${harnessName(harness)}.`;
+        return change.kept.length ? `Left ${change.kept.length} edited file${change.kept.length === 1 ? '' : 's'} in place: ${change.kept.join(', ')}` : t`${item.name} is off for ${harnessName(harness)}.`;
       });
       return;
     }
@@ -232,7 +232,7 @@ export function mountSkillsLibrary(host: HTMLElement, options: SkillsLibraryHost
         ? await options.call<SkillItem>('skills_import_folder', { path: text('path'), kind })
         : await options.call<SkillItem>('skills_import_github', { repo: text('repo'), path: text('repoPath'), gitRef: text('ref') || null, kind });
       clearFields = true;
-      return item.findings.length === 1 ? t`Imported ${item.name}. 1 safety finding to review.` : item.findings.length ? t`Imported ${item.name}. ${item.findings.length} safety findings to review.` : t`Imported ${item.name}.`;
+      return `Imported ${item.name}.${item.findings.length ? ` ${item.findings.length} safety finding${item.findings.length === 1 ? '' : 's'} to review.` : ''}`;
     });
   }
 

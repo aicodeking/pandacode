@@ -1,5 +1,5 @@
-import type { Mode, ProviderId } from './types';
 import { t } from './i18n.ts';
+import type { Mode, ProviderId } from './types';
 
 export interface ApprovalMode { id: Mode; label: string; description: string; icon: string; disabled?: boolean; }
 
@@ -14,12 +14,12 @@ export const toned = (svg: string, tone: string): string => tone ? svg.replace('
 export function approvalModes(provider: ProviderId, current?: Mode): ApprovalMode[] {
   // omp is a Pi fork driven through the same bridge, so it shares Pi's policy.
   const pi = provider === 'pi' || provider === 'omp' ? (provider === 'omp' ? 'omp' : 'Pi') : '';
-  const standard: ApprovalMode = { id: 'ask', label: t('Standard'), icon: 'check', description: provider === 'codex'
-    ? t('Work in this project. Ask you when an action needs extra permission.')
+  const standard: ApprovalMode = { id: 'ask', label: t('Standard'), icon: 'shield', description: provider === 'codex'
+    ? 'Work in this project. Ask you when an action needs extra permission.'
     : provider === 'github-copilot'
-    ? t('Use Copilot Agent mode with Allow All off. PandaCode asks before permission requests.')
+    ? 'Use Copilot Agent mode with Allow All off. PandaCode asks before permission requests.'
     : provider === 'grok'
-    ? t('Grok asks before edits and commands, whatever its own config says.')
+    ? 'Grok asks before edits and commands, whatever its own config says.'
     : provider === 'devin'
     ? 'Devin’s Code mode: edits inside this project apply; commands it does not judge safe ask you.'
     : provider === 'cursor'
@@ -27,20 +27,22 @@ export function approvalModes(provider: ProviderId, current?: Mode): ApprovalMod
     : pi
     ? t`${pi} runs without its own approvals; PandaCode asks before edits, commands and other non-read tools.`
     : provider === 'deepseek'
-    ? t('DeepSeek edits and runs commands inside this project freely; it asks you before going outside it.')
+    ? 'DeepSeek edits and runs commands inside this project freely; it asks you before going outside it.'
     : provider === 'cline'
-    ? t('Cline acts; reads and searches run, PandaCode asks before edits, commands and other tools.')
+    ? 'Cline acts; reads and searches run, PandaCode asks before edits, commands and other tools.'
     : provider === 'kilo'
-    ? t('Kilo runs read-only tools; PandaCode asks before edits, commands and other tools.')
+    ? 'Kilo runs read-only tools; PandaCode asks before edits, commands and other tools.'
     : provider === 'muse'
-    ? t('Muse asks before actions its rules do not allow. Its own reviewer may approve low-risk ones.')
+    ? 'Muse asks before actions its rules do not allow. Its own reviewer may approve low-risk ones.'
     : provider === 'zcode'
-    ? t('ZCode’s build mode: it works in this project and asks you when an action needs permission.')
+    ? 'ZCode’s build mode: it works in this project and asks you when an action needs permission.'
     : provider === 'hermes'
-    ? t('Hermes works in this project. Asks you before terminal commands or dangerous actions.')
-    : t('Use the harness’s normal rules. Ask you when approval is needed.') };
+    ? 'Hermes works in this project. Asks you before terminal commands or dangerous actions.'
+    : provider === 'antigravity'
+    ? 'Antigravity’s Default mode: works in this project and asks you before edits, commands and other actions that need permission.'
+    : 'Use the harness’s normal rules. Ask you when approval is needed.' };
   const full: ApprovalMode = { id: 'full', label: t('Full access'), icon: 'unlock', description: provider === 'antigravity'
-    ? t('Automatically approve permission requests. Server restrictions still apply.')
+    ? 'Antigravity’s Auto mode (when offered) with every permission request approved: runs tools without asking. Server restrictions still apply.'
     : provider === 'codex'
     ? t('Skip approval prompts and sandbox limits. Allow file and network access.')
     : provider === 'grok'
@@ -79,17 +81,19 @@ export function approvalModes(provider: ProviderId, current?: Mode): ApprovalMod
     ...review, full];
   // Cursor's Agent mode applies edits without asking, so Accept edits would change nothing.
   if (provider === 'cursor') return [standard,
-    { id: 'plan', label: 'Plan mode', icon: 'plan', description: 'Cursor’s Plan mode: it reads, searches and writes a plan; edits and commands that change state are declined.' },
+    { id: 'plan', label: t('Plan mode'), icon: 'plan', description: 'Cursor’s Plan mode: it reads, searches and writes a plan; edits and commands that change state are declined.' },
     ...review, full];
   return [standard, provider === 'muse'
     ? { id: 'auto', label: t('Accept edits'), icon: 'edit', description: t('Work freely inside the sandbox. Muse asks only to leave it.') }
     : provider === 'deepseek'
-    ? { id: 'auto', label: 'Accept edits', icon: 'edit', description: 'Like Standard, and edits outside this project are approved too. Other actions still ask.' }
+    ? { id: 'auto', label: t('Accept edits'), icon: 'edit', description: 'Like Standard, and edits outside this project are approved too. Other actions still ask.' }
     : ['claude', 'glm', 'mimo', 'alibaba', 'opencode', 'grok', 'pi', 'omp', 'commandcode', 'cline', 'kilo', 'zcode', 'hermes'].includes(provider)
-    ? { id: 'auto', label: 'Accept edits', icon: 'edit', description: 'Allow file edits automatically. Other actions may still ask you.' }
+    ? { id: 'auto', label: t('Accept edits'), icon: 'edit', description: 'Allow file edits automatically. Other actions may still ask you.' }
     : provider === 'kimi'
     ? { id: 'auto', label: t('Ask when needed'), icon: 'spark', description: t('Allow routine tools automatically. Ask you about sensitive actions.') }
     : provider === 'codex' ? { id: 'auto', label: t('Approve for me'), icon: 'spark', description: t('Let Codex review approval requests. Keep the workspace sandbox.') }
+    : provider === 'antigravity'
+    ? { id: 'auto', label: t('Accept edits'), icon: 'edit', description: 'Antigravity’s Accept edits mode: file edits apply automatically; commands and other actions still ask you.' }
     : { id: 'auto', label: t('Accept edits'), icon: 'edit', description: t('Automatically approve edit requests offered by the server.') },
   ...review,
   provider === 'codex'
@@ -115,3 +119,13 @@ export function approvalModes(provider: ProviderId, current?: Mode): ApprovalMod
     : CLAUDE_FAMILY.includes(provider)
     ? { id: 'plan', label: t('Plan mode'), icon: 'plan', description: t('Explore and plan: reads and web lookups run, even outside this project; edits wait for implementation and commands ask you.') }
     : provider === 'opencode'
+    ? { id: 'plan', label: t('Plan mode'), icon: 'plan', description: t('Explore and plan: reads and web lookups run; reading outside this project asks you; edits and commands are declined.') }
+    : provider === 'antigravity'
+    ? { id: 'plan', label: t('Plan mode'), icon: 'plan', description: 'Antigravity’s Plan mode: investigates and proposes a plan; edits and state-changing commands wait for implementation.' }
+    : { id: 'plan', label: t('Plan mode'), icon: 'plan', description: t('Explore and plan changes before implementation.') }, full];
+}
+
+export function approvalMode(provider: ProviderId, mode: Mode): ApprovalMode {
+  const modes = approvalModes(provider, mode);
+  return modes.find(item => item.id === mode) ?? modes[0];
+}

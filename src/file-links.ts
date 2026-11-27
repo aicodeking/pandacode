@@ -1,5 +1,4 @@
 import { t } from './i18n.ts';
-
 export interface FileLinkContext { projectId: string; sessionId?: string }
 export interface ResolvedFile { input: string; path: string; previewable: boolean }
 interface FileLinkOptions {

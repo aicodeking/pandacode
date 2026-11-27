@@ -23,16 +23,9 @@ function refreshTheme(): void {
   }
 }
 refreshTheme();
-window.addEventListener('storage', event => {
-  if (event.key === 'pandacode.theme' || event.key === 'pandacode.palette') refreshTheme();
-  // A language change rewrites the launcher's own labels: keep unsent text and start over in the new one.
-  else if (event.key === 'pandacode.language') {
-    try { sessionStorage.setItem('pandacode.launcher-draft', prompt.value); } catch { /* best effort */ }
-    location.reload();
-  }
-});
+window.addEventListener('storage', event => { if (event.key === 'pandacode.theme' || event.key === 'pandacode.palette') refreshTheme(); });
 const host = document.querySelector<HTMLDivElement>('#app')!;
-host.innerHTML = `<main class="launcher" aria-label="${t('PandaCode quick launcher')}"><header class="launcher-heading"><span>${icon('bamboo')}PandaCode</span><button type="button" class="launcher-close" aria-label="${t('Close launcher')}"><kbd>esc</kbd></button></header><div class="launcher-home"><form class="launcher-compose"><label class="sr-only" for="launcher-prompt">${t('New task')}</label><textarea id="launcher-prompt" rows="2" maxlength="32768" placeholder="${t('What should we work on?')}" autofocus></textarea><div class="launcher-compose-footer"><label class="launcher-project">${icon('folder')}<select aria-label="${t('Task project')}"></select></label><button type="button" class="launcher-agent" aria-label="${t('Choose harness and model')}" aria-haspopup="dialog" aria-expanded="false"></button><button class="launcher-start" type="submit" aria-label="${t('Start task')}">${icon('arrow')}</button></div></form><p class="launcher-feedback" role="status" hidden></p><section class="launcher-task-area"><div class="launcher-list-heading"><h2>${t('Active agents')} <span class="launcher-count"></span></h2><label class="launcher-search">${icon('search')}<input type="search" aria-label="${t('Search tasks')}" placeholder="${t('Find a task')}" autocomplete="off"></label></div><div class="launcher-tasks" aria-label="${t('Active agents')}"><p class="launcher-empty">${t('Loading tasks…')}</p></div></section><footer class="launcher-footer"><span><kbd>↵</kbd> ${t('start task')}</span><span><kbd>⇧ ↵</kbd> ${t('new line')}</span><span class="launcher-live">${t('Live status')}</span></footer></div><section class="launcher-thread" hidden></section></main>`;
+host.innerHTML = `<main class="launcher" aria-label="${t('PandaCode quick launcher')}"><header class="launcher-heading"><span>${icon('bamboo')}PandaCode</span><button type="button" class="launcher-close" aria-label="${t('Close launcher')}"><kbd>esc</kbd></button></header><div class="launcher-home"><form class="launcher-compose"><label class="sr-only" for="launcher-prompt">${t('New task')}</label><textarea id="launcher-prompt" rows="2" maxlength="32768" placeholder="${t('What should we work on?')}" autofocus></textarea><div class="launcher-compose-footer"><label class="launcher-project">${icon('folder')}<select aria-label="${t('Task project')}"></select></label><button type="button" class="launcher-agent" aria-label="${t('Choose harness and model')}" aria-haspopup="dialog" aria-expanded="false"></button><button class="launcher-start" type="submit" aria-label="${t('Start task')}">${icon('arrow')}</button></div></form><p class="launcher-feedback" role="status" hidden></p><section class="launcher-task-area"><div class="launcher-list-heading"><h2>Active agents <span class="launcher-count"></span></h2><label class="launcher-search">${icon('search')}<input type="search" aria-label="${t('Search tasks')}" placeholder="${t('Find a task')}" autocomplete="off"></label></div><div class="launcher-tasks" aria-label="${t('Active agents')}"><p class="launcher-empty">${t('Loading tasks…')}</p></div></section><footer class="launcher-footer"><span><kbd>↵</kbd> start task</span><span><kbd>⇧ ↵</kbd> new line</span><span class="launcher-live">${t('Live status')}</span></footer></div><section class="launcher-thread" hidden></section></main>`;
 const prompt = host.querySelector<HTMLTextAreaElement>('textarea')!;
 const project = host.querySelector<HTMLSelectElement>('select')!;
 const list = host.querySelector<HTMLDivElement>('.launcher-tasks')!;
@@ -40,11 +33,6 @@ const search = host.querySelector<HTMLInputElement>('input[type=search]')!;
 const feedback = host.querySelector<HTMLElement>('.launcher-feedback')!;
 const start = host.querySelector<HTMLButtonElement>('.launcher-start')!;
 const agentButton = host.querySelector<HTMLButtonElement>('.launcher-agent')!;
-try {
-  const restored = sessionStorage.getItem('pandacode.launcher-draft');
-  if (restored) prompt.value = restored;
-  sessionStorage.removeItem('pandacode.launcher-draft');
-} catch { /* best effort */ }
 let snapshot: OverlaySnapshot | null = null, visible = true, busy = false, refreshing = false;
 let timer: number | undefined, lastProject = '', lastProjectMarkup = '', lastAgentMarkup = '';
 const rows = new Map<string, HTMLButtonElement>();
@@ -89,7 +77,7 @@ async function chooseModel(): Promise<void> {
       },
     });
   } catch (error) { if (request === pickerRequest) showFeedback(errorText(error),true); }
-  finally { if (request === pickerRequest) { pickerLoading = false; if (feedback.textContent === 'Loading harnesses…') showFeedback(''); render(); } }
+  finally { if (request === pickerRequest) { pickerLoading = false; if (feedback.textContent === t('Loading harnesses…')) showFeedback(''); render(); } }
 }
 
 let threadView: OverlayThreadView | undefined, threadLoading: Promise<OverlayThreadView> | undefined;
@@ -130,7 +118,7 @@ function filterDeletedTasks(value: OverlaySnapshot): void {
   value.activeCount = value.tasks.filter(task => ['running', 'waiting', 'coordinating'].includes(task.status)).length;
 }
 const label = (status: string): string => ({running:t('Working'),coordinating:t('Coordinating'),waiting:t('Needs attention'),interrupted:t('Paused'),error:t('Failed'),idle:t('Ready'),stopped:t('Stopped'),completed:t('Completed')}[status] || status);
-function showFeedback(text: string, error = false): void { const message = tBackend(text); feedback.hidden = !message; feedback.textContent = message; feedback.classList.toggle('is-error', error); }
+function showFeedback(text: string, error = false): void { text = tBackend(text); feedback.hidden = !text; feedback.textContent = text; feedback.classList.toggle('is-error', error); }
 function render(): void {
   if (!snapshot) return;
   const previousProject = project.value;
@@ -146,7 +134,7 @@ function render(): void {
   const modelName = modelNames.get(`${snapshot.context.provider}:${snapshot.context.model}`) || fallbackModel(snapshot.context.provider as ProviderId,snapshot.context.model).name;
   const teamCount = snapshot.teamWorkerCount ?? 0;
   const teamLabel = teamCount > 0 ? `+${teamCount} ${teamCount === 1 ? t('model') : t('models')}` : '';
-  const agentMarkup = `${providerLogo(snapshot.context.provider as ProviderId)}<span class="launcher-model-name">${escape(modelName === 'Default' ? `${name} · ${t('Default')}` : modelName)}</span>${teamLabel ? `<span class="launcher-team-models">${teamLabel}</span>` : ''}${icon('down')}`;
+  const agentMarkup = `${providerLogo(snapshot.context.provider as ProviderId)}<span class="launcher-model-name">${escape(modelName === 'Default' ? `${name} · Default` : modelName)}</span>${teamLabel ? `<span class="launcher-team-models">${teamLabel}</span>` : ''}${icon('down')}`;
   agentButton.title = `${name} · ${modelName}${teamLabel ? ` ${teamLabel}` : ''}`;
   if (agentMarkup !== lastAgentMarkup) { host.querySelector('.launcher-agent')!.innerHTML = agentMarkup; lastAgentMarkup = agentMarkup; }
   host.querySelector('.launcher-count')!.textContent = snapshot.activeCount ? t`${snapshot.activeCount} active` : '';

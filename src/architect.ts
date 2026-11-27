@@ -1,5 +1,5 @@
-import './architect.css';
 import { t } from './i18n.ts';
+import './architect.css';
 import { renderTurnChanges, captureChangeCards, restoreChangeCards } from './turn-changes';
 import { call } from './bridge';
 import { escape, icon, markdown, morph } from './dom';
@@ -49,7 +49,7 @@ export function openArchitectSetup(anchor: HTMLElement, load: () => Promise<Setu
   panel.setAttribute('role', 'dialog');
   panel.setAttribute('aria-label', t('Architect & workers'));
   panel.tabIndex = -1;
-  panel.innerHTML = `<header class="architect-setup-heading"><h2>Architect & workers</h2><button type="button" class="icon-button" aria-label=t("Close dialog")>${icon('close')}</button></header><div class="architect-setup-scroll"><div id="architect-setup-host"><p class="architect-loading" role="status">Loading team setup…</p></div></div>`;
+  panel.innerHTML = `<header class="architect-setup-heading"><h2>${t('Architect & workers')}</h2><button type="button" class="icon-button" aria-label="${t('Close dialog')}">${icon('close')}</button></header><div class="architect-setup-scroll"><div id="architect-setup-host"><p class="architect-loading" role="status">${t('Loading team setup…')}</p></div></div>`;
   const host = panel.querySelector<HTMLElement>('#architect-setup-host')!;
   let closed = false, frame = 0, setup: SetupController | undefined;
   const expanded = anchor.getAttribute('aria-expanded'), controls = anchor.getAttribute('aria-controls');
@@ -204,7 +204,7 @@ export function mountArchitectSetup(host: HTMLElement, options: SetupOptions): S
   void Promise.allSettled([...new Set(providers.filter(p => p.installed).map(p => p.id))].map(options.loadModels)).then(refreshModelLabels);
   host.querySelector<HTMLButtonElement>('.architect-model')!.addEventListener('click', event => choose(event.currentTarget as HTMLButtonElement, architect, Boolean(team) || !task.resumeId));
   host.querySelector('.architect-add')!.addEventListener('click', () => {
-    picker?.(); config.workers.push({ ...config.workers[config.workers.length - 1], id: crypto.randomUUID(), name: `Worker ${config.workers.length + 1}` }); renderProfiles(); savedProfiles.changed();
+    picker?.(); config.workers.push({ ...config.workers[config.workers.length - 1], id: crypto.randomUUID(), name: t`Worker ${config.workers.length + 1}` }); renderProfiles(); savedProfiles.changed();
     profiles.lastElementChild?.querySelector<HTMLInputElement>('input')?.select();
   });
   const parallel = host.querySelector<HTMLInputElement>('#team-parallel')!;
@@ -358,7 +358,7 @@ export class ArchitectView {
       else this.live.delete(event.sessionId);
     }
     // Stale unknown terminal events must not accumulate stream objects forever.
-    while (this.live.size > 8) { const entry = [...this.live].find(([, value]) => value.ended && !value.inputs.size && !value.approvals.size); if (!entry) break; this.live.delete(entry[0]); }
+    while (this.live.size > 8) { const entry = [...this.live].find(([t, value]) => value.ended && !value.inputs.size && !value.approvals.size); if (!entry) break; this.live.delete(entry[0]); }
     if (['approval', 'approval_cancelled', 'input_request', 'input_cancelled', 'done'].includes(event.kind)) this.paint();
     if (event.sessionId === this.worker()?.sessionId) this.schedule();
   }
@@ -495,7 +495,7 @@ export class ArchitectView {
     const done = team.workers.filter(w => w.status === 'completed' || w.abandoned).length;
     const asking = team.workers.some(w => !w.abandoned && this.needsInput(w.sessionId));
     const progress = asking ? 'Needs you' : team.workers.length ? `${done}/${team.workers.length}` : 'Ready';
-    const trigger = `${icon('team')}<span>Architect & workers</span><small>${progress}</small>${icon('chevron')}`;
+    const trigger = `${icon('team')}<span>${t('Architect & workers')}</span><small>${progress}</small>${icon('chevron')}`;
     if (this.trigger.dataset.painted !== trigger) { this.trigger.innerHTML = trigger; this.trigger.dataset.painted = trigger; }
     this.trigger.dataset.status = asking ? 'waiting' : team.status;
     if (!this.panel) return;
@@ -564,7 +564,7 @@ export class ArchitectView {
       if (queue.textContent !== (queueReason ?? '')) { queue.textContent = queueReason ?? ''; queue.dataset.tip = queueReason ?? ''; }
       if (error.textContent !== (worker.error ?? '')) { error.textContent = worker.error ?? ''; error.title = worker.error ?? ''; }
       panel.querySelector<HTMLElement>('.architect-assignment p')!.textContent = worker.assignment;
-      panel.querySelector<HTMLElement>('.architect-assignment small')!.textContent = worker.readOnly ? t('Read only · no writes') : worker.files.length ? `Write scope: ${worker.files.join(', ')}` : t('Write scope: shared checkout');
+      panel.querySelector<HTMLElement>('.architect-assignment small')!.textContent = worker.readOnly ? t('Read only · no writes') : worker.files.length ? t`Write scope: ${worker.files.join(', ')}` : t('Write scope: shared checkout');
       const checkpoint = panel.querySelector<HTMLDetailsElement>('.architect-worker-checkpoint')!;
       checkpoint.hidden = !worker.checkpoint;
       if (checkpoint.dataset.workerId !== worker.id) { checkpoint.open = false; checkpoint.dataset.workerId = worker.id; }

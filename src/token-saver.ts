@@ -1,3 +1,4 @@
+import { t } from './i18n.ts';
 /* Token saver: per-thread guidance that makes agents spend fewer tokens. Packs are
  * short, benchmarked or well-understood instructions sent as a folded context block
  * with a message — only when they change, and as an occasional reminder — so every
@@ -6,7 +7,6 @@
  * Caveman Full is caveman-micro (MIT, kuba-guzik/caveman-micro), the 85-token distillation
  * of Caveman (Apache-2.0, JuliusBrussee/caveman); Lite and Ultra and the exceptions follow
  * Caveman's own rules. Savings figures are the projects' published benchmarks or estimates. */
-import { t } from './i18n.ts';
 
 export type PackId = 'caveman' | 'lean-code' | 'quiet-tools' | 'rtk';
 export type Level = 'lite' | 'full' | 'ultra';

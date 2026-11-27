@@ -2,7 +2,6 @@
  * the lazy bodies of saved tools, Find's in-memory counts for turns not drawn yet, and a thread's details landing after
  * its rows. Each piece takes what it reads from main.ts as callbacks, so it holds no state of the app's own. */
 import { fileIconsReady, markdownCache } from './dom';
-import { currentLocale } from './i18n.ts';
 import { drawnText, exactCount, replyCount, type ReplyText } from './thread-find';
 import { decodeToolActivity, renderToolActivity } from './tool-activity';
 import { parseRow, untouchedFields, type DrawnRow } from './transcript-rows';
@@ -37,7 +36,7 @@ export function markupShared() {
     bump(): void { epoch++; },
     inputs(): unknown[] {
       clock ??= new Intl.DateTimeFormat([], { hour: 'numeric' }).resolvedOptions();
-      return [epoch, currentLocale(), clock.locale, clock.hourCycle, iconsLoaded, document.documentElement.dataset.theme === 'light'];
+      return [epoch, clock.locale, clock.hourCycle, iconsLoaded, document.documentElement.dataset.theme === 'light'];
     },
   };
 }

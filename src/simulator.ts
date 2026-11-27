@@ -1,8 +1,8 @@
+import { t } from './i18n.ts';
 import './simulator.css';
 import { icon } from './dom';
 import { errorText } from './error-text';
 import { androidOnly, isWindows } from './platform';
-import { t } from './i18n.ts';
 import type { Device3D, DeviceButton, DuoPose, DeviceShape, ScreenGesture } from './simulator-3d';
 import { chosenFinish, modelSpec, rememberFinish } from './simulator-models';
 
@@ -52,7 +52,7 @@ export function mountSimulator(root: HTMLElement, host: SimulatorHost) {
   root.innerHTML = `<div class="sim-stage-wrap"><button type="button" class="sim-reset" data-sim="reset" aria-label="${t('Face forward')}" title="${t('Face forward')}">${icon('reset')}</button><div class="sim-stage" tabindex="0" role="application" aria-label="${t('iOS Simulator. Click the screen to tap, drag on it to swipe, type to enter text. Drag around the device to turn it.')}" aria-describedby="sim-hint" title="${t('Drag to turn · Scroll to zoom · Click the screen to tap · Double-click to face forward')}"></div></div>
     <p class="sr-only" id="sim-hint">${t('Drag around the device to turn it, scroll to zoom, click the screen to tap, double-click to face forward.')}</p>
     <p class="sim-status" role="status" hidden></p>
-    <div class="sim-axe" role="note" hidden><span>${t('Touch and typing need')} <strong>AXe</strong>.</span><code></code><button type="button" class="secondary-button" data-sim="copy-axe">${icon('copy')}${t('Copy')}</button></div>
+    <div class="sim-axe" role="note" hidden><span>Touch and typing need <strong>AXe</strong>.</span><code></code><button type="button" class="secondary-button" data-sim="copy-axe">${icon('copy')}Copy</button></div>
     <div class="sim-dock">
       <button type="button" class="sim-device" data-sim="device" aria-haspopup="menu" aria-label="${t('Choose simulator')}">${icon('phone')}<span class="sim-device-name">${t('Simulator')}</span><small class="sim-device-runtime"></small>${icon('down')}</button>
       <div class="sim-actions" role="toolbar" aria-label="${t('Simulator controls')}">

@@ -1,6 +1,6 @@
+import { t } from './i18n.ts';
 /* One list of machines for the VM panel: local VMs from Tart and cloud sandboxes from
  * connected providers, with what each can do. Pure, so the panel only renders. */
-import { t } from './i18n.ts';
 import type { Vm, VmStatus } from './vm-panel';
 
 export type CloudMachine = { id: string; provider: string; name: string; state: string; os: string; desktop: boolean; detail: string };

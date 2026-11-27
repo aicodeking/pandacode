@@ -1,6 +1,6 @@
+import { t } from './i18n.ts';
 import './sidebar-bots.css';
 import type { Bot } from './bots';
-import { t } from './i18n.ts';
 import { escape, icon } from './dom';
 import { resetLabel } from './usage-limit';
 import { botAvatarHtml } from './bot-avatars';
@@ -104,11 +104,11 @@ export function messageTime(at: number, now = Date.now()): string {
 
 export function botsBarHtml(view: SidebarView, count: number, unread: number): string {
   const open = view === 'bots';
-  return `<button type="button" class="sidebar-bots-bar" data-action="toggle-bots-view" aria-pressed="${open}" title="${open ? t('Back to tasks') : t('Show bots')}">${icon('bot')}<span>${t('Bots')}</span>${unread ? `<span class="sidebar-bots-unread" aria-label="${t`${unread} unread`}"></span>` : ''}<small>${count || ''}</small>${icon('chevron')}</button>`;
+  return `<button type="button" class="sidebar-bots-bar" data-action="toggle-bots-view" aria-pressed="${open}" title="${open ? t('Back to tasks') : t('Show bots')}">${icon('bot')}<span>${t('Bots')}</span>${unread ? `<span class="sidebar-bots-unread" aria-label="${unread} unread"></span>` : ''}<small>${count || ''}</small>${icon('chevron')}</button>`;
 }
 
 export function botsPanelHeadHtml(): string {
-  return `<div class="bots-panel-head"><label class="bots-panel-search">${icon('search')}<input type="search" data-bots-search placeholder="t('Search')" aria-label="t('Search bots and channels')" autocomplete="off" spellcheck="false"></label><button type="button" class="bots-mark-read" data-action="mark-bots-read" hidden>t('Mark all read')</button><button type="button" class="icon-button" data-action="new-bot-menu" aria-label="t('Add bot or channel')" title="t('New bot or channel')" aria-haspopup="menu" aria-expanded="false" aria-controls="bot-create-menu">${icon('plus')}</button><div id="bot-create-menu" class="bot-create-menu" role="menu" aria-label="t('Create')" hidden><button type="button" role="menuitem" data-action="new-bot">${icon('bot')}t('New bot')</button><button type="button" role="menuitem" data-action="new-channel">${icon('chat')}t('New channel')</button></div></div><div class="bots-panel-list"></div><span class="sr-only" id="bots-reorder-live" aria-live="polite"></span>`;
+  return `<div class="bots-panel-head"><label class="bots-panel-search">${icon('search')}<input type="search" data-bots-search placeholder="${t('Search')}" aria-label="${t('Search bots and channels')}" autocomplete="off" spellcheck="false"></label><button type="button" class="bots-mark-read" data-action="mark-bots-read" hidden>${t('Mark all read')}</button><button type="button" class="icon-button" data-action="new-bot-menu" aria-label="${t('Add bot or channel')}" title="${t('New bot or channel')}" aria-haspopup="menu" aria-expanded="false" aria-controls="bot-create-menu">${icon('plus')}</button><div id="bot-create-menu" class="bot-create-menu" role="menu" aria-label="${t('Create')}" hidden><button type="button" role="menuitem" data-action="new-bot">${icon('bot')}${t('New bot')}</button><button type="button" role="menuitem" data-action="new-channel">${icon('chat')}${t('New channel')}</button></div></div><div class="bots-panel-list"></div><span class="sr-only" id="bots-reorder-live" aria-live="polite"></span>`;
 }
 
 const CLOCK = '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></svg>';
@@ -151,11 +151,11 @@ function rowHtml(bot: Bot, context: BotsListContext, pinned: boolean, group: 'ne
   const role = bot.role && bot.role !== preview && !meta && [...bot.role].length <= ROLE_TAG ? `<span class="bot-role-tag">${escape(bot.role)}</span>` : '';
   const state = [bot.paused ? 'paused' : '', status ? statusLabel(status) : ''].filter(Boolean).join(', ');
   return `<div class="bot-row bot-card${selected ? ' selected' : ''}${bot.paused ? ' paused' : ''}${pinned ? ' pinned' : ''}" role="listitem" draggable="${group === 'pinned' || group === 'bots'}" data-bot-group="${group}" data-bot-row="${escape(bot.id)}">
-      <button type="button" class="bot-row-open" data-action="open-bot" data-bot="${escape(bot.id)}" aria-label="${t`Chat with ${escape(bot.name)}${state ? ` (${escape(state)})` : ''}`}" aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown" title="${t`Chat with ${escape(bot.name)}`}; Alt+Arrow keys reorder within this group" ${selected ? 'aria-current="page"' : ''}>
+      <button type="button" class="bot-row-open" data-action="open-bot" data-bot="${escape(bot.id)}" aria-label="Chat with ${escape(bot.name)}${state ? ` (${escape(state)})` : ''}" aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown" title="Chat with ${escape(bot.name)}; Alt+Arrow keys reorder within this group" ${selected ? 'aria-current="page"' : ''}>
         <span class="bot-card-avatar">${botAvatarHtml(bot.avatar, bot.name, 'bot-card-face', bot.color)}${badgeHtml(status)}</span>
         <span class="bot-card-text"><span class="bot-card-head"><span class="bot-row-name">${escape(bot.name)}</span>${role}${meta}</span><span class="bot-card-preview">${escape(preview)}</span></span>
       </button>
-      <button type="button" class="icon-button bot-row-settings" data-action="bot-settings" data-bot="${escape(bot.id)}" aria-label="${t`${escape(bot.name)} settings`}" title="${t('Settings, memory, schedules and channels')}">${icon('settings')}</button>
+      <button type="button" class="icon-button bot-row-settings" data-action="bot-settings" data-bot="${escape(bot.id)}" aria-label="${escape(bot.name)} settings" title="${t('Settings, memory, schedules and channels')}">${icon('settings')}</button>
     </div>`;
 }
 

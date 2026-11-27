@@ -1,6 +1,6 @@
+import { t } from './i18n.ts';
 import { call } from './bridge';
 import { errorText } from './error-text';
-import { t } from './i18n.ts';
 interface Readiness { installed: boolean; acpReady: boolean; sessionReady: boolean; state: string; message: string; }
 /** Explicit, metadata-only connection check. Installation alone cannot establish sign-in. */
 export function mountProviderReadiness(host: HTMLElement): () => void {

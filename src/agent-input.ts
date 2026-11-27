@@ -1,6 +1,6 @@
+import { t } from './i18n.ts';
 import './agent-input.css';
 import { call } from './bridge';
-import { t } from './i18n.ts';
 import { richMarkdown, type RichContext } from './rich-markdown';
 import type { AgentInputResponse, AgentQuestion } from './types';
 

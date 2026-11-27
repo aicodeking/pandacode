@@ -1,6 +1,6 @@
+import { t } from './i18n.ts';
 import type { Project } from './types';
 import { escape, icon, isImeKey } from './dom';
-import { t } from './i18n.ts';
 import { showPopover, hidePopover } from './popover-motion';
 
 type ProjectPickerOptions = {
@@ -22,7 +22,7 @@ export function openProjectPicker(options: ProjectPickerOptions): () => void {
   panel.className = 'project-menu floating-menu';
   panel.setAttribute('role', 'dialog');
   panel.setAttribute('aria-label', t('Choose project'));
-  panel.innerHTML = `<div class="project-menu-search">${icon('search')}<input type="search" aria-label="${t('Search projects')}" placeholder="${t('Search projects…')}" autocomplete="off" spellcheck="false" maxlength="200"></div><div class="project-menu-list" role="listbox" aria-label="${t('Projects')}"></div><p class="project-menu-count" role="status" hidden></p><p class="project-menu-empty" role="status" hidden></p><p class="project-menu-error" role="alert" hidden></p><p class="project-menu-pending" role="status" hidden>${t('Opening…')}</p><div class="project-menu-footer"><button type="button" class="project-menu-open">${icon('plus')}${t('Open project…')}</button></div>`;
+  panel.innerHTML = `<div class="project-menu-search">${icon('search')}<input type="search" aria-label="${t('Search projects')}" placeholder="${t('Search projects…')}" autocomplete="off" spellcheck="false" maxlength="200"></div><div class="project-menu-list" role="listbox" aria-label="${t('Projects')}"></div><p class="project-menu-count" role="status" hidden></p><p class="project-menu-empty" role="status" hidden></p><p class="project-menu-error" role="alert" hidden></p><p class="project-menu-pending" role="status" hidden>${t('Opening…')}</p><div class="project-menu-footer"><button type="button" class="project-menu-open">${icon('plus')}Open project…</button></div>`;
   const search = panel.querySelector<HTMLInputElement>('input')!;
   const list = panel.querySelector<HTMLElement>('.project-menu-list')!;
   const count = panel.querySelector<HTMLElement>('.project-menu-count')!;

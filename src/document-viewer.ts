@@ -1,8 +1,8 @@
+import { t } from './i18n.ts';
 import { escape, markdown } from './dom';
 import { ADMONITIONS } from './admonitions';
 import { captureFileLinkContext, decorateFileLinks, workspaceImagePath } from './file-links';
 import { trackSegment } from './motion';
-import { t } from './i18n.ts';
 
 export type DocumentView = 'rendered' | 'raw';
 /** Reads a workspace image (path from the workspace root) as a data: URL. */
@@ -34,7 +34,7 @@ export function setDocumentView(path: string, view: DocumentView): void {
 function stats(content: string): string {
   const words = content.match(/\S+/g)?.length ?? 0;
   const minutes = Math.max(1, Math.round(words / WORDS_PER_MINUTE));
-  return `${words.toLocaleString()} ${words === 1 ? t('word') : t('words')} · ${t`${minutes} min read`}`;
+  return `${words.toLocaleString()} word${words === 1 ? '' : 's'} · ${minutes} min read`;
 }
 
 function codeLines(content: string): string {

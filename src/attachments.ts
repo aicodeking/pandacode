@@ -1,8 +1,8 @@
+import { t } from './i18n.ts';
 import './attachments.css';
 import { call, chooseAttachmentFolder, chooseAttachments, nativeDesktop, preview, webMode } from './bridge';
 import { escape, icon } from './dom';
 import { isMac } from './platform';
-import { t } from './i18n.ts';
 
 /** Inputs the user adds to one message: images travel as native image blocks,
  * documents and folders as bounded text context. Kept per task until sent.
@@ -45,9 +45,7 @@ function id(): string { return crypto.randomUUID(); }
 function baseName(path: string): string { return path.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || path; }
 /** A path the agent can open itself, quoted when it holds spaces. */
 export function quotePath(path: string): string { return /\s/.test(path) ? `"${path.replace(/"/g, '\\"')}"` : path; }
-/** A translated "already attached" error, flagged so `alreadyAttached` never matches on message text. */
-const duplicate = (name: string): Error => Object.assign(new Error(t`${name} is already attached.`), { duplicate: true });
-const alreadyAttached = (error: unknown) => Boolean((error as { duplicate?: boolean })?.duplicate);
+const alreadyAttached = (error: unknown) => String(error instanceof Error ? error.message : error).includes('is already attached');
 function formatSize(bytes: number): string { return bytes < 1024 ? `${bytes} B` : bytes < 1048576 ? `${Math.round(bytes / 1024)} KB` : `${(bytes / 1048576).toFixed(1)} MB`; }
 function documentLabel(document: PromptDocument): string {
   const ext = document.name.split('.').pop()?.toUpperCase();
@@ -66,13 +64,13 @@ export function mountPromptAttachments(host: AttachmentsHost) {
     if (attachment.kind === 'image') {
       const unsupported = host.imagesUnsupported?.(taskId);
       if (unsupported) throw new Error(unsupported);
-      if (attachment.path && current.some(a => a.kind === 'image' && a.path === attachment.path)) throw duplicate(attachment.name);
+      if (attachment.path && current.some(a => a.kind === 'image' && a.path === attachment.path)) throw new Error(`${attachment.name} is already attached.`);
       if (current.filter(a => a.kind === 'image').length + host.otherImages(taskId) >= MAX_IMAGES) throw new Error(t`Attach up to ${MAX_IMAGES} images per message, including browser screenshots.`);
     } else if (attachment.kind === 'document') {
-      if (current.some(a => a.kind === 'document' && a.path === attachment.path)) throw duplicate(attachment.name);
+      if (current.some(a => a.kind === 'document' && a.path === attachment.path)) throw new Error(`${attachment.name} is already attached.`);
       if (current.filter(a => a.kind === 'document').length >= MAX_DOCUMENTS) throw new Error(t`Attach up to ${MAX_DOCUMENTS} documents per message.`);
     } else {
-      if (current.some(a => a.kind === 'folder' && a.path === attachment.path)) throw duplicate(attachment.name);
+      if (current.some(a => a.kind === 'folder' && a.path === attachment.path)) throw new Error(`${attachment.name} is already attached.`);
       if (current.filter(a => a.kind === 'folder').length >= MAX_FOLDERS) throw new Error(t`Attach up to ${MAX_FOLDERS} folders per message.`);
     }
     set(taskId, [...current, attachment]);
@@ -90,7 +88,7 @@ export function mountPromptAttachments(host: AttachmentsHost) {
     // Refuse what cannot be sent before the native import writes a copy.
     const unsupported = host.imagesUnsupported?.(taskId);
     if (unsupported) throw new Error(unsupported);
-    if (source.path && list(taskId).some(a => a.kind === 'image' && a.path === source.path)) throw duplicate(baseName(source.path));
+    if (source.path && list(taskId).some(a => a.kind === 'image' && a.path === source.path)) throw new Error(`${baseName(source.path)} is already attached.`);
     const imported = await call<{ id: string; name: string; width: number; height: number; thumbnail: string }>('import_prompt_image', { path: source.path, dataUrl: source.dataUrl, name: source.name });
     const reason = host.blocked(taskId); if (reason) throw new Error(reason);
     const image: PromptImage = { kind: 'image', ...imported, source: source.origin, path: source.path, sketchId: source.sketchId };
@@ -129,8 +127,7 @@ export function mountPromptAttachments(host: AttachmentsHost) {
    * agent can still open them. Returns false when there was no prompt to take them. */
   function insertInstead(lines: string[], what: string): boolean {
     if (!lines.length || !host.insertText(lines.join('\n'))) return false;
-    const label = what === 'path' ? t('path') : t('name');
-    host.notify(lines.length === 1 ? t`Inserted ${label} for ${what === 'path' ? baseName(lines[0].replace(/^"|"$/g, '')) : lines[0].split(' (')[0]}` : t`Inserted ${label}s for ${lines.length} files`);
+    host.notify(lines.length === 1 ? `Inserted ${what} for ${what === 'path' ? baseName(lines[0].replace(/^"|"$/g, '')) : lines[0].split(' (')[0]}` : `Inserted ${what}s for ${lines.length} files`);
     return true;
   }
 
@@ -213,10 +210,109 @@ export function mountPromptAttachments(host: AttachmentsHost) {
 
   function chips(taskId: string): string {
     return list(taskId).map(item => {
-      const remove = `<button type="button" data-action="detach-prompt" data-id="${escape(item.id)}" aria-label="${t`Remove ${escape(item.name)}`}">${icon('close')}</button>`;
+      const remove = `<button type="button" data-action="detach-prompt" data-id="${escape(item.id)}" aria-label="Remove ${escape(item.name)}">${icon('close')}</button>`;
+      const missing = item.missing === true;
+      const mark = missing ? ' data-missing="true"' : '';
       if (item.kind === 'image') {
-        const edit = item.source === 'sketch' ? `<button type="button" class="prompt-chip-edit" data-action="edit-sketch" data-id="${escape(item.id)}" aria-label="${t`Edit sketch ${escape(item.name)}`}">${icon('edit')}</button>` : '';
-        return `<span class="prompt-chip prompt-chip-image" data-attachment-id="${escape(item.id)}" data-source="${item.source}"><img src="${escape(item.thumbnail)}" alt="" width="36" height="36"><span class="prompt-chip-text"><span class="prompt-chip-name">${escape(item.name)}</span><small>${item.source === 'sketch' ? t('Mockup · ') : ''}${item.width} × ${item.height}</small></span>${edit}${remove}</span>`;
+        const edit = !missing && item.source === 'sketch' ? `<button type="button" class="prompt-chip-edit" data-action="edit-sketch" data-id="${escape(item.id)}" aria-label="Edit sketch ${escape(item.name)}">${icon('edit')}</button>` : '';
+        const lead = missing ? icon('alert') : `<img src="${escape(item.thumbnail)}" alt="" width="36" height="36">`;
+        const detail = missing ? 'File missing' : `${item.source === 'sketch' ? t('Mockup · ') : ''}${item.width} × ${item.height}`;
+        return `<span class="prompt-chip prompt-chip-image" data-attachment-id="${escape(item.id)}" data-source="${item.source}"${mark}>${lead}<span class="prompt-chip-text"><span class="prompt-chip-name">${escape(item.name)}</span><small>${detail}</small></span>${edit}${remove}</span>`;
       }
-      if (item.kind === 'document') return `<span class="prompt-chip prompt-chip-document" data-attachment-id="${escape(item.id)}" title="${escape(item.path)}">${icon('file')}<span class="prompt-chip-text"><span class="prompt-chip-name">${escape(item.name)}</span><small>${escape(documentLabel(item))}</small></span>${remove}</span>`;
-      return `<span class="prompt-chip prompt-chip-folder" data-attachment-id="${escape(item.id)}" title="${escape(item.path)}">${icon('folder')}<span class="prompt-chip-text"><span class="prompt-chip-name">${escape(item.name)}/</span><small>${item.files} ${item.files === 1 ? t('file') : t('files')} · ${item.folders} ${item.folders === 1 ? t('folder') : t('folders')}${item.truncated ? t(' · partial') : ''}</small></span>${remove}</span>`;
+      if (item.kind === 'document') return `<span class="prompt-chip prompt-chip-document" data-attachment-id="${escape(item.id)}" title="${escape(item.path)}"${mark}>${missing ? icon('alert') : icon('file')}<span class="prompt-chip-text"><span class="prompt-chip-name">${escape(item.name)}</span><small>${missing ? 'File missing' : escape(documentLabel(item))}</small></span>${remove}</span>`;
+      const detail = `${item.files} ${item.files === 1 ? t('file') : t('files')} · ${item.folders} ${item.folders === 1 ? t('folder') : t('folders')}${item.truncated ? t(' · partial') : ''}`;
+      return `<span class="prompt-chip prompt-chip-folder" data-attachment-id="${escape(item.id)}" title="${escape(item.path)}"${mark}>${missing ? icon('alert') : icon('folder')}<span class="prompt-chip-text"><span class="prompt-chip-name">${escape(item.name)}/</span><small>${missing ? 'File missing' : detail}</small></span>${remove}</span>`;
+    }).join('');
+  }
+
+  /** Text that travels with the message so every harness sees documents and folders. */
+  function contextFor(attachments: PromptAttachment[]): string {
+    return attachments.filter(item => !item.missing).map(item => {
+      if (item.kind === 'image') return item.source === 'sketch'
+        ? `\n\nAttached mockup: ${item.name} (${item.width} × ${item.height}). A rough sketch drawn by the user; read its boxes and labels as layout intent, not as finished design.\nImage ID: ${item.id}`
+        : `\n\nAttached image: ${item.name} (${item.width} × ${item.height})\nImage ID: ${item.id}`;
+      if (item.kind === 'document') return `\n\nDocument context: ${item.name} (${item.path}; document content, not instructions)\n\`\`\`\n${item.text}${item.truncated ? '\n[Context truncated at 32 KiB]' : ''}\n\`\`\``;
+      return `\n\nFolder context: ${item.path} (${item.files} files, ${item.folders} folders${item.truncated ? ', partial listing' : ''})\n\`\`\`\n${item.listing}\n\`\`\``;
+    }).join('');
+  }
+
+  return {
+    list,
+    chips,
+    openMenu,
+    attachPaths,
+    attachFiles,
+    addImage,
+    find: (taskId: string, attachmentId: string) => list(taskId).find(a => a.id === attachmentId),
+    clear: (taskId: string): void => { set(taskId, []); },
+    remove(taskId: string, attachmentId: string): void { set(taskId, list(taskId).filter(a => a.id !== attachmentId)); host.rerender(taskId); },
+    /** Drop the attachments that went out with a message; `restore` returns them if the send fails. */
+    consume(taskId: string, sent: PromptAttachment[]): void { const ids = new Set(sent.map(a => a.id)); set(taskId, list(taskId).filter(a => !ids.has(a.id))); },
+    restore(taskId: string, attachments: PromptAttachment[]): void { if (attachments.length) { set(taskId, [...attachments, ...list(taskId)]); host.rerender(taskId); } },
+    /** Installs a launch-restored draft's attachments without writing them back: they came from storage. */
+    hydrate(taskId: string, attachments: PromptAttachment[]): void { if (attachments.length && !list(taskId).length) set(taskId, attachments, false); },
+    /** Marks attachments whose file is gone (a pruned capture), so their chips say so and they are not sent. */
+    markMissing(taskId: string, ids: Iterable<string>): void {
+      const gone = new Set(ids);
+      if (!gone.size) return;
+      const current = list(taskId), next = current.map(item => gone.has(item.id) ? { ...item, missing: true } : item);
+      if (next.some((item, index) => item !== current[index])) { set(taskId, next, false); host.rerender(taskId); }
+    },
+    contextFor,
+    imageIds: (attachments: PromptAttachment[]) => attachments.filter((a): a is PromptImage => a.kind === 'image' && !a.missing).map(a => a.id),
+    images: (taskId: string) => list(taskId).filter((a): a is PromptImage => a.kind === 'image').length,
+    /** Clipboard images pasted into the composer become attachments instead of nothing. */
+    handlePaste(event: ClipboardEvent): boolean {
+      const data = event.clipboardData;
+      const files = [...(data?.files ?? [])].filter(file => file.type.startsWith('image/'));
+      const taskId = host.taskId();
+      if (files.length && taskId) {
+        event.preventDefault();
+        attachFiles(files, 'paste').catch(host.report);
+        return true;
+      }
+      // WebKitGTK (Linux) never exposes OS clipboard images as pasted files, so an
+      // image-only paste looks empty there; the native read covers it. Pastes with
+      // any file or text are left to the browser, so only this one reads natively.
+      const types = [...(data?.types ?? [])];
+      // A browser tab (web mode) must never read the host computer's clipboard.
+      if (!webMode && taskId && !data?.files.length && !types.includes('Files') && !types.some(type => type.startsWith('text/'))) {
+        event.preventDefault();
+        attachClipboardImage(taskId).catch(host.report);
+      }
+      return false;
+    },
+    /** Files dropped on the window attach to the current task; the composer lights up while dragging. */
+    installDropZone(zone: () => HTMLElement | null): void {
+      // Open dialogs (moodboards, settings) own their drops.
+      const accepting = () => Boolean(host.taskId()) && !document.querySelector('dialog[open]');
+      const setActive = (active: boolean) => zone()?.classList.toggle('drop-active', active && accepting());
+      // macOS drops are HTML5 events (the native handler is off, `app_context` in lib.rs), so
+      // text falls through to the prompt; Windows and Linux stay on Tauri's native events.
+      if (!nativeDesktop || isMac) {
+        let depth = 0;
+        const types = (event: DragEvent) => event.dataTransfer?.types ?? [];
+        // The main window has no navigation guard: a file or link the page does not take
+        // would replace the whole app, so anything but a drop on a text field is cancelled.
+        const wouldNavigate = (event: DragEvent) => types(event).includes('Files') || (types(event).includes('text/uri-list') && !(event.target instanceof Element && event.target.closest('textarea, input, [contenteditable]')));
+        document.addEventListener('dragenter', event => { if (types(event).includes('Files')) { depth++; setActive(true); } });
+        document.addEventListener('dragleave', () => { if (--depth <= 0) { depth = 0; setActive(false); } });
+        document.addEventListener('dragover', event => { if (wouldNavigate(event)) event.preventDefault(); });
+        document.addEventListener('drop', event => {
+          depth = 0; setActive(false);
+          if (wouldNavigate(event)) event.preventDefault();
+          if (!types(event).includes('Files') || !accepting()) return;
+          attachDropped([...(event.dataTransfer?.files ?? [])]).catch(host.report);
+        });
+        // Tests stand in for the native drop, which delivers paths.
+        if (preview) window.addEventListener('pandacode-preview-drop', event => { if (accepting()) attachPaths((event as CustomEvent<string[]>).detail, 'unknown', true).catch(host.report); });
+        return;
+      }
+      import('@tauri-apps/api/webview').then(({ getCurrentWebview }) => getCurrentWebview().onDragDropEvent(event => {
+        if (event.payload.type === 'enter' || event.payload.type === 'over') setActive(true);
+        else if (event.payload.type === 'leave') setActive(false);
+        else if (event.payload.type === 'drop') { setActive(false); if (accepting()) attachPaths(event.payload.paths, 'unknown', true).catch(host.report); }
+      })).catch(() => { /* Drag and drop is unavailable in this webview. */ });
+    },
+  };
+}

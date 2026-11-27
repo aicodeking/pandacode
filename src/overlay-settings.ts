@@ -1,14 +1,14 @@
+import { t } from './i18n.ts';
 import './overlay-settings.css';
 import { errorText } from './error-text';
 import { overlayCall, type OverlayPreferences } from './overlay-client';
 import { isMac, isWindows } from './platform';
 import { infoMark } from './tooltip';
-import { t } from './i18n.ts';
 export { syncOverlayContext } from './overlay-client';
 
 export function mountOverlaySettings(host: HTMLElement): () => void {
   host.classList.add('overlay-settings');
-  host.innerHTML = `<div class="settings-group"><div class="setting-row"><div><strong>${t('Quick launcher')}</strong><small>${t('Start tasks and check agents from any app.')}</small></div><input type="checkbox" class="settings-switch" aria-label="${t('Enable quick launcher')}" disabled></div><form class="overlay-shortcut-form"><div class="overlay-shortcut-heading"><label for="overlay-shortcut">${t('Keyboard shortcut')}</label>${infoMark(t('Use CommandOrControl, Shift, Alt, and a key separated by +.'), t('Shortcut format'))}<small id="overlay-shortcut-hint" class="sr-only">${t('Use CommandOrControl, Shift, Alt, and a key separated by +.')}</small></div><div class="overlay-shortcut-controls"><input id="overlay-shortcut" aria-describedby="overlay-shortcut-hint" spellcheck="false" autocomplete="off" maxlength="100" placeholder="CommandOrControl+Shift+Space" disabled><button class="secondary-button" type="button" data-overlay-record disabled>${t('Record')}</button><button class="secondary-button" type="submit" disabled>${t('Save')}</button><button class="secondary-button" type="button" data-overlay-preview disabled>${t('Open')}</button></div><p class="overlay-settings-status" role="status" hidden></p></form></div>`;
+  host.innerHTML = `<div class="settings-group"><div class="setting-row"><div><strong>${t('Quick launcher')}</strong><small>${t('Start tasks and check agents from any app.')}</small></div><input type="checkbox" class="settings-switch" aria-label="${t('Enable quick launcher')}" disabled></div><form class="overlay-shortcut-form"><div class="overlay-shortcut-heading"><label for="overlay-shortcut">${t('Keyboard shortcut')}</label><small id="overlay-shortcut-hint" class="sr-only">${t('Use CommandOrControl, Shift, Alt, and a key separated by +.')}</small></div><div class="overlay-shortcut-controls"><input id="overlay-shortcut" aria-describedby="overlay-shortcut-hint" spellcheck="false" autocomplete="off" maxlength="100" placeholder="CommandOrControl+Shift+Space" disabled><button class="secondary-button" type="button" data-overlay-record disabled>${t('Record')}</button><button class="secondary-button" type="submit" disabled>${t('Save')}</button><button class="secondary-button" type="button" data-overlay-preview disabled>${t('Open')}</button>${infoMark('Use CommandOrControl, Shift, Alt, and a key separated by +.', 'About Keyboard shortcut')}</div><p class="overlay-settings-status" role="status" hidden></p></form></div>`;
   const enabled = host.querySelector<HTMLInputElement>('input[type=checkbox]')!;
   const input = host.querySelector<HTMLInputElement>('#overlay-shortcut')!;
   const form = host.querySelector<HTMLFormElement>('form')!;

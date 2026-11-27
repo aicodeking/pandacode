@@ -1,5 +1,5 @@
-import { call } from './bridge';
 import { t } from './i18n.ts';
+import { call } from './bridge';
 
 interface SupportDetails { version: string; platform: string; architecture: string; }
 

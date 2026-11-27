@@ -1,8 +1,8 @@
+import { t } from './i18n.ts';
 // The inspector's Search view: file-name matches (the @ mention index) and
 // find-in-files results. The form stays mounted while the view is open, so
 // background inspector refreshes never steal the caret.
 import './search-panel.css';
-import { t } from './i18n.ts';
 import { escape, fileIcon, icon } from './dom';
 import type { FileEntry } from './types';
 import { errorText } from './error-text';
@@ -95,13 +95,13 @@ export function createSearchPanel(deps: Deps) {
     const fileRows = state.files.map(file => { const { name, folder } = split(file.path); return `<button type="button" class="search-row search-file" data-search-open="${escape(file.path)}" title="${escape(file.path)}">${fileIcon(name, false)}<span class="search-name">${escape(name)}</span><small>${escape(folder)}</small></button>`; }).join('');
     const groups = state.text?.files ?? [];
     const total = groups.reduce((sum, group) => sum + group.matches.reduce((n, match) => n + Math.max(1, match.ranges.length), 0), 0);
-    const summary = state.text ? `${total.toLocaleString()} ${total === 1 ? t('result') : t('results')} in ${groups.length.toLocaleString()} ${groups.length === 1 ? t('file') : t('files')}${state.text.truncated ? ` · ${t('showing the first 2,000')}` : ''}` : '';
+    const summary = state.text ? `${total.toLocaleString()} ${total === 1 ? t('result') : t('results')} in ${groups.length.toLocaleString()} ${groups.length === 1 ? t('file') : t('files')}${state.text.truncated ? ' · showing the first 2,000' : ''}` : '';
     const textRows = groups.map(group => {
       const { name, folder } = split(group.path), open = !state.collapsed.has(group.path);
       return `<div class="search-group"><button type="button" class="search-row search-group-title" data-search-group="${escape(group.path)}" aria-expanded="${open}" title="${escape(group.path)}">${icon('chevron')}${fileIcon(name, false)}<span class="search-name">${escape(name)}</span><small>${escape(folder)}</small><span class="search-count">${group.matches.length}</span></button>${open ? group.matches.map(match => `<button type="button" class="search-row search-line" data-search-open="${escape(group.path)}" title="${escape(group.path)}:${match.line}"><span class="search-text">${highlight(match.text, match.ranges)}</span><small>${match.line}</small></button>`).join('') : ''}</div>`;
     }).join('');
     results.innerHTML = (state.files.length ? `<section class="search-section" aria-label="${t('Matching file names')}"><h3>${t('Files')}</h3>${fileRows}</section>` : '')
-      + `<section class="search-section" aria-label="${t('Text matches')}"><h3>${t('Text')}${summary ? ` <span class="search-summary">${summary}</span>` : ''}</h3>${state.error ? `<p class="search-error" role="alert">${escape(state.error)}</p>` : groups.length ? textRows : state.text ? `<p class="search-hint">${t('No text matches.')}</p>` : ''}</section>`;
+      + `<section class="search-section" aria-label="${t('Text matches')}"><h3>Text${summary ? ` <span class="search-summary">${summary}</span>` : ''}</h3>${state.error ? `<p class="search-error" role="alert">${escape(state.error)}</p>` : groups.length ? textRows : state.text ? `<p class="search-hint">${t('No text matches.')}</p>` : ''}</section>`;
   }
 
   return { show, refresh: () => { if (state.query) schedule(0); } };

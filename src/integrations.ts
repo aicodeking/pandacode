@@ -1,7 +1,7 @@
+import { t } from './i18n.ts';
 import './integrations.css';
 import { call, preview } from './bridge';
 import { escape, icon } from './dom';
-import { t } from './i18n.ts';
 
 interface Tool { name: string; description: string; }
 interface Entry extends Tool { status: string; }
@@ -33,13 +33,13 @@ export async function showIntegrations(dialog: HTMLDialogElement, context: { pro
     target.innerHTML = `${preview ? `<div class="preview-notice">${t('Browser preview · integration status is sample data.')}</div>` : ''}
       <div class="integration-note">${t('Shell commands, file editing, image inspection, web search, and subagents are supplied by Codex when available under its configuration and your task permissions.')}</div>
       <div class="integration-row"><div><strong>${t('Jev · Optional add-on')}</strong><small>${t('Browser tests, work review, context matching, and worker suggestions. No Jev key is needed for normal agent work.')}</small></div><button class="secondary-button" data-action="jev-settings">${t('Set up Jev')}</button></div>
-      <details class="integration-group"><summary>${t('PandaCode tools')} <span>${tools.length}</span></summary><p class="integration-note">${t('Core app tools are available in new Codex tasks and their continuations. Older tasks keep their original catalog. When enabled, Jev joins new and resumed tasks across connected harnesses. App actions use your approval mode; embedded browser controls require the task to be visible.')}</p>${tools.map(tool => row({ ...tool, name: tool.name.replace(/^pandacode_/, '').replaceAll('_', ' ') })).join('')}</details>
-      ${catalog ? `<details class="integration-group" open><summary>${t('MCP servers')} <span>${catalog.servers.length}</span></summary>${catalog.servers.length ? catalog.servers.map(server => `<details class="integration-server"><summary>${escape(server.name)}<span>${escape(server.status)} · ${escape(server.authStatus)}</span></summary>${server.description ? `<p class="integration-note">${escape(server.description)}</p>` : ''}${server.tools.map(tool => row(tool)).join('') || `<p class="integration-note">${t('No tools were reported.')}</p>`}</details>`).join('') : `<p class="integration-note">${t('No servers were reported for this Codex configuration.')}</p>`}</details>
-      <details class="integration-group"><summary>${t('Skills')} <span>${catalog.skills.length}</span></summary>${catalog.skills.map(skill => row(skill, skill.status)).join('') || `<p class="integration-note">${t('No skills were reported for this project.')}</p>`}</details>
-      <details class="integration-group"><summary>${t('Apps')} <span>${catalog.apps.length}</span></summary>${catalog.apps.map(app => row(app, app.status)).join('') || `<p class="integration-note">${t('No apps were reported by this Codex installation.')}</p>`}</details>
+      <details class="integration-group"><summary>PandaCode tools <span>${tools.length}</span></summary><p class="integration-note">${t('Core app tools are available in new Codex tasks and their continuations. Older tasks keep their original catalog. When enabled, Jev joins new and resumed tasks across connected harnesses. App actions use your approval mode; embedded browser controls require the task to be visible.')}</p>${tools.map(tool => row({ ...tool, name: tool.name.replace(/^pandacode_/, '').replaceAll('_', ' ') })).join('')}</details>
+      ${catalog ? `<details class="integration-group" open><summary>MCP servers <span>${catalog.servers.length}</span></summary>${catalog.servers.length ? catalog.servers.map(server => `<details class="integration-server"><summary>${escape(server.name)}<span>${escape(server.status)} · ${escape(server.authStatus)}</span></summary>${server.description ? `<p class="integration-note">${escape(server.description)}</p>` : ''}${server.tools.map(tool => row(tool)).join('') || `<p class="integration-note">${t('No tools were reported.')}</p>`}</details>`).join('') : `<p class="integration-note">${t('No servers were reported for this Codex configuration.')}</p>`}</details>
+      <details class="integration-group"><summary>Skills <span>${catalog.skills.length}</span></summary>${catalog.skills.map(skill => row(skill, skill.status)).join('') || `<p class="integration-note">${t('No skills were reported for this project.')}</p>`}</details>
+      <details class="integration-group"><summary>Apps <span>${catalog.apps.length}</span></summary>${catalog.apps.map(app => row(app, app.status)).join('') || `<p class="integration-note">${t('No apps were reported by this Codex installation.')}</p>`}</details>
       ${catalog.warnings.map(warning => `<p class="integration-note" role="status">${escape(warning)}</p>`).join('')}` : `<p class="integration-note" role="alert">${t('Integration discovery is unavailable. Check that Codex CLI is installed and try Refresh.')}</p>`}
       <p class="integration-note">${t('Configure servers through Codex CLI. PandaCode inherits that configuration on the next task run. Codex desktop-only services, including its hosted image generation and automations, are not included in this bridge.')}</p>
-      <button class="secondary-button" data-integration-guide>${t('MCP setup guide')} ${icon('globe')}</button>`;
+      <button class="secondary-button" data-integration-guide>MCP setup guide ${icon('globe')}</button>`;
     target.removeAttribute('role');
     target.querySelector('[data-integration-guide]')?.addEventListener('click', () => {
       void call('open_external_url', { url: 'https://developers.openai.com/codex/mcp/' }).catch(() => {
