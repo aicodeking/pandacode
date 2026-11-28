@@ -162,13 +162,16 @@ const previewPrivacy = () => ({ off: previewTelemetryOff, harnesses: [
   { provider: 'github-copilot', name: 'GitHub Copilot CLI', status: 'unknown', detail: 'No verified switch.' },
 ] });
 // Provider environment in the preview lives in memory so the Settings UI can be tested in a browser.
-const previewEnvState = { global: [] as [string, string][], providers: {} as Record<string, [string, string][]>, useGlobal: {} as Record<string, boolean> };
-const previewEnvNames = (vars: [string, string][]) => vars.map(([name]) => name);
+// A plain variable carries its value; a secret one holds it here but only ever reports `secret: true`.
+interface PreviewEnvEntry { name: string; secret: boolean; value?: string }
+const previewEnvState = { global: [] as PreviewEnvEntry[], providers: {} as Record<string, PreviewEnvEntry[]>, useGlobal: {} as Record<string, boolean> };
+/** The wire shape: a plain variable carries its value, a secret one has no `value` key at all. */
+const previewEnvEntries = (vars: PreviewEnvEntry[]) => vars.map(entry => entry.secret ? { name: entry.name, secret: true } : { name: entry.name, secret: false, value: entry.value ?? '' });
 function previewProviderConfiguration(): Record<string, unknown> {
   return {
     executablePaths: {}, claudeConnectionMode: previewClaudeMode, claudeCliRefresh: previewClaudeRefresh,
-    globalEnvironment: previewEnvNames(previewEnvState.global),
-    environment: Object.fromEntries(Object.entries(previewEnvState.providers).map(([provider, vars]) => [provider, previewEnvNames(vars)])),
+    globalEnvironment: previewEnvEntries(previewEnvState.global),
+    environment: Object.fromEntries(Object.entries(previewEnvState.providers).map(([provider, vars]) => [provider, previewEnvEntries(vars)])),
     useGlobalEnvironment: previewEnvState.useGlobal,
     providers: providers.map(provider => [provider.id, provider.name]),
     glmKeySaved: false, glmKeyFromEnvironment: false, deepseekKeySaved: false, deepseekKeyFromEnvironment: false, commandcodeKeySaved: false, commandcodeKeyFromEnvironment: false, mimoKeySaved: false, mimoKeyFromEnvironment: false, alibabaKeySaved: false, alibabaKeyFromEnvironment: false, mimoEndpoint: previewMimoEndpoint, mimoEndpoints: previewMimoEndpoints, secureStorageAvailable: false,
@@ -1674,6 +1677,7 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     case 'update_agent': throw new Error('Agent updates are available in the desktop app.');
     case 'jev_configuration': result = { enabled: false, decisionsEnabled: false, decisionProvider: 'typesafe', decisionModel: '', decisionBaseUrl: 'http://127.0.0.1:8000', openrouterKeySaved: false, pythonPath: '', chromePath: '', textModel: 'inception/mercury-2.5', textBaseUrl: 'https://openrouter.ai/api/v1', typesafeKeySaved: false, textKeySaved: false }; break;
     case 'jev_doctor': result = { ready: false, pythonVersion: '', jevVersion: '', chromePath: '', issues: ['Jev runs in the desktop app. This browser preview does not launch browsers or contact model APIs.'] }; break;
+    case 'jev_status': result = { browserTests: 'off', decisions: 'off', runtimeInstalled: false, issues: ['Jev runs in the desktop app. This browser preview does not launch browsers.'] }; break;
     case 'jev_decision_models': result = args?.provider === 'openrouter' ? [{ id: 'openai/gpt-4o-mini', name: 'OpenAI: GPT-4o mini' }, { id: 'anthropic/claude-haiku-4.5', name: 'Anthropic: Claude Haiku 4.5' }] : args?.provider === 'laya' ? [{ id: 'laya-system-one', name: 'laya-system-one' }] : [{ id: 'jev-1.13.0', name: 'jev-1.13.0' }]; break;
     case 'jev_list_runs': case 'jev_assist_list': result = []; break;
     case 'jev_watch_run': break; // Preview never starts Chrome or contacts model providers.
@@ -1799,18 +1803,21 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     }
     case 'provider_configuration': result = previewProviderConfiguration(); break;
     case 'provider_set_environment_variable': case 'provider_set_global_environment_variable': {
-      const name = String(args.name ?? ''), value = String(args.value ?? '');
+      const name = String(args.name ?? ''), value = String(args.value ?? ''), secret = Boolean(args.secret);
       if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name) || name.length > 128) throw new Error('Environment variable names use letters, digits and underscores, and do not start with a digit.');
       if (value.includes('\0') || value.length > 4096) throw new Error(`The value of ${name} is too long or contains NUL.`);
       const vars = args.provider ? previewEnvState.providers[String(args.provider)] ??= [] : previewEnvState.global;
-      const existing = vars.find(entry => entry[0] === name);
-      if (existing) existing[1] = value; else vars.push([name, value]);
+      const existing = vars.find(entry => entry.name === name);
+      // The value is kept in memory, but a secret entry is reported without it
+      // (previewEnvEntries), so Settings only ever shows a mask.
+      if (existing) { existing.secret = secret; existing.value = value; }
+      else vars.push({ name, secret, value });
       return invoke<T>('provider_configuration', {});
     }
     case 'provider_remove_environment_variable': case 'provider_remove_global_environment_variable': {
       const name = String(args.name ?? '');
       const vars = args.provider ? previewEnvState.providers[String(args.provider)] : previewEnvState.global;
-      const index = vars?.findIndex(entry => entry[0] === name) ?? -1;
+      const index = vars?.findIndex(entry => entry.name === name) ?? -1;
       if (index >= 0) vars!.splice(index, 1);
       return invoke<T>('provider_configuration', {});
     }
@@ -1961,6 +1968,8 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       browserHistory = browserHistory.slice(0, browserIndex + 1); browserHistory.push(url.href); browserIndex++;
       browserState = { ...browserState, url: url.href, title: 'Sample app', loading: false, picking: false }; browserChanged(); result = { ...browserState }; break;
     }
+    case 'browser_import_cookies': result = { supported: true, imported: 2, browsers: [{ name: 'Chrome', imported: 2, error: null }] }; break;
+    case 'browser_cookie_import_remote': result = Boolean(args.enabled); break;
     case 'browser_action': if (args.action === 'back' && browserIndex > 0) browserIndex--; else if (args.action === 'forward' && browserIndex < browserHistory.length - 1) browserIndex++; browserState.url = browserHistory[browserIndex] ?? ''; browserState.picking = false; browserChanged(); break;
     case 'browser_pick': browserState.picking = Boolean(args.enabled); browserChanged(); break;
     case 'browser_bounds': break;
