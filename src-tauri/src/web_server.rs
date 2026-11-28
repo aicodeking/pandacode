@@ -3061,7 +3061,7 @@ mod tests {
         assert_eq!((saved.enabled, saved.port, saved.host), (true, port, Some("::1".parse().unwrap())));
         assert_eq!(saved.allowed_hosts, ["my-mac.tail1234.ts.net"]);
         // ::1 is loopback, so the link prefers the trusted name over https.
-        assert!(started.url.as_deref().unwrap().starts_with("https://my-mac.tail1234.ts.net:"), "{:?}", started.url);
+        assert_eq!(started.url.as_deref(), Some("https://my-mac.tail1234.ts.net"));
         // A stop keeps the saved address instead of forgetting it.
         let off = server.stop_and_save(None, true).await.unwrap();
         assert_eq!(off.configured_host, "::1");
