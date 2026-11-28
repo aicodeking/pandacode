@@ -162,14 +162,58 @@ const previewPrivacy = () => ({ off: previewTelemetryOff, harnesses: [
   { provider: 'github-copilot', name: 'GitHub Copilot CLI', status: 'unknown', detail: 'No verified switch.' },
 ] });
 // Provider environment in the preview lives in memory so the Settings UI can be tested in a browser.
-const previewEnvState = { global: [] as [string, string][], providers: {} as Record<string, [string, string][]>, useGlobal: {} as Record<string, boolean> };
-const previewEnvNames = (vars: [string, string][]) => vars.map(([name]) => name);
+// A plain variable carries its value; a secret one holds it here but only ever reports `secret: true`.
+interface PreviewEnvEntry { name: string; secret: boolean; value?: string }
+const previewEnvState = { global: [] as PreviewEnvEntry[], providers: {} as Record<string, PreviewEnvEntry[]>, useGlobal: {} as Record<string, boolean> };
+/** The wire shape: a plain variable carries its value, a secret one has no `value` key at all. */
+const previewEnvEntries = (vars: PreviewEnvEntry[]) => vars.map(entry => entry.secret ? { name: entry.name, secret: true } : { name: entry.name, secret: false, value: entry.value ?? '' });
+// Provider proxies in the preview live in memory like the environment, so the Settings UI can be exercised in a browser.
+// Real proxy URLs (which may carry a password) never leave this module: the reply only ever carries displayUrl.
+const PREVIEW_PROXY_VARS = ['HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY'];
+const previewProxyState = {
+  globalNoProxy: '',
+  proxies: [] as { id: string; label: string; url: string; noProxy: string }[],
+  activeProxy: null as string | null,
+  disabled: new Set<string>(),
+  providerProxy: {} as Record<string, string>,
+};
+let previewProxySeq = 0;
+/** Mask userinfo before the last `@`, so a password can never reach the UI. */
+function previewProxyDisplayUrl(url: string) {
+  const at = url.lastIndexOf('@'), scheme = url.indexOf('://');
+  return at > scheme + 2 ? `${url.slice(0, scheme + 3)}***${url.slice(at)}` : url;
+}
+function previewProxyUrlProblem(url: string): string | null {
+  if (url.length > 4096) return 'A proxy URL is at most 4096 characters.';
+  if (/[\s\u0000-\u001f\u007f]/.test(url)) return 'A proxy URL cannot contain whitespace or control characters.';
+  const match = /^(https?):\/\/([^/?#]+)/i.exec(url);
+  if (!match) return 'A proxy URL starts with http:// or https://.';
+  const host = match[2].slice(match[2].lastIndexOf('@') + 1).replace(/:\d*$/, '');
+  return host ? null : 'A proxy URL needs a host, like http://proxy.example:3128.';
+}
+const previewEffectiveProxy = (provider: string) => previewProxyState.disabled.has(provider) ? previewProxyState.providerProxy[provider] ?? null : previewProxyState.activeProxy;
 function previewProviderConfiguration(): Record<string, unknown> {
+  const useGlobalProxy = Object.fromEntries(providers.map(provider => [provider.id, !previewProxyState.disabled.has(provider.id)]));
+  const effective = Object.fromEntries(providers.map(provider => [provider.id, previewEffectiveProxy(provider.id)])) as Record<string, string | null>;
+  const proxyEnvConflicts: Record<string, string[]> = {};
+  for (const provider of providers) {
+    if (!effective[provider.id]) continue;
+    const vars = previewEnvState.providers[provider.id] ?? [];
+    // A secret variable's value is kept in the preview state but never reported; it still counts.
+    const names = PREVIEW_PROXY_VARS.filter(name => vars.some(entry => entry.name === name && (entry.secret || entry.value !== '')));
+    if (names.length) proxyEnvConflicts[provider.id] = names;
+  }
   return {
     executablePaths: {}, claudeConnectionMode: previewClaudeMode, claudeCliRefresh: previewClaudeRefresh,
-    globalEnvironment: previewEnvNames(previewEnvState.global),
-    environment: Object.fromEntries(Object.entries(previewEnvState.providers).map(([provider, vars]) => [provider, previewEnvNames(vars)])),
+    globalEnvironment: previewEnvEntries(previewEnvState.global),
+    environment: Object.fromEntries(Object.entries(previewEnvState.providers).map(([provider, vars]) => [provider, previewEnvEntries(vars)])),
     useGlobalEnvironment: previewEnvState.useGlobal,
+    proxies: previewProxyState.proxies.map(proxy => ({ id: proxy.id, label: proxy.label, displayUrl: previewProxyDisplayUrl(proxy.url), noProxy: proxy.noProxy, active: previewProxyState.activeProxy === proxy.id, providers: providers.filter(provider => effective[provider.id] === proxy.id).map(provider => provider.id) })),
+    activeProxy: previewProxyState.activeProxy,
+    globalNoProxy: previewProxyState.globalNoProxy,
+    useGlobalProxy,
+    providerProxy: { ...previewProxyState.providerProxy },
+    proxyEnvConflicts,
     providers: providers.map(provider => [provider.id, provider.name]),
     glmKeySaved: false, glmKeyFromEnvironment: false, deepseekKeySaved: false, deepseekKeyFromEnvironment: false, commandcodeKeySaved: false, commandcodeKeyFromEnvironment: false, mimoKeySaved: false, mimoKeyFromEnvironment: false, alibabaKeySaved: false, alibabaKeyFromEnvironment: false, mimoEndpoint: previewMimoEndpoint, mimoEndpoints: previewMimoEndpoints, secureStorageAvailable: false,
   };
@@ -864,7 +908,6 @@ function sampleDailyTokens(): { date: string; tokens: number }[] {
   });
 }
 const previewQueueHolds = new Map<string, string>();
-let previewHoldSeq = 0;
 
 /** Preview queues persist in localStorage so a reload behaves like a restart. */
 type PreviewQueued = { id: string; sessionId: string; position: number; text: string; attachments: unknown[]; createdAt: number; updatedAt: number };
@@ -1674,6 +1717,7 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     case 'update_agent': throw new Error('Agent updates are available in the desktop app.');
     case 'jev_configuration': result = { enabled: false, decisionsEnabled: false, decisionProvider: 'typesafe', decisionModel: '', decisionBaseUrl: 'http://127.0.0.1:8000', openrouterKeySaved: false, pythonPath: '', chromePath: '', textModel: 'inception/mercury-2.5', textBaseUrl: 'https://openrouter.ai/api/v1', typesafeKeySaved: false, textKeySaved: false }; break;
     case 'jev_doctor': result = { ready: false, pythonVersion: '', jevVersion: '', chromePath: '', issues: ['Jev runs in the desktop app. This browser preview does not launch browsers or contact model APIs.'] }; break;
+    case 'jev_status': result = { browserTests: 'off', decisions: 'off', runtimeInstalled: false, issues: ['Jev runs in the desktop app. This browser preview does not launch browsers.'] }; break;
     case 'jev_decision_models': result = args?.provider === 'openrouter' ? [{ id: 'openai/gpt-4o-mini', name: 'OpenAI: GPT-4o mini' }, { id: 'anthropic/claude-haiku-4.5', name: 'Anthropic: Claude Haiku 4.5' }] : args?.provider === 'laya' ? [{ id: 'laya-system-one', name: 'laya-system-one' }] : [{ id: 'jev-1.13.0', name: 'jev-1.13.0' }]; break;
     case 'jev_list_runs': case 'jev_assist_list': result = []; break;
     case 'jev_watch_run': break; // Preview never starts Chrome or contacts model providers.
@@ -1799,18 +1843,21 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     }
     case 'provider_configuration': result = previewProviderConfiguration(); break;
     case 'provider_set_environment_variable': case 'provider_set_global_environment_variable': {
-      const name = String(args.name ?? ''), value = String(args.value ?? '');
+      const name = String(args.name ?? ''), value = String(args.value ?? ''), secret = Boolean(args.secret);
       if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name) || name.length > 128) throw new Error('Environment variable names use letters, digits and underscores, and do not start with a digit.');
       if (value.includes('\0') || value.length > 4096) throw new Error(`The value of ${name} is too long or contains NUL.`);
       const vars = args.provider ? previewEnvState.providers[String(args.provider)] ??= [] : previewEnvState.global;
-      const existing = vars.find(entry => entry[0] === name);
-      if (existing) existing[1] = value; else vars.push([name, value]);
+      const existing = vars.find(entry => entry.name === name);
+      // The value is kept in memory so the preview's proxy-conflict check can read it, but a secret
+      // entry is reported without it (previewEnvEntries), so Settings only ever shows a mask.
+      if (existing) { existing.secret = secret; existing.value = value; }
+      else vars.push({ name, secret, value });
       return invoke<T>('provider_configuration', {});
     }
     case 'provider_remove_environment_variable': case 'provider_remove_global_environment_variable': {
       const name = String(args.name ?? '');
       const vars = args.provider ? previewEnvState.providers[String(args.provider)] : previewEnvState.global;
-      const index = vars?.findIndex(entry => entry[0] === name) ?? -1;
+      const index = vars?.findIndex(entry => entry.name === name) ?? -1;
       if (index >= 0) vars!.splice(index, 1);
       return invoke<T>('provider_configuration', {});
     }
@@ -1822,6 +1869,70 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       if (!previewMimoEndpoints.some(entry => entry.id === args.endpoint)) throw new Error('Choose one of the MiMo endpoints listed in Settings.');
       previewMimoEndpoint = args.endpoint;
       result = previewProviderConfiguration(); break;
+    case 'provider_save_proxy': {
+      const label = String(args.label ?? '').trim();
+      if (!label || label.length > 64) throw new Error('Give the proxy a name of 1 to 64 characters.');
+      if (/[\u0000-\u001f\u007f]/.test(label)) throw new Error('A proxy name cannot contain control characters.');
+      const url = String(args.url ?? ''), noProxy = String(args.noProxy ?? '');
+      const id = args.proxyId ? String(args.proxyId) : null;
+      if (id && !previewProxyState.proxies.some(proxy => proxy.id === id)) throw new Error('This proxy no longer exists.');
+      if (noProxy.length > 4096) throw new Error('The no-proxy list is at most 4096 characters.');
+      const problem = previewProxyUrlProblem(url);
+      if (problem) throw new Error(problem);
+      const key = label.toLowerCase();
+      if (previewProxyState.proxies.some(proxy => proxy.id !== id && proxy.label.toLowerCase() === key)) throw new Error('A proxy with this name already exists.');
+      if (!id && previewProxyState.proxies.length >= 16) throw new Error('You can save up to 16 proxies.');
+      if (id) { const proxy = previewProxyState.proxies.find(proxy => proxy.id === id)!; proxy.label = label; proxy.url = url; proxy.noProxy = noProxy; }
+      else previewProxyState.proxies.push({ id: `proxy-${Date.now().toString(36)}-${previewProxySeq++}`, label, url, noProxy });
+      return invoke<T>('provider_configuration', {});
+    }
+    case 'provider_remove_proxy': {
+      const id = String(args.proxyId ?? '');
+      if (!previewProxyState.proxies.some(proxy => proxy.id === id)) throw new Error('This proxy no longer exists.');
+      previewProxyState.proxies = previewProxyState.proxies.filter(proxy => proxy.id !== id);
+      if (previewProxyState.activeProxy === id) previewProxyState.activeProxy = null;
+      for (const [provider, proxyId] of Object.entries(previewProxyState.providerProxy)) if (proxyId === id) delete previewProxyState.providerProxy[provider];
+      return invoke<T>('provider_configuration', {});
+    }
+    case 'provider_set_global_no_proxy': {
+      const noProxy = String(args.noProxy ?? '').trim();
+      if (noProxy.length > 4096) throw new Error('The no-proxy list is at most 4096 characters.');
+      if (/[\u0000-\u001f\u007f]/.test(noProxy)) throw new Error('The no-proxy list cannot contain control characters.');
+      previewProxyState.globalNoProxy = noProxy;
+      return invoke<T>('provider_configuration', {});
+    }
+    case 'provider_set_active_proxy': {
+      const id = args.proxyId == null ? null : String(args.proxyId);
+      if (id && !previewProxyState.proxies.some(proxy => proxy.id === id)) throw new Error('This proxy no longer exists.');
+      previewProxyState.activeProxy = id;
+      return invoke<T>('provider_configuration', {});
+    }
+    case 'provider_set_use_global_proxy': {
+      const provider = String(args.provider ?? '');
+      if (!providers.some(entry => entry.id === provider)) throw new Error('Unknown provider.');
+      if (args.useGlobal) previewProxyState.disabled.delete(provider); else previewProxyState.disabled.add(provider);
+      return invoke<T>('provider_configuration', {});
+    }
+    case 'provider_set_provider_proxy': {
+      const provider = String(args.provider ?? ''), id = args.proxyId == null ? null : String(args.proxyId);
+      if (!providers.some(entry => entry.id === provider)) throw new Error('Unknown provider.');
+      if (id && !previewProxyState.proxies.some(proxy => proxy.id === id)) throw new Error('This proxy no longer exists.');
+      if (id) previewProxyState.providerProxy[provider] = id; else delete previewProxyState.providerProxy[provider];
+      return invoke<T>('provider_configuration', {});
+    }
+    case 'provider_test_proxy': {
+      const literal = typeof args.url === 'string' && args.url !== '' ? args.url : null;
+      const saved = literal ? null : previewProxyState.proxies.find(proxy => proxy.id === String(args.proxyId ?? ''));
+      if (!literal && !saved) throw new Error('Choose a saved proxy to test.');
+      const match = /^(https?):\/\/([^/?#]+)/i.exec(literal ?? saved!.url);
+      const host = match ? match[2].slice(match[2].lastIndexOf('@') + 1).replace(/:\d*$/, '').toLowerCase() : '';
+      const latencyMs = 40 + (host.length % 60);
+      if (!host) result = { status: 'error', message: 'That is not a proxy address. Use http://host:port.', code: null, latencyMs: null };
+      else if (host.endsWith('.invalid') && host.startsWith('unreachable')) result = { status: 'error', message: 'Could not reach the proxy. Check the address and that the proxy is running.', code: null, latencyMs: null };
+      else if (host.endsWith('.invalid') && host.startsWith('auth')) result = { status: 'auth', message: 'The proxy requires a user name and password.', code: 407, latencyMs };
+      else result = { status: 'ok', message: 'The proxy answered. Traffic through it can reach the internet.', code: 200, latencyMs };
+      break;
+    }
     case 'provider_save_glm_key': case 'provider_remove_glm_key': case 'provider_save_deepseek_key': case 'provider_remove_deepseek_key': case 'provider_save_commandcode_key': case 'provider_remove_commandcode_key': case 'provider_save_mimo_key': case 'provider_remove_mimo_key': case 'provider_save_alibaba_key': case 'provider_remove_alibaba_key': case 'provider_set_executable': throw new Error('Provider connections can only be changed in the desktop app.');
     case 'turn_change_summary': {
       session(args.sessionId);
@@ -1961,6 +2072,8 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       browserHistory = browserHistory.slice(0, browserIndex + 1); browserHistory.push(url.href); browserIndex++;
       browserState = { ...browserState, url: url.href, title: 'Sample app', loading: false, picking: false }; browserChanged(); result = { ...browserState }; break;
     }
+    case 'browser_import_cookies': result = { supported: true, imported: 2, browsers: [{ name: 'Chrome', imported: 2, error: null }] }; break;
+    case 'browser_cookie_import_remote': result = Boolean(args.enabled); break;
     case 'browser_action': if (args.action === 'back' && browserIndex > 0) browserIndex--; else if (args.action === 'forward' && browserIndex < browserHistory.length - 1) browserIndex++; browserState.url = browserHistory[browserIndex] ?? ''; browserState.picking = false; browserChanged(); break;
     case 'browser_pick': browserState.picking = Boolean(args.enabled); browserChanged(); break;
     case 'browser_bounds': break;
@@ -1975,21 +2088,13 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       s.resumeAtReset = Boolean(args.enabled) && Boolean(s.limitedAt); result = s; break;
     }
     case 'tray_seen': result = null; break;
-    case 'clear_usage_limit': {
-      const s = session(args.sessionId);
-      s.limitedAt = null; s.limitedUntil = null; s.resumeAtReset = false;
-      if (previewQueueHolds.get(s.id) === 'limited') {
-        previewQueueHolds.set(s.id, 'reset');
-        emit('queue-changed', { sessionId: s.id, held: true, reason: 'reset', holdSeq: ++previewHoldSeq });
-      }
-      result = null; break;
-    }
+    case 'clear_usage_limit': { const s = session(args.sessionId); s.limitedAt = null; s.limitedUntil = null; s.resumeAtReset = false; result = null; break; }
     case 'queue_holds': result = Object.fromEntries(previewQueueHolds); break;
     case 'set_queue_hold': {
       const { sessionId } = args, held = Boolean(args.held), reason = args.reason ?? 'stopped';
       if (held) previewQueueHolds.set(sessionId, reason);
       else previewQueueHolds.delete(sessionId);
-      emit('queue-changed', { sessionId, held, holdSeq: ++previewHoldSeq, ...(held ? { reason } : {}) });
+      emit('queue-changed', { sessionId, held, ...(held ? { reason } : {}) });
       break;
     }
     case 'queue_list': result = previewQueue().filter(entry => !args.sessionId || entry.sessionId === args.sessionId); break;

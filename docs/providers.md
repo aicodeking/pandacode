@@ -170,14 +170,8 @@ clears the variable afterwards, so that terminal keeps the main account).
 A connection joins the pool only once it has a saved login: its own
 `CLAUDE_CODE_OAUTH_TOKEN` or `CODEX_API_KEY`, or the login file its harness
 writes on sign-in in its config folder (Claude: `.claude.json` with the
-signed-in account, or `.credentials.json`; Codex: `auth.json`). A Codex
-`auth.json` counts only while the login is still usable: its ChatGPT access
-token must not have expired, so a stale or revoked login shows **Not signed
-in** and is skipped instead of being run and failing. An API-key login has no
-expiry and always counts. The harness's own setup is checked the same way for
-Codex; Claude Code's own setup always counts, because on macOS its credentials
-may be held in the Keychain rather than a login file, and a missing file proves
-nothing. Until then Settings shows the member as **Not signed
+signed-in account, or `.credentials.json`; Codex: `auth.json`). The harness's
+own setup always counts. Until then Settings shows the member as **Not signed
 in** with a **Sign in** button. Pools are for subscription logins:
 a connection that only sets `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` is not a
 member.
@@ -209,11 +203,7 @@ move them. Choosing a harness or model never changes the Account pool switch;
 pooling is opt-in in Settings and supports only Claude Code and Codex.
 
 Only a turn that fails at its limit moves; a limit inside a turn that still
-finished (a fallback model, overage) does not. A login that can no longer be
-refreshed (Codex `unauthorized` / `authenticationRequired`) moves the same way,
-because another account can still run the task; that account is held like a
-spent one so it is not picked again, and the note says its login could not be
-refreshed rather than claiming a usage limit. Then PandaCode holds the account
+finished (a fallback model, overage) does not. Then PandaCode holds the account
 until its reset (an hour when the reset time is unknown, at most 8 days),
 copies the harness session file into the next account's config folder (Claude:
 `projects/<slug>/<id>.jsonl`; Codex: `sessions/YYYY/MM/DD/rollout-*-<id>.jsonl`;
@@ -247,8 +237,7 @@ Code: `src-tauri/src/account_pool.rs` and `src-tauri/src/providers/pool.rs`.
 
 Some networks and some providers need environment variables on the harness — a
 proxy behind `HTTP_PROXY`, `HTTPS_PROXY` and `NO_PROXY` is the common case.
-Settings → Providers has two places for them, both in `provider-settings.json`
-(`provider_settings.rs`):
+Settings → Providers has two places for them (`provider_settings.rs`):
 
 - **Global environment variables** are added to every harness PandaCode starts.
 - Each provider's card has its own **Environment variables** list, plus a
@@ -258,11 +247,28 @@ Settings → Providers has two places for them, both in `provider-settings.json`
 Variable names use letters, digits and underscores and cannot start with a
 digit (the same rule named connections use), values stay under 4096 characters
 with no NUL, and there are at most 64 variables per provider and in the global
-set. Values are plain settings: they live in the settings file on this computer
-and are never sent back to the interface — the page lists only their names, and
-a saved value is replaced by typing it again. A variable that carries a
-credential belongs to a [named connection](#named-connections), whose Secret
-values go to the secure store.
+set, counting plain and secret names together. Both lists offer the same
+**Secret** tickbox when adding a variable:
+
+- **Plain (the default).** The value is saved in `provider-settings.json` on
+  this computer and stays visible in the list after it is added. **Replace**
+  edits it in place; the page never pre-fills the saved value, so the new one
+  is typed in full.
+- **Secret.** Tick **Secret** and the value goes to PandaCode's secrets store
+  (`secret_store.rs`) under the provider settings service, accounts
+  `env/<provider>/<name>` and `env/*/<name>` for the global set — names only
+  stay in `provider-settings.json`, in `secretEnvironment` and
+  `secretGlobalEnvironment`. The page shows the variable masked (`••••••••`)
+  and never receives the value. **Replace** overwrites it without revealing
+  the old one. If a secret's stored value cannot be read at launch it is
+  skipped, so one broken secret never blocks the harness.
+
+A name is plain or secret, never both: replacing a variable with the other
+kind moves it. A platform without a secure store (and the browser preview)
+cannot add secrets — the tickbox is disabled and explained there, and a plain
+variable still works. A variable that carries a credential the harness itself
+signs in with more naturally belongs to a [named connection](#named-connections),
+whose Secret values go to the same store.
 
 At launch the layers are applied in order, each winning over the last: the
 environment PandaCode inherited, then the global set (unless the provider opted
@@ -270,17 +276,31 @@ out), then the provider's own variables, then the harness's sign-in and
 endpoint configuration (a GLM or MiMo key always configures its Claude Code
 process, and "Prefer saved Claude login" scrubs inherited credential variables
 at this point), then a named connection's environment, whose variables land
-after the scrub.
+after the scrub. An active proxy (below) fills `HTTP_PROXY`, `HTTPS_PROXY` and
+`NO_PROXY` only when no earlier layer set them, so saved variables and a named
+connection's environment still win.
 
-The effective set is applied to everything that spawns the harness: tasks
-(`run_inner` in `providers.rs`), warm Claude agents (`providers/warm.rs`, whose
-adoption key carries a fingerprint of the saved variables, so an edit always
-starts the next turn cold), the harness console in the terminal panel
-(`terminal.rs`), model catalogs and slash command discovery, Claude login and
-usage probes, and Codex integration discovery. Tasks running on another
-computer use that computer's environment instead. Saving a variable refreshes
-the affected provider's cached catalogs and usage, so the next query runs with
-the new setting.
+Claude's model selection is the one thing PandaCode keeps for itself, in every
+mode. A Claude Code launch always names its model, so the inherited
+`ANTHROPIC_MODEL`, `ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU,FABLE}_MODEL`,
+`ANTHROPIC_SMALL_FAST_MODEL` and `CLAUDE_CODE_SUBAGENT_MODEL` are removed from
+the child before it starts. Left in place, an alias redirection such as
+`ANTHROPIC_DEFAULT_HAIKU_MODEL=auto/claude-sonnet` silently replaces the chosen
+model, and the API rejects the run as `unrecognized_model`. Credentials and
+`ANTHROPIC_BASE_URL` are untouched in "Inherit" mode, so a gateway keeps
+working.
+
+The global and per-provider sets are applied to everything that spawns the
+harness: tasks (`run_inner` in `providers.rs`), warm Claude agents
+(`providers/warm.rs`, whose adoption key carries a fingerprint of the saved
+variables, so an edit always starts the next turn cold), the harness console in
+the terminal panel (`terminal.rs`), model catalogs and slash command discovery,
+Claude login and usage probes, and Codex integration discovery. A named
+connection's environment is added only where a task runs with that connection
+(`run_inner` in `providers.rs` and `providers/warm.rs`), not to catalogs,
+discovery or usage checks. Tasks running on another computer use that computer's
+environment instead. Saving a variable refreshes the affected provider's cached
+catalogs and usage, so the next query runs with the new setting.
 
 On cloud machines nothing is inherited by default. Settings → Agents → Cloud
 sandboxes has a per-provider **Include provider environment variables** switch
@@ -298,9 +318,66 @@ rest of the roster (Codex and Kimi Code today) gets a generated card with an
 executable location and these environment settings.
 
 A saved executable location must be an absolute path to an existing executable
-file; it is started directly, never through a shell. GLM Coding Plan and MiMo
-Token Plan run the Claude executable, so they have no location of their own and
-use the one on the Claude Code card.
+file; it is started directly, never through a shell. The path is stored exactly
+as entered, so a symlink stays a link: its target is checked for existence and
+the executable bit, not substituted into the setting. An upgrade that repoints
+the link (a Homebrew Caskroom link or a Volta shim, say) therefore keeps working
+without editing the setting. GLM Coding Plan and MiMo Token Plan run the Claude
+executable, so they have no location of their own and use the one on the Claude
+Code card.
+
+### Proxies
+
+Settings → Providers also holds named proxies, one active at a time, so a proxy
+shared by every harness is saved once instead of retyped as variables. A proxy
+is a name, a URL (`http://` or `https://`, which may carry `user:pass@`
+userinfo) and an optional **No proxy for** list; up to 16 can be saved, and
+names are unique and 1–64 characters. The active proxy supplies `HTTP_PROXY`,
+`HTTPS_PROXY` and `NO_PROXY` to every harness PandaCode starts: task runs, model
+catalogs, slash-command and integration discovery, the harness console, and
+usage checks.
+
+`NO_PROXY` is built from three lists, merged in this order with duplicates
+dropped: the loopback and private ranges below, then the card's own **Never
+proxy these hosts** list (one global list shared by every harness), then the
+proxy's own **No proxy for** list. The global list saves retyping a corporate
+domain on every proxy. An explicit non-empty `NO_PROXY` variable saved in an
+environment list still wins over all of them and is reported in the override
+warning.
+
+Loopback and private ranges are always left off the proxy — `localhost`,
+`127.0.0.1`, `::1`, `10/8`, `172.16/12`, `192.168/16`, `169.254/16` and
+`100.64/10` — merged with the proxy's own no-proxy list, so local MCP and ACP
+servers on this computer are never sent through it.
+
+Each harness card can turn the active proxy off and pick its own saved proxy,
+or none. An environment variable saved in a card is explicit and wins over the
+proxy, and PandaCode warns on that card when `HTTP_PROXY`, `HTTPS_PROXY` or
+`NO_PROXY` is set there explicitly while a proxy applies.
+
+Proxy URLs live in PandaCode's secure store — the same 0600 secrets file or OS
+store as API keys — never in `provider-settings.json`, and are never sent back
+to the interface: the page shows the URL with its userinfo masked
+(`http://***@host:port`), and an edit always requires re-entering it. Code:
+`src-tauri/src/provider_settings.rs`; the layered order above still holds, with
+the proxy filling `HTTP_PROXY`, `HTTPS_PROXY` and `NO_PROXY` below explicitly
+saved variables and below a named connection's environment.
+
+A proxy URL must include its scheme (`http://`), which is why the URL field
+requires one: a scheme-less value makes the proxy unusable — Codex reports
+“Proxy URL scheme not supported” and falls back.
+
+**Test** checks a proxy without starting an agent. On a saved proxy, or on a URL
+typed into the form before saving, it opens one bounded connection (8 seconds)
+and asks the proxy for a small public page. The proxy answering at all means it
+is reachable and forwarding; a 407 means it wants different credentials, and any
+other error status means it could not reach the target. The probe sends a plain
+HTTP request through the proxy rather than a TLS one, so a proxy that inspects
+TLS is not reported as broken, and the result never includes the URL or its
+password. Every harness already keeps `localhost`, `127.0.0.1`, `::1`,
+`10/8`, `172.16/12`, `192.168/16`, `169.254/16` and `100.64/10` off the proxy,
+so the test says nothing about whether a *local* server works — it only checks
+the internet path through the proxy.
 
 ## GitHub Copilot CLI
 
@@ -332,15 +409,6 @@ console to confirm the account and login method. A detected saved login does not
 verify its plan, quota, expiry, or access to a particular model. See Claude's
 [authentication precedence](https://code.claude.com/docs/en/authentication#authentication-precedence)
 and [environment variable reference](https://code.claude.com/docs/en/env-vars).
-
-## Model selections in task exports
-
-The desktop task export includes the harness, requested model ID and requested effort for
-turns run after this update. An export for a team lead also includes turns run
-by its managed workers. The export adds the last model ID reported in the
-Claude response for each turn, when one is available. A turn without a reported
-ID is marked as unreported. Older turns have no model selection history.
-The model section excludes connection credentials and account details.
 
 ## Conversation continuity
 
@@ -850,14 +918,6 @@ Provider API. With neither, `session/new` fails with ACP `-32000` and the turn s
 with “Command Code is not signed in. Run `command-code login` in a terminal, or save
 an API key in Settings → Agents, then send again.”
 
-**Usage.** With a key saved in Settings → Agents or `COMMAND_CODE_API_KEY`, the Usage
-dialog reads Command Code's own billing endpoints (`/alpha/billing/credits` and
-`/alpha/usage/summary` on `api.commandcode.ai`) and shows the plan's monthly credits,
-then the rolling 5-hour and weekly limits with their reset times. The key is the only
-thing sent, both requests are read-only, and no response text is echoed. A CLI-only
-login (`~/.commandcode/auth.json`) is not read, so that setup asks for a key; the API's
-alpha endpoints may change without notice.
-
 **Models and effort.** `session/new` returns `configOptions` (`model`, and `effort`
 in the `thought_level` category) with display names and descriptions, so discovery
 opens an empty session and never prompts. The adapter applies the mode, then the
@@ -870,7 +930,11 @@ account's plan can reach (Command Code's own models plus any BYOK providers).
 choice maps onto one directly: Standard → `default`, Accept edits → `auto-accept`,
 Plan → `plan` (read-only: no edits or commands), Full access → `bypass`. A mode the
 server stops advertising fails the turn instead of silently running in a different
-one; plan mode needs no prompt prefix, because the harness enforces it.
+one; plan mode needs no prompt prefix, because the harness enforces it. When the model
+ends a plan with `exit_plan_mode`, PandaCode shows the harness's approval as
+"Implement the plan?"; approving switches the task back to the permission mode it had
+before Plan mode. A harness mode update (`current_mode_update`) is mirrored into the
+task's stored mode.
 
 **Turn data.** Streaming text, tool calls, context usage (`usage_update`), slash
 commands (`available_commands_update`, including installed skills), cancel, resume

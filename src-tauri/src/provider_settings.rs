@@ -9,19 +9,36 @@ use std::{
 use tauri::Emitter;
 
 #[derive(Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 struct Settings {
     executable_paths: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    proxies: Vec<Proxy>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    active_proxy: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    proxy_disabled: Vec<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    provider_proxy: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    global_no_proxy: String,
     /// Environment variables applied to every harness, unless a provider opts
     /// out — a proxy setup shared by all agents, for example.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     global_environment: BTreeMap<String, String>,
     /// Extra environment variables per provider, applied to every process
     /// PandaCode starts for that harness (runs, discovery, its console).
-    /// Plain values only: a variable that needs a secret belongs to a named
-    /// connection, whose secret values live in the secure store.
+    /// Plain values only: a secret variable has its value in the secure store
+    /// and only its name here (`secret_environment`).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     environment: BTreeMap<String, BTreeMap<String, String>>,
+    /// Names of secret variables per provider, saved under `env/<provider>/<name>`
+    /// in the secure store. A name is secret or plain, never both.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    secret_environment: BTreeMap<String, Vec<String>>,
+    /// Names of secret global variables, saved under `env/*/<name>`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    secret_global_environment: Vec<String>,
     /// Providers with the global environment turned off. Absent means on.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     global_environment_disabled: Vec<String>,
@@ -108,7 +125,11 @@ pub fn setup(dir: &Path) -> Result<()> {
             .mimo_endpoint
             .filter(|id| crate::providers::mimo_endpoint_url(id).is_some());
         settings.global_environment = valid_global_environment(settings.global_environment);
+        settings.secret_global_environment = valid_secret_names(settings.secret_global_environment);
         settings.environment = valid_environment(settings.environment);
+        settings.secret_environment = valid_secret_environment(settings.secret_environment);
+        reconcile_environment(&mut settings);
+        reconcile_proxies(&mut settings);
         settings
             .global_environment_disabled
             .retain(|provider| known_provider(provider));
@@ -176,18 +197,109 @@ fn valid_environment(
         .collect()
 }
 
-/// The provider's effective environment: the global list unless the provider
-/// opted out, with the provider's own variables overriding shared names.
+/// The secure-store account for a secret variable: `env/<provider>/<name>`, or
+/// `env/*/<name>` for the global set.
+fn secret_account(provider: Option<&str>, name: &str) -> String {
+    format!("env/{}/{name}", provider.unwrap_or("*"))
+}
+
+/// Keeps only valid names, one of each, and drops an over-cap set entirely.
+fn valid_secret_names(names: Vec<String>) -> Vec<String> {
+    let names: Vec<String> = names
+        .into_iter()
+        .filter(|name| valid_env_name(name))
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    if names.len() > MAX_ENV { Vec::new() } else { names }
+}
+
+fn valid_secret_environment(names: BTreeMap<String, Vec<String>>) -> BTreeMap<String, Vec<String>> {
+    names
+        .into_iter()
+        .filter(|(provider, _)| known_provider(provider))
+        .filter_map(|(provider, names)| {
+            let names = valid_secret_names(names);
+            (!names.is_empty()).then_some((provider, names))
+        })
+        .collect()
+}
+
+/// A name is secret or plain, never both: a hand-edited file that lists it in
+/// both keeps the secret, whose value is the one that never entered the file.
+/// Plain plus secret names together also stay within `MAX_ENV`, so an over-cap
+/// set is dropped exactly like an over-cap plain one.
+fn reconcile_environment(settings: &mut Settings) {
+    let Settings {
+        global_environment,
+        secret_global_environment,
+        environment,
+        secret_environment,
+        ..
+    } = settings;
+    secret_global_environment.retain(|name| global_environment.remove(name).is_none());
+    for (provider, names) in secret_environment.iter() {
+        if let Some(vars) = environment.get_mut(provider) {
+            for name in names {
+                vars.remove(name);
+            }
+        }
+    }
+    environment.retain(|_, vars| !vars.is_empty());
+    if global_environment.len() + secret_global_environment.len() > MAX_ENV {
+        global_environment.clear();
+        secret_global_environment.clear();
+    }
+    let over_cap: Vec<String> = environment
+        .keys()
+        .filter(|provider| {
+            environment[*provider].len() + secret_environment.get(*provider).map_or(0, Vec::len) > MAX_ENV
+        })
+        .cloned()
+        .collect();
+    for provider in over_cap {
+        environment.remove(&provider);
+        secret_environment.remove(&provider);
+    }
+    secret_environment.retain(|_, names| !names.is_empty());
+}
+
+/// The provider's effective environment: its selected proxy, the global list
+/// unless opted out, then its own variables, plain and secret alike. A
+/// secret whose stored value is missing is skipped, so one broken secret never
+/// blocks a launch.
 fn effective_environment(settings: &Settings, provider: &str) -> Vec<(String, String)> {
-    let mut vars = BTreeMap::new();
+    let mut vars: BTreeMap<String, String> = proxy_environment(settings, provider).into_iter().collect();
+    let mut insert = |name: String, value: String| {
+        if !PROXY_VARS.contains(&name.as_str()) || !value.is_empty() {
+            vars.insert(name, value);
+        }
+    };
     if !settings.global_environment_disabled.iter().any(|id| id == provider) {
-        vars.extend(settings.global_environment.iter().map(|(k, v)| (k.clone(), v.clone())));
+        for (name, value) in &settings.global_environment {
+            insert(name.to_owned(), value.to_owned());
+        }
+        for name in &settings.secret_global_environment {
+            if let Some(value) = crate::secret_store::get(SERVICE, &secret_account(None, name)) {
+                insert(name.to_owned(), value);
+            }
+        }
     }
     if let Some(own) = settings.environment.get(provider) {
-        vars.extend(own.iter().map(|(k, v)| (k.clone(), v.clone())));
+        for (name, value) in own {
+            insert(name.to_owned(), value.to_owned());
+        }
+    }
+    if let Some(names) = settings.secret_environment.get(provider) {
+        for name in names {
+            if let Some(value) = crate::secret_store::get(SERVICE, &secret_account(Some(provider), name)) {
+                insert(name.to_owned(), value);
+            }
+        }
     }
     vars.into_iter().collect()
 }
+
 
 /// The provider's effective environment variables, in name order.
 pub fn environment(provider: &str) -> Vec<(String, String)> {
@@ -416,13 +528,53 @@ fn mimo_endpoints() -> Vec<MimoEndpoint> {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct EnvironmentVariable {
+    name: String,
+    secret: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    value: Option<String>,
+}
+
+impl EnvironmentVariable {
+    fn plain(name: &str, value: &str) -> Self {
+        EnvironmentVariable { name: name.into(), secret: false, value: Some(value.into()) }
+    }
+    fn secret(name: &str) -> Self {
+        EnvironmentVariable { name: name.into(), secret: true, value: None }
+    }
+}
+
+/// Plain values are visible and editable; a secret is only its name, like an
+/// API key.
+fn environment_variables<'a>(
+    plain: impl Iterator<Item = (&'a String, &'a String)>,
+    secret: impl Iterator<Item = &'a String>,
+) -> Vec<EnvironmentVariable> {
+    let mut vars: BTreeMap<String, EnvironmentVariable> = BTreeMap::new();
+    for (name, value) in plain {
+        vars.insert(name.clone(), EnvironmentVariable::plain(name, value));
+    }
+    for name in secret {
+        vars.entry(name.clone()).or_insert_with(|| EnvironmentVariable::secret(name));
+    }
+    vars.into_values().collect()
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Configuration {
+    proxies: Vec<ProxyView>,
+    active_proxy: Option<String>,
+    global_no_proxy: String,
+    use_global_proxy: BTreeMap<String, bool>,
+    provider_proxy: BTreeMap<String, String>,
+    proxy_env_conflicts: BTreeMap<String, Vec<String>>,
     executable_paths: BTreeMap<String, String>,
-    /// Names of the global environment variables applied to every harness.
-    /// Values never reach the webview, like API keys.
-    global_environment: Vec<String>,
-    /// Per provider, the names of its own saved environment variables.
-    environment: BTreeMap<String, Vec<String>>,
+    /// The global environment applied to every harness; a secret carries only
+    /// its name, never its value.
+    global_environment: Vec<EnvironmentVariable>,
+    /// Per provider, its own saved environment variables.
+    environment: BTreeMap<String, Vec<EnvironmentVariable>>,
     /// Whether each provider's launches include the global environment.
     use_global_environment: BTreeMap<String, bool>,
     /// Every known harness as (id, name). The settings page generates a card
@@ -448,26 +600,41 @@ pub struct Configuration {
     credential_storage_error: Option<String>,
 }
 fn configuration() -> Result<Configuration> {
-    let (paths, mimo_endpoint, claude_connection_mode, claude_cli_refresh, environment, global_environment, global_environment_disabled) = {
-        let runtime = CONFIG
-            .get()
-            .ok_or("Provider settings are not initialized.")?
-            .lock()
-            .map_err(|e| e.to_string())?;
-        (
-            runtime.settings.executable_paths.clone(),
-            runtime.settings.mimo_endpoint.clone(),
-            runtime.settings.claude_connection_mode,
-            !runtime.settings.claude_cli_refresh_off,
-            runtime.settings.environment.clone(),
-            runtime.settings.global_environment.keys().cloned().collect(),
-            runtime.settings.global_environment_disabled.clone(),
-        )
-    };
-    let environment: BTreeMap<String, Vec<String>> = environment
+    // A clone keeps every secret read outside the lock.
+    let settings = CONFIG
+        .get()
+        .ok_or("Provider settings are not initialized.")?
+        .lock()
+        .map_err(|e| e.to_string())?
+        .settings
+        .clone();
+    configuration_for_settings(&settings)
+}
+
+fn configuration_for_settings(settings: &Settings) -> Result<Configuration> {
+    let (paths, mimo_endpoint, claude_connection_mode, claude_cli_refresh, environment, secret_environment, global_environment, secret_global_environment, global_environment_disabled) = (
+        settings.executable_paths.clone(),
+        settings.mimo_endpoint.clone(),
+        settings.claude_connection_mode,
+        !settings.claude_cli_refresh_off,
+        settings.environment.clone(),
+        settings.secret_environment.clone(),
+        settings.global_environment.clone(),
+        settings.secret_global_environment.clone(),
+        settings.global_environment_disabled.clone(),
+    );
+    let providers: std::collections::BTreeSet<String> =
+        environment.keys().chain(secret_environment.keys()).cloned().collect();
+    let environment: BTreeMap<String, Vec<EnvironmentVariable>> = providers
         .into_iter()
-        .map(|(provider, vars)| (provider, vars.into_keys().collect()))
+        .map(|provider| {
+            let secrets = secret_environment.get(&provider).map(Vec::as_slice).unwrap_or_default();
+            let vars = environment.get(&provider).into_iter().flat_map(|vars| vars.iter());
+            (provider, environment_variables(vars, secrets.iter()))
+        })
         .collect();
+    let global_environment =
+        environment_variables(global_environment.iter(), secret_global_environment.iter());
     let use_global_environment: BTreeMap<String, bool> = crate::providers::PROVIDERS
         .iter()
         .map(|(id, _)| (id.to_string(), !global_environment_disabled.iter().any(|name| name == id)))
@@ -492,6 +659,13 @@ fn configuration() -> Result<Configuration> {
     };
     let from_environment = |name: &str| std::env::var(name).is_ok_and(|key| validate_key(&key).is_ok());
     Ok(Configuration {
+        proxies: proxy_views(settings),
+        active_proxy: settings.active_proxy.clone(),
+        global_no_proxy: settings.global_no_proxy.clone(),
+        use_global_proxy: crate::providers::PROVIDERS.iter().map(|(id, _)|
+            (id.to_string(), !settings.proxy_disabled.iter().any(|p| p == id))).collect(),
+        provider_proxy: settings.provider_proxy.clone(),
+        proxy_env_conflicts: proxy_env_conflicts(settings),
         executable_paths: paths,
         global_environment,
         environment,
@@ -541,15 +715,19 @@ fn validated_executable(provider: &str, path: &str) -> Result<Option<String>> {
     }
     validated_executable_path(path)
 }
-/// An absolute path to an existing executable file, canonicalized.
+/// An absolute path to an existing executable file, kept exactly as given.
+///
+/// The path is not rewritten (no symlink resolution, no lexical normalisation):
+/// a symlinked path stays a symlink so a package upgrade can repoint it. The
+/// resolved target is only used to prove the file exists and is executable.
 pub(crate) fn validated_executable_path(path: &str) -> Result<Option<String>> {
     if path.len() > 4096 || path.chars().any(char::is_control) || !Path::new(path).is_absolute() {
         return Err("Choose an absolute path to the installed executable.".into());
     }
-    let path = Path::new(path)
+    let resolved = Path::new(path)
         .canonicalize()
         .map_err(|_| "The executable could not be found.".to_string())?;
-    let meta = path.metadata().map_err(|e| e.to_string())?;
+    let meta = resolved.metadata().map_err(|e| e.to_string())?;
     if !meta.is_file() {
         return Err("Choose an executable file, not a folder.".into());
     }
@@ -560,7 +738,7 @@ pub(crate) fn validated_executable_path(path: &str) -> Result<Option<String>> {
             return Err("This file is not executable.".into());
         }
     }
-    Ok(Some(path.to_string_lossy().into_owned()))
+    Ok(Some(path.to_owned()))
 }
 fn save_executable(provider: &str, path: &str) -> Result<()> {
     let path = validated_executable(provider, path)?;
@@ -585,7 +763,7 @@ fn persist(runtime: &mut Runtime, next: Settings) -> Result<()> {
     if bytes.len() > 56 * 1024 {
         return Err("Provider settings would grow past their storage budget. Remove some environment variables and try again.".into());
     }
-    // Environment values can embed proxy credentials, so the file gets the
+    // Environment values can embed credentials, so the file gets the
     // app's secret-file treatment: 0600 (unix), flushed, then renamed into place.
     let temp = runtime.path.with_extension("json.tmp");
     #[cfg(unix)]
@@ -660,27 +838,49 @@ fn validated_environment_variable(provider: &str, name: &str, value: &str) -> Re
     Ok(())
 }
 
-fn save_global_environment_variable(name: &str, value: &str) -> Result<()> {
-    let mut runtime = CONFIG
-        .get()
-        .ok_or("Provider settings are not initialized.")?
-        .lock()
-        .map_err(|e| e.to_string())?;
-    let mut next = runtime.settings.clone();
-    insert_var(&mut next.global_environment, name, value)?;
-    persist(&mut runtime, next)
+/// Replaces a secret after a settings save failed, so the earlier state is kept.
+fn restore_secret(account: &str, previous: Option<&str>) {
+    match previous {
+        Some(value) => {
+            let _ = crate::secret_store::set(SERVICE, account, value);
+        }
+        None => crate::secret_store::remove(SERVICE, account),
+    }
 }
 
-fn remove_global_environment_variable(name: &str) -> Result<bool> {
-    let mut runtime = CONFIG
-        .get()
-        .ok_or("Provider settings are not initialized.")?
-        .lock()
-        .map_err(|e| e.to_string())?;
+/// Writes a secret before the settings file, so a refused secret changes
+/// nothing; a failed save restores it instead. The plain path saves first and
+/// only then forgets the stale secret.
+fn save_secret(runtime: &mut Runtime, next: Settings, account: &str, value: &str) -> Result<()> {
+    let previous = crate::secret_store::get(SERVICE, account);
+    crate::secret_store::set(SERVICE, account, value)?;
+    if let Err(error) = persist(runtime, next) {
+        restore_secret(account, previous.as_deref());
+        return Err(error);
+    }
+    Ok(())
+}
+
+fn save_global_environment_variable(runtime: &mut Runtime, name: &str, value: &str, secret: bool) -> Result<()> {
     let mut next = runtime.settings.clone();
-    let removed = drop_var(&mut next.global_environment, name);
+    insert_global_var(&mut next, name, value, secret)?;
+    let account = secret_account(None, name);
+    if secret {
+        return save_secret(runtime, next, &account, value);
+    }
+    persist(runtime, next)?;
+    crate::secret_store::remove(SERVICE, &account);
+    Ok(())
+}
+
+fn remove_global_environment_variable(runtime: &mut Runtime, name: &str) -> Result<bool> {
+    let mut next = runtime.settings.clone();
+    let removed = drop_global_var(&mut next, name);
     if removed {
-        persist(&mut runtime, next)?;
+        persist(runtime, next)?;
+    }
+    if valid_env_name(name) {
+        crate::secret_store::remove(SERVICE, &secret_account(None, name));
     }
     Ok(removed)
 }
@@ -703,76 +903,108 @@ fn set_use_global_environment(provider: &str, use_global: bool) -> Result<()> {
     persist(&mut runtime, next)
 }
 
-fn insert_var(vars: &mut BTreeMap<String, String>, name: &str, value: &str) -> Result<()> {
+
+/// A name is secret XOR plain, so the cap counts the two lists together. A
+/// saved name can always be replaced, even at the cap.
+fn insert_var(
+    vars: &mut BTreeMap<String, String>,
+    secrets: &mut Vec<String>,
+    name: &str,
+    value: &str,
+    secret: bool,
+) -> Result<()> {
     validated_env_name(name)?;
     if value.len() > MAX_ENV_VALUE || value.contains('\0') {
         return Err(format!("The value of {name} is too long or contains NUL."));
     }
-    if vars.len() >= MAX_ENV && !vars.contains_key(name) {
+    let saved = vars.contains_key(name) || secrets.iter().any(|saved| saved == name);
+    if !saved && vars.len() + secrets.len() >= MAX_ENV {
         return Err(format!("Use up to {MAX_ENV} environment variables."));
     }
-    vars.insert(name.into(), value.into());
+    if secret {
+        vars.remove(name);
+        if !secrets.iter().any(|saved| saved == name) {
+            secrets.push(name.into());
+            secrets.sort_unstable();
+        }
+    } else {
+        secrets.retain(|saved| saved != name);
+        vars.insert(name.into(), value.into());
+    }
+    Ok(())
+}
+
+fn drop_secret(secrets: &mut Vec<String>, name: &str) -> bool {
+    let before = secrets.len();
+    secrets.retain(|saved| saved != name);
+    secrets.len() != before
+}
+
+/// Returns whether the variable existed.
+fn drop_var(vars: &mut BTreeMap<String, String>, secrets: &mut Vec<String>, name: &str) -> bool {
+    if !valid_env_name(name) {
+        return false;
+    }
+    let plain = vars.remove(name).is_some();
+    plain | drop_secret(secrets, name)
+}
+
+fn insert_global_var(settings: &mut Settings, name: &str, value: &str, secret: bool) -> Result<()> {
+    insert_var(&mut settings.global_environment, &mut settings.secret_global_environment, name, value, secret)
+}
+
+fn drop_global_var(settings: &mut Settings, name: &str) -> bool {
+    drop_var(&mut settings.global_environment, &mut settings.secret_global_environment, name)
+}
+
+fn insert_env_var(settings: &mut Settings, provider: &str, name: &str, value: &str, secret: bool) -> Result<()> {
+    validated_environment_variable(provider, name, value)?;
+    let vars = settings.environment.entry(provider.into()).or_default();
+    let secrets = settings.secret_environment.entry(provider.into()).or_default();
+    insert_var(vars, secrets, name, value, secret)?;
+    settings.environment.retain(|_, vars| !vars.is_empty());
+    settings.secret_environment.retain(|_, names| !names.is_empty());
     Ok(())
 }
 
 /// Returns whether the variable existed.
-fn drop_var(vars: &mut BTreeMap<String, String>, name: &str) -> bool {
-    if !valid_env_name(name) {
-        return false;
-    }
-    vars.remove(name).is_some()
-}
-
-fn insert_env_var(
-    environment: &mut BTreeMap<String, BTreeMap<String, String>>,
-    provider: &str,
-    name: &str,
-    value: &str,
-) -> Result<()> {
-    validated_environment_variable(provider, name, value)?;
-    let vars = environment.entry(provider.into()).or_default();
-    insert_var(vars, name, value)
-}
-
-/// Returns whether the variable existed.
-fn drop_env_var(
-    environment: &mut BTreeMap<String, BTreeMap<String, String>>,
-    provider: &str,
-    name: &str,
-) -> bool {
+fn drop_env_var(settings: &mut Settings, provider: &str, name: &str) -> bool {
     if validated_environment_variable(provider, name, "").is_err() {
         return false;
     }
-    let removed = environment
+    let plain = settings
+        .environment
         .get_mut(provider)
-        .is_some_and(|vars| drop_var(vars, name));
-    if removed {
-        environment.retain(|_, vars| !vars.is_empty());
+        .is_some_and(|vars| vars.remove(name).is_some());
+    let secret = settings
+        .secret_environment
+        .get_mut(provider)
+        .is_some_and(|names| drop_secret(names, name));
+    settings.environment.retain(|_, vars| !vars.is_empty());
+    settings.secret_environment.retain(|_, names| !names.is_empty());
+    plain | secret
+}
+
+fn save_environment_variable(runtime: &mut Runtime, provider: &str, name: &str, value: &str, secret: bool) -> Result<()> {
+    let mut next = runtime.settings.clone();
+    insert_env_var(&mut next, provider, name, value, secret)?;
+    let account = secret_account(Some(provider), name);
+    if secret {
+        return save_secret(runtime, next, &account, value);
     }
-    removed
+    persist(runtime, next)?;
+    crate::secret_store::remove(SERVICE, &account);
+    Ok(())
 }
 
-fn save_environment_variable(provider: &str, name: &str, value: &str) -> Result<()> {
-    let mut runtime = CONFIG
-        .get()
-        .ok_or("Provider settings are not initialized.")?
-        .lock()
-        .map_err(|e| e.to_string())?;
+fn remove_environment_variable(runtime: &mut Runtime, provider: &str, name: &str) -> Result<bool> {
     let mut next = runtime.settings.clone();
-    insert_env_var(&mut next.environment, provider, name, value)?;
-    persist(&mut runtime, next)
-}
-
-fn remove_environment_variable(provider: &str, name: &str) -> Result<bool> {
-    let mut runtime = CONFIG
-        .get()
-        .ok_or("Provider settings are not initialized.")?
-        .lock()
-        .map_err(|e| e.to_string())?;
-    let mut next = runtime.settings.clone();
-    let removed = drop_env_var(&mut next.environment, provider, name);
+    let removed = drop_env_var(&mut next, provider, name);
     if removed {
-        persist(&mut runtime, next)?;
+        persist(runtime, next)?;
+    }
+    if valid_env_name(name) && known_provider(provider) {
+        crate::secret_store::remove(SERVICE, &secret_account(Some(provider), name));
     }
     Ok(removed)
 }
@@ -799,16 +1031,26 @@ fn refresh_all(app: &tauri::AppHandle, result: Configuration) -> Result<Configur
     Ok(result)
 }
 
+fn with_runtime<T>(change: impl FnOnce(&mut Runtime) -> Result<T>) -> Result<T> {
+    let mut runtime = CONFIG
+        .get()
+        .ok_or("Provider settings are not initialized.")?
+        .lock()
+        .map_err(|e| e.to_string())?;
+    change(&mut runtime)
+}
+
 #[tauri::command]
 pub async fn provider_set_environment_variable(
     app: tauri::AppHandle,
     provider: String,
     name: String,
     value: String,
+    secret: bool,
 ) -> Result<Configuration> {
     let changed = provider.clone();
     let result = crate::blocking(move || {
-        save_environment_variable(&provider, &name, &value)?;
+        with_runtime(|runtime| save_environment_variable(runtime, &provider, &name, &value, secret))?;
         configuration()
     })
     .await?;
@@ -823,7 +1065,7 @@ pub async fn provider_remove_environment_variable(
 ) -> Result<Configuration> {
     let changed = provider.clone();
     let result = crate::blocking(move || {
-        remove_environment_variable(&provider, &name)?;
+        with_runtime(|runtime| remove_environment_variable(runtime, &provider, &name))?;
         configuration()
     })
     .await?;
@@ -835,9 +1077,10 @@ pub async fn provider_set_global_environment_variable(
     app: tauri::AppHandle,
     name: String,
     value: String,
+    secret: bool,
 ) -> Result<Configuration> {
     let result = crate::blocking(move || {
-        save_global_environment_variable(&name, &value)?;
+        with_runtime(|runtime| save_global_environment_variable(runtime, &name, &value, secret))?;
         configuration()
     })
     .await?;
@@ -850,7 +1093,7 @@ pub async fn provider_remove_global_environment_variable(
     name: String,
 ) -> Result<Configuration> {
     let result = crate::blocking(move || {
-        remove_global_environment_variable(&name)?;
+        with_runtime(|runtime| remove_global_environment_variable(runtime, &name))?;
         configuration()
     })
     .await?;
@@ -1168,6 +1411,12 @@ mod tests {
         let (glm_key_saved, credential_storage_error) =
             credential_status(Ok(Some("fixture-private-key".into())));
         let configuration = Configuration {
+            proxies: Vec::new(),
+            active_proxy: None,
+            global_no_proxy: String::new(),
+            use_global_proxy: BTreeMap::new(),
+            provider_proxy: BTreeMap::new(),
+            proxy_env_conflicts: BTreeMap::new(),
             executable_paths: BTreeMap::new(),
             global_environment: Vec::new(),
             environment: BTreeMap::new(),
@@ -1198,9 +1447,18 @@ mod tests {
         let warning = "Secure storage is locked. Set ZAI_API_KEY in the app environment.";
         let (glm_key_saved, credential_storage_error) = credential_status(Err(warning.into()));
         let configuration = Configuration {
+            proxies: Vec::new(),
+            active_proxy: None,
+            global_no_proxy: String::new(),
+            use_global_proxy: BTreeMap::new(),
+            provider_proxy: BTreeMap::new(),
+            proxy_env_conflicts: BTreeMap::new(),
             executable_paths: BTreeMap::from([("glm".into(), "installed-executable".into())]),
-            global_environment: vec!["HTTP_PROXY".into()],
-            environment: BTreeMap::from([("glm".into(), vec!["HTTPS_PROXY".into()])]),
+            global_environment: vec![EnvironmentVariable::plain("HTTP_PROXY", "http://127.0.0.1:7890")],
+            environment: BTreeMap::from([(
+                "glm".into(),
+                vec![EnvironmentVariable::plain("HTTPS_PROXY", "http://127.0.0.1:7890")],
+            )]),
             use_global_environment: BTreeMap::from([("glm".into(), false), ("claude".into(), true)]),
             providers: Vec::new(),
             glm_key_saved,
@@ -1301,10 +1559,11 @@ mod tests {
             .insert("opencode".into(), "/opt/bin/opencode".into());
         let value = serde_json::to_value(&settings).unwrap();
         assert_eq!(value.as_object().unwrap().len(), 1);
-        assert!(serde_json::from_value::<Settings>(
-            serde_json::json!({"executablePaths":{},"apiKey":"secret"})
-        )
-        .is_err());
+        // A field another build wrote is ignored, not an error: refusing the file
+        // would lose every saved variable and executable path.
+        let settings: Settings =
+            serde_json::from_value(serde_json::json!({"executablePaths":{},"startAheadOff":true})).unwrap();
+        assert!(settings.executable_paths.is_empty());
     }
     #[test]
     fn running_claude_code_to_refresh_is_on_until_turned_off_and_old_renewal_switches_are_ignored() {
@@ -1541,11 +1800,24 @@ mod tests {
     fn configuration_lists_environment_names_but_never_values() {
         let (glm_key_saved, _) = credential_status(Ok(None));
         let configuration = Configuration {
+            proxies: Vec::new(),
+            active_proxy: None,
+            global_no_proxy: String::new(),
+            use_global_proxy: BTreeMap::new(),
+            provider_proxy: BTreeMap::new(),
+            proxy_env_conflicts: BTreeMap::new(),
             executable_paths: BTreeMap::new(),
-            global_environment: vec!["HTTP_PROXY".into()],
+            global_environment: vec![
+                EnvironmentVariable::plain("HTTP_PROXY", "http://127.0.0.1:7890"),
+                EnvironmentVariable::secret("TOKEN"),
+            ],
             environment: BTreeMap::from([(
                 "claude".into(),
-                vec!["HTTPS_PROXY".into(), "NO_PROXY".into()],
+                vec![
+                    EnvironmentVariable::secret("ANTHROPIC_AUTH_TOKEN"),
+                    EnvironmentVariable::plain("HTTPS_PROXY", "http://127.0.0.1:7890"),
+                    EnvironmentVariable::plain("NO_PROXY", "localhost"),
+                ],
             )]),
             use_global_environment: BTreeMap::from([("glm".into(), false), ("claude".into(), true)]),
             providers: Vec::new(),
@@ -1567,8 +1839,21 @@ mod tests {
             credential_storage_error: None,
         };
         let encoded = serde_json::to_value(&configuration).unwrap();
-        assert_eq!(encoded["environment"]["claude"], serde_json::json!(["HTTPS_PROXY", "NO_PROXY"]));
-        assert_eq!(encoded["globalEnvironment"], serde_json::json!(["HTTP_PROXY"]));
+        assert_eq!(
+            encoded["environment"]["claude"],
+            serde_json::json!([
+                {"name": "ANTHROPIC_AUTH_TOKEN", "secret": true},
+                {"name": "HTTPS_PROXY", "secret": false, "value": "http://127.0.0.1:7890"},
+                {"name": "NO_PROXY", "secret": false, "value": "localhost"},
+            ])
+        );
+        assert_eq!(
+            encoded["globalEnvironment"],
+            serde_json::json!([
+                {"name": "HTTP_PROXY", "secret": false, "value": "http://127.0.0.1:7890"},
+                {"name": "TOKEN", "secret": true},
+            ])
+        );
         assert_eq!(encoded["useGlobalEnvironment"]["glm"], false);
         assert_eq!(encoded["useGlobalEnvironment"]["claude"], true);
     }
@@ -1606,23 +1891,23 @@ mod tests {
 
     #[test]
     fn saving_and_removing_environment_variables_updates_the_map_and_prunes_empty_providers() {
-        let mut environment = BTreeMap::new();
-        insert_env_var(&mut environment, "claude", "HTTPS_PROXY", "http://127.0.0.1:7890").unwrap();
-        assert_eq!(environment["claude"]["HTTPS_PROXY"], "http://127.0.0.1:7890");
+        let mut settings = Settings::default();
+        insert_env_var(&mut settings, "claude", "HTTPS_PROXY", "http://127.0.0.1:7890", false).unwrap();
+        assert_eq!(settings.environment["claude"]["HTTPS_PROXY"], "http://127.0.0.1:7890");
         // Saving again replaces the value instead of duplicating the name.
-        insert_env_var(&mut environment, "claude", "HTTPS_PROXY", "http://127.0.0.1:1080").unwrap();
-        assert_eq!(environment["claude"]["HTTPS_PROXY"], "http://127.0.0.1:1080");
-        assert!(drop_env_var(&mut environment, "claude", "HTTPS_PROXY"));
-        assert!(!environment.contains_key("claude"), "the last variable prunes the provider");
-        assert!(!drop_env_var(&mut environment, "claude", "HTTPS_PROXY"), "removing is idempotent");
-        insert_env_var(&mut environment, "claude", "A", "1").unwrap();
+        insert_env_var(&mut settings, "claude", "HTTPS_PROXY", "http://127.0.0.1:1080", false).unwrap();
+        assert_eq!(settings.environment["claude"]["HTTPS_PROXY"], "http://127.0.0.1:1080");
+        assert!(drop_env_var(&mut settings, "claude", "HTTPS_PROXY"));
+        assert!(!settings.environment.contains_key("claude"), "the last variable prunes the provider");
+        assert!(!drop_env_var(&mut settings, "claude", "HTTPS_PROXY"), "removing is idempotent");
+        insert_env_var(&mut settings, "claude", "A", "1", false).unwrap();
         for index in 1..MAX_ENV {
-            insert_env_var(&mut environment, "claude", &format!("V{index}"), "1").unwrap();
+            insert_env_var(&mut settings, "claude", &format!("V{index}"), "1", false).unwrap();
         }
-        assert!(insert_env_var(&mut environment, "claude", "ONE_MORE", "1").is_err());
+        assert!(insert_env_var(&mut settings, "claude", "ONE_MORE", "1", false).is_err());
         // A saved name can always be replaced, even at the cap.
-        insert_env_var(&mut environment, "claude", "A", "2").unwrap();
-        assert_eq!(environment["claude"]["A"], "2");
+        insert_env_var(&mut settings, "claude", "A", "2", false).unwrap();
+        assert_eq!(settings.environment["claude"]["A"], "2");
     }
     #[test]
     fn rejects_command_strings_directories_and_unknown_providers() {
@@ -1644,11 +1929,66 @@ mod tests {
             let path = file.to_str().unwrap();
             assert!(validated_executable("codex", path).is_err(), "a file without the executable bit");
             std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o755)).unwrap();
-            let canonical = file.canonicalize().unwrap().to_string_lossy().into_owned();
-            assert_eq!(validated_executable("codex", path).unwrap(), Some(canonical.clone()));
-            assert_eq!(validated_executable("claude", path).unwrap(), Some(canonical));
+            // The typed path comes back unchanged: temp_dir() is /var/... on macOS while
+            // canonicalize() yields /private/var/..., so this proves nothing resolved it.
+            assert_eq!(
+                validated_executable("codex", path).unwrap(),
+                Some(path.to_owned())
+            );
+            assert_eq!(
+                validated_executable("claude", path).unwrap(),
+                Some(path.to_owned())
+            );
             std::fs::remove_file(file).unwrap();
         }
+    }
+    #[cfg(unix)]
+    #[test]
+    fn keeps_a_symlinked_executable_as_the_saved_path() {
+        use std::os::unix::fs::PermissionsExt;
+        let directory =
+            std::env::temp_dir().join(format!("pandacode-symlink-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&directory).unwrap();
+        let real = directory.join("codex-real");
+        std::fs::write(&real, "").unwrap();
+        std::fs::set_permissions(&real, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let link = directory.join("codex-link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let link_path = link.to_str().unwrap();
+        // A symlink stays a symlink, so a package upgrade repoints it without re-saving.
+        assert_eq!(
+            validated_executable("codex", link_path).unwrap(),
+            Some(link_path.to_owned())
+        );
+        assert_ne!(
+            link_path,
+            real.to_str().unwrap(),
+            "the target differs from the link, so nothing resolved it"
+        );
+        // The check runs against the resolved target: a link to a non-executable file fails.
+        let plain = directory.join("not-executable");
+        std::fs::write(&plain, "").unwrap();
+        std::fs::set_permissions(&plain, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let plain_link = directory.join("not-executable-link");
+        std::os::unix::fs::symlink(&plain, &plain_link).unwrap();
+        assert_eq!(
+            validated_executable("codex", plain_link.to_str().unwrap()).unwrap_err(),
+            "This file is not executable."
+        );
+        // A broken symlink is refused exactly like a missing file.
+        let dangling = directory.join("dangling");
+        std::os::unix::fs::symlink(directory.join("missing"), &dangling).unwrap();
+        assert_eq!(
+            validated_executable("codex", dangling.to_str().unwrap()).unwrap_err(),
+            "The executable could not be found."
+        );
+        // The saved value is handed on unchanged; executable_override() only wraps this in a PathBuf.
+        let mut settings = Settings::default();
+        settings
+            .executable_paths
+            .insert("codex".into(), link_path.to_owned());
+        assert_eq!(saved_executable(&settings, "codex").unwrap(), link_path);
+        std::fs::remove_dir_all(directory).unwrap();
     }
     #[test]
     fn glm_and_mimo_follow_the_claude_location_and_nothing_else_does() {
@@ -1700,5 +2040,815 @@ mod tests {
     fn usage_secure_store_busy_check_returns_without_another_os_read() {
         let _access = glm_usage_access().unwrap();
         assert!(glm_key_for_usage().unwrap_err().contains("busy"));
+    }
+
+    fn runtime(directory: &Path) -> Runtime {
+        Runtime { path: directory.join("provider-settings.json"), settings: Settings::default() }
+    }
+
+    fn unique_name() -> String {
+        format!("SECRET_{}", uuid::Uuid::new_v4().simple())
+    }
+
+    #[test]
+    fn a_file_with_an_unknown_field_still_loads_every_known_setting() {
+        // `startAheadOff` was written by 0.3.134 and removed in 0.3.135.
+        let settings: Settings = serde_json::from_str(
+            r#"{"executablePaths":{"codex":"/opt/bin/codex"},"startAheadOff":true,
+                "globalEnvironment":{"HTTP_PROXY":"http://127.0.0.1:7890"},
+                "environment":{"claude":{"HTTPS_PROXY":"http://127.0.0.1:1080"}}}"#,
+        )
+        .unwrap();
+        assert_eq!(settings.executable_paths["codex"], "/opt/bin/codex");
+        assert_eq!(settings.global_environment["HTTP_PROXY"], "http://127.0.0.1:7890");
+        assert_eq!(settings.environment["claude"]["HTTPS_PROXY"], "http://127.0.0.1:1080");
+        // It is never written back.
+        let saved = serde_json::to_value(&settings).unwrap();
+        assert!(saved.get("startAheadOff").is_none());
+    }
+
+    #[test]
+    fn a_secret_round_trips_without_its_value_entering_the_file() {
+        let directory = std::env::temp_dir().join(format!("pandacode-secret-save-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&directory).unwrap();
+        let mut runtime = runtime(&directory);
+        let name = unique_name();
+        save_environment_variable(&mut runtime, "claude", &name, "private-value", true).unwrap();
+        assert_eq!(runtime.settings.secret_environment["claude"], [name.as_str()]);
+        assert!(!runtime.settings.environment.contains_key("claude"), "no plain value for a secret");
+        let file = std::fs::read_to_string(&runtime.path).unwrap();
+        assert!(!file.contains("private-value"), "the secret value never enters the file");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&file).unwrap()["secretEnvironment"]["claude"],
+            serde_json::json!([name])
+        );
+        assert_eq!(
+            effective_environment(&runtime.settings, "claude"),
+            [(name.clone(), "private-value".to_string())]
+        );
+        provider_settings_test_cleanup(&directory, &[&name]);
+    }
+
+    /// Removes the test's secure-store entries and temp directory.
+    fn provider_settings_test_cleanup(directory: &Path, names: &[&str]) {
+        for name in names {
+            crate::secret_store::remove(SERVICE, &secret_account(Some("claude"), name));
+            crate::secret_store::remove(SERVICE, &secret_account(None, name));
+        }
+        let _ = std::fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn switching_between_plain_and_secret_moves_the_name_between_the_lists() {
+        let directory = std::env::temp_dir().join(format!("pandacode-secret-switch-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&directory).unwrap();
+        let mut runtime = runtime(&directory);
+        let name = unique_name();
+        save_environment_variable(&mut runtime, "claude", &name, "plain-value", false).unwrap();
+        assert_eq!(runtime.settings.environment["claude"][&name], "plain-value");
+        assert!(!runtime.settings.secret_environment.contains_key("claude"));
+        // Plain to secret: the plain value goes, so it can never shadow the secret.
+        save_environment_variable(&mut runtime, "claude", &name, "secret-value", true).unwrap();
+        assert!(!runtime.settings.environment.contains_key("claude"), "the plain value is removed");
+        assert_eq!(runtime.settings.secret_environment["claude"], [name.as_str()]);
+        assert_eq!(
+            crate::secret_store::get(SERVICE, &secret_account(Some("claude"), &name)).as_deref(),
+            Some("secret-value")
+        );
+        // Secret back to plain: the secret entry and its stored value are removed.
+        save_environment_variable(&mut runtime, "claude", &name, "plain-again", false).unwrap();
+        assert_eq!(runtime.settings.environment["claude"][&name], "plain-again");
+        assert!(!runtime.settings.secret_environment.contains_key("claude"));
+        assert_eq!(crate::secret_store::get(SERVICE, &secret_account(Some("claude"), &name)), None);
+        provider_settings_test_cleanup(&directory, &[&name]);
+    }
+
+    #[test]
+    fn removal_clears_the_name_from_both_lists_and_the_store() {
+        let directory = std::env::temp_dir().join(format!("pandacode-secret-remove-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&directory).unwrap();
+        let mut runtime = runtime(&directory);
+        let name = unique_name();
+        save_environment_variable(&mut runtime, "claude", &name, "private-value", true).unwrap();
+        save_global_environment_variable(&mut runtime, &name, "global-value", true).unwrap();
+        assert!(remove_environment_variable(&mut runtime, "claude", &name).unwrap());
+        assert!(remove_global_environment_variable(&mut runtime, &name).unwrap());
+        assert!(runtime.settings.secret_environment.is_empty());
+        assert!(runtime.settings.environment.is_empty());
+        assert!(runtime.settings.secret_global_environment.is_empty());
+        assert!(runtime.settings.global_environment.is_empty());
+        assert_eq!(crate::secret_store::get(SERVICE, &secret_account(Some("claude"), &name)), None);
+        assert_eq!(crate::secret_store::get(SERVICE, &secret_account(None, &name)), None);
+        assert!(!remove_environment_variable(&mut runtime, "claude", &name).unwrap(), "removal is idempotent");
+        provider_settings_test_cleanup(&directory, &[&name]);
+    }
+
+    #[test]
+    fn a_secret_whose_value_is_missing_is_skipped_without_failing() {
+        let directory = std::env::temp_dir().join(format!("pandacode-secret-missing-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&directory).unwrap();
+        let mut runtime = runtime(&directory);
+        let missing = unique_name();
+        let present = unique_name();
+        insert_env_var(&mut runtime.settings, "claude", &missing, "x", true).unwrap();
+        save_environment_variable(&mut runtime, "claude", &present, "private-value", true).unwrap();
+        insert_env_var(&mut runtime.settings, "claude", "HTTPS_PROXY", "http://127.0.0.1:7890", false).unwrap();
+        // The stored value for `missing` was never written, as after a lost store.
+        assert_eq!(crate::secret_store::get(SERVICE, &secret_account(Some("claude"), &missing)), None);
+        assert_eq!(
+            effective_environment(&runtime.settings, "claude"),
+            [
+                ("HTTPS_PROXY".to_string(), "http://127.0.0.1:7890".to_string()),
+                (present.clone(), "private-value".to_string()),
+            ]
+        );
+        provider_settings_test_cleanup(&directory, &[&missing, &present]);
+    }
+
+    #[test]
+    fn the_environment_cap_counts_plain_and_secret_names_together() {
+        let mut settings = Settings::default();
+        for index in 0..MAX_ENV / 2 {
+            insert_env_var(&mut settings, "claude", &format!("PLAIN_{index}"), "1", false).unwrap();
+            insert_env_var(&mut settings, "claude", &format!("SECRET_{index}"), "2", true).unwrap();
+        }
+        assert_eq!(settings.environment["claude"].len(), MAX_ENV / 2);
+        assert_eq!(settings.secret_environment["claude"].len(), MAX_ENV / 2);
+        assert!(insert_env_var(&mut settings, "claude", "ONE_MORE", "1", false).is_err());
+        assert!(insert_env_var(&mut settings, "claude", "ONE_MORE", "1", true).is_err());
+        // A saved name can always be replaced, whichever list it is in.
+        insert_env_var(&mut settings, "claude", "SECRET_0", "3", true).unwrap();
+        insert_env_var(&mut settings, "claude", "PLAIN_0", "4", false).unwrap();
+    }
+}
+
+const PROXY_SERVICE: &str = "app.pandacode.proxies";
+const MAX_PROXIES: usize = 16;
+const MAX_PROXY_LABEL: usize = 64;
+const MAX_PROXY_NO_PROXY: usize = 4096;
+const PROXY_VARS: [&str; 3] = ["HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY"];
+const ALWAYS_DIRECT: [&str; 8] = [
+    "localhost", "127.0.0.1", "::1", "10.0.0.0/8", "172.16.0.0/12",
+    "192.168.0.0/16", "169.254.0.0/16", "100.64.0.0/10",
+];
+const PROBE_HOST: &str = "www.gstatic.com";
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Proxy {
+    id: String,
+    label: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    no_proxy: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProxyView {
+    id: String,
+    label: String,
+    display_url: String,
+    no_proxy: String,
+    active: bool,
+    providers: Vec<String>,
+}
+
+struct ProxyTarget<'a> {
+    host: &'a str,
+    port: u16,
+    userinfo: Option<&'a str>,
+}
+
+fn validated_proxy_url(url: &str) -> Result<ProxyTarget<'_>> {
+    if url.len() > 4096 {
+        return Err("A proxy URL is at most 4096 characters.".into());
+    }
+    if url.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        return Err("A proxy URL cannot contain whitespace or control characters.".into());
+    }
+    let (scheme, rest) = url.split_once("://")
+        .filter(|(scheme, _)| matches!(*scheme, "http" | "https"))
+        .ok_or("A proxy URL starts with http:// or https://.")?;
+    let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let authority = &rest[..end];
+    if authority.is_empty() {
+        return Err("A proxy URL starts with http:// or https://.".into());
+    }
+    let (userinfo, host_port) = authority.rsplit_once('@')
+        .map_or((None, authority), |(user, host)| (Some(user), host));
+    let bad_port = "A proxy URL port is 1 to 65535.";
+    let (host, port) = if host_port.starts_with('[') {
+        let close = host_port.find(']').ok_or(bad_port)?;
+        let host = &host_port[1..close];
+        let suffix = &host_port[close + 1..];
+        let port = if suffix.is_empty() { None } else { Some(suffix.strip_prefix(':').ok_or(bad_port)?) };
+        if host.parse::<std::net::Ipv6Addr>().is_err() && !host.is_empty() {
+            return Err(bad_port.into());
+        }
+        (host, port)
+    } else {
+        host_port.rsplit_once(':').map_or((host_port, None), |(host, port)| (host, Some(port)))
+    };
+    if host.is_empty() {
+        return Err("A proxy URL needs a host, like http://proxy.example:3128.".into());
+    }
+    let port = match port.filter(|port| !port.is_empty()) {
+        Some(port) => {
+            if !port.bytes().all(|c| c.is_ascii_digit()) { return Err(bad_port.into()); }
+            port.parse::<u16>().ok().filter(|port| *port > 0).ok_or(bad_port)?
+        }
+        None => if scheme == "https" { 443 } else { 80 },
+    };
+    if !matches!(&rest[end..], "" | "/") {
+        return Err("A proxy URL cannot have a path, query or fragment.".into());
+    }
+    Ok(ProxyTarget { host, port, userinfo })
+}
+
+fn proxy_display_url(url: &str) -> String {
+    if let Some(scheme) = url.find("://") {
+        if let Some(at) = url.rfind('@').filter(|at| *at > scheme + 2) {
+            return format!("{}***{}", &url[..scheme + 3], &url[at..]);
+        }
+    }
+    url.to_owned()
+}
+
+fn validated_proxy_label(label: &str) -> Result<String> {
+    let label = label.trim();
+    if label.is_empty() || label.chars().count() > MAX_PROXY_LABEL {
+        return Err("Give the proxy a name of 1 to 64 characters.".into());
+    }
+    if label.chars().any(char::is_control) {
+        return Err("A proxy name cannot contain control characters.".into());
+    }
+    Ok(label.to_owned())
+}
+
+fn validated_no_proxy(value: &str) -> Result<String> {
+    let value = value.trim();
+    if value.len() > MAX_PROXY_NO_PROXY {
+        return Err("The no-proxy list is at most 4096 characters.".into());
+    }
+    if value.chars().any(char::is_control) {
+        return Err("The no-proxy list cannot contain control characters.".into());
+    }
+    Ok(value.to_owned())
+}
+
+fn valid_proxy_id(id: &str) -> bool {
+    !id.is_empty() && id.len() <= 128 && id.bytes().all(|c| c.is_ascii_alphanumeric() || matches!(c, b'-' | b'_'))
+}
+
+fn reconcile_proxies(settings: &mut Settings) {
+    let mut ids = HashSet::new();
+    let mut labels = HashSet::new();
+    if settings.proxies.len() > MAX_PROXIES { settings.proxies.clear(); }
+    settings.proxies.retain_mut(|proxy| {
+        let (Ok(label), Ok(no_proxy)) = (validated_proxy_label(&proxy.label), validated_no_proxy(&proxy.no_proxy)) else { return false; };
+        if !valid_proxy_id(&proxy.id) || ids.contains(&proxy.id) || labels.contains(&label.to_lowercase()) { return false; }
+        ids.insert(proxy.id.clone());
+        labels.insert(label.to_lowercase());
+        proxy.label = label;
+        proxy.no_proxy = no_proxy;
+        true
+    });
+    settings.active_proxy = settings.active_proxy.take().filter(|id| ids.contains(id));
+    settings.provider_proxy.retain(|provider, id| known_provider(provider) && ids.contains(id));
+    settings.proxy_disabled.retain(|provider| known_provider(provider));
+    settings.proxy_disabled.sort();
+    settings.proxy_disabled.dedup();
+    settings.global_no_proxy = validated_no_proxy(&settings.global_no_proxy).unwrap_or_default();
+}
+
+fn effective_proxy<'a>(settings: &'a Settings, provider: &str) -> Option<&'a Proxy> {
+    let id = if settings.proxy_disabled.iter().any(|p| p == provider) {
+        settings.provider_proxy.get(provider)
+    } else { settings.active_proxy.as_ref() }?;
+    settings.proxies.iter().find(|proxy| proxy.id == *id)
+}
+
+fn merged_no_proxy(global: &str, own: &str) -> String {
+    let mut seen = HashSet::new();
+    own.split(',').chain(global.split(',')).chain(ALWAYS_DIRECT).map(str::trim)
+        .filter(|value| !value.is_empty() && seen.insert(value.to_lowercase()))
+        .collect::<Vec<_>>().join(",")
+}
+
+fn proxy_environment(settings: &Settings, provider: &str) -> Vec<(String, String)> {
+    let Some(proxy) = effective_proxy(settings, provider) else { return Vec::new(); };
+    let Some(url) = crate::secret_store::get(PROXY_SERVICE, &proxy.id)
+        .filter(|url| validated_proxy_url(url).is_ok()) else { return Vec::new(); };
+    vec![("HTTP_PROXY".into(), url.clone()), ("HTTPS_PROXY".into(), url),
+        ("NO_PROXY".into(), merged_no_proxy(&settings.global_no_proxy, &proxy.no_proxy))]
+}
+
+fn proxy_views(settings: &Settings) -> Vec<ProxyView> {
+    settings.proxies.iter().map(|proxy| ProxyView {
+        id: proxy.id.clone(), label: proxy.label.clone(), no_proxy: proxy.no_proxy.clone(),
+        display_url: crate::secret_store::get(PROXY_SERVICE, &proxy.id)
+            .filter(|url| validated_proxy_url(url).is_ok()).map(|url| proxy_display_url(&url)).unwrap_or_default(),
+        active: settings.active_proxy.as_ref() == Some(&proxy.id),
+        providers: crate::providers::PROVIDERS.iter().filter(|(provider, _)|
+            effective_proxy(settings, provider).is_some_and(|p| p.id == proxy.id))
+            .map(|(id, _)| id.to_string()).collect(),
+    }).collect()
+}
+
+fn proxy_env_conflicts(settings: &Settings) -> BTreeMap<String, Vec<String>> {
+    let mut explicit = settings.clone();
+    explicit.active_proxy = None;
+    explicit.provider_proxy.clear();
+    crate::providers::PROVIDERS.iter().filter_map(|(provider, _)| {
+        effective_proxy(settings, provider)?;
+        let vars: BTreeMap<_, _> = effective_environment(&explicit, provider).into_iter().collect();
+        let names: Vec<String> = PROXY_VARS.iter().filter(|name| vars.get(**name).is_some_and(|value| !value.is_empty()))
+            .map(|name| name.to_string()).collect();
+        (!names.is_empty()).then(|| (provider.to_string(), names))
+    }).collect()
+}
+
+fn require_proxy(settings: &Settings, id: Option<&str>) -> Result<()> {
+    if id.is_some_and(|id| !settings.proxies.iter().any(|proxy| proxy.id == id)) {
+        return Err("This proxy no longer exists.".into());
+    }
+    Ok(())
+}
+
+fn save_proxy(runtime: &mut Runtime, id: Option<String>, label: &str, url: &str, no_proxy: &str) -> Result<()> {
+    let label = validated_proxy_label(label)?;
+    validated_proxy_url(url)?;
+    let no_proxy = validated_no_proxy(no_proxy)?;
+    require_proxy(&runtime.settings, id.as_deref())?;
+    if runtime.settings.proxies.iter().any(|proxy| Some(&proxy.id) != id.as_ref() && proxy.label.to_lowercase() == label.to_lowercase()) {
+        return Err("A proxy with this name already exists.".into());
+    }
+    if id.is_none() && runtime.settings.proxies.len() >= MAX_PROXIES {
+        return Err("You can save up to 16 proxies.".into());
+    }
+    let id = id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let mut next = runtime.settings.clone();
+    let proxy = Proxy { id: id.clone(), label, no_proxy };
+    if let Some(old) = next.proxies.iter_mut().find(|proxy| proxy.id == id) { *old = proxy; }
+    else { next.proxies.push(proxy); }
+    let previous = crate::secret_store::get(PROXY_SERVICE, &id);
+    crate::secret_store::set(PROXY_SERVICE, &id, url)?;
+    if let Err(error) = persist(runtime, next) {
+        if let Some(previous) = previous { let _ = crate::secret_store::set(PROXY_SERVICE, &id, &previous); }
+        else { crate::secret_store::remove(PROXY_SERVICE, &id); }
+        return Err(error);
+    }
+    Ok(())
+}
+
+fn remove_proxy(runtime: &mut Runtime, id: &str) -> Result<()> {
+    require_proxy(&runtime.settings, Some(id))?;
+    let mut next = runtime.settings.clone();
+    next.proxies.retain(|proxy| proxy.id != id);
+    if next.active_proxy.as_deref() == Some(id) { next.active_proxy = None; }
+    next.provider_proxy.retain(|_, proxy| proxy != id);
+    persist(runtime, next)?;
+    crate::secret_store::remove(PROXY_SERVICE, id);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn provider_save_proxy(app: tauri::AppHandle, proxy_id: Option<String>, label: String, url: String, no_proxy: String) -> Result<Configuration> {
+    let result = crate::blocking(move || {
+        with_runtime(|runtime| save_proxy(runtime, proxy_id, &label, &url, &no_proxy))?;
+        configuration()
+    }).await?;
+    refresh_all(&app, result)
+}
+
+#[tauri::command]
+pub async fn provider_remove_proxy(app: tauri::AppHandle, proxy_id: String) -> Result<Configuration> {
+    let result = crate::blocking(move || {
+        with_runtime(|runtime| remove_proxy(runtime, &proxy_id))?;
+        configuration()
+    }).await?;
+    refresh_all(&app, result)
+}
+
+#[tauri::command]
+pub async fn provider_set_active_proxy(app: tauri::AppHandle, proxy_id: Option<String>) -> Result<Configuration> {
+    let result = crate::blocking(move || {
+        with_runtime(|runtime| {
+            require_proxy(&runtime.settings, proxy_id.as_deref())?;
+            let mut next = runtime.settings.clone();
+            next.active_proxy = proxy_id;
+            persist(runtime, next)
+        })?;
+        configuration()
+    }).await?;
+    refresh_all(&app, result)
+}
+
+#[tauri::command]
+pub async fn provider_set_use_global_proxy(app: tauri::AppHandle, provider: String, use_global: bool) -> Result<Configuration> {
+    let changed = provider.clone();
+    let result = crate::blocking(move || {
+        if !known_provider(&provider) { return Err("Unknown provider.".into()); }
+        with_runtime(|runtime| {
+            let mut next = runtime.settings.clone();
+            next.proxy_disabled.retain(|id| id != &provider);
+            if !use_global { next.proxy_disabled.push(provider); }
+            persist(runtime, next)
+        })?;
+        configuration()
+    }).await?;
+    refresh_provider(&app, &changed, result)
+}
+
+#[tauri::command]
+pub async fn provider_set_provider_proxy(app: tauri::AppHandle, provider: String, proxy_id: Option<String>) -> Result<Configuration> {
+    let changed = provider.clone();
+    let result = crate::blocking(move || {
+        if !known_provider(&provider) { return Err("Unknown provider.".into()); }
+        with_runtime(|runtime| {
+            require_proxy(&runtime.settings, proxy_id.as_deref())?;
+            let mut next = runtime.settings.clone();
+            if let Some(id) = proxy_id { next.provider_proxy.insert(provider, id); }
+            else { next.provider_proxy.remove(&provider); }
+            persist(runtime, next)
+        })?;
+        configuration()
+    }).await?;
+    refresh_provider(&app, &changed, result)
+}
+
+#[tauri::command]
+pub async fn provider_set_global_no_proxy(app: tauri::AppHandle, no_proxy: String) -> Result<Configuration> {
+    let result = crate::blocking(move || {
+        let no_proxy = validated_no_proxy(&no_proxy)?;
+        with_runtime(|runtime| {
+            let mut next = runtime.settings.clone();
+            next.global_no_proxy = no_proxy;
+            persist(runtime, next)
+        })?;
+        configuration()
+    }).await?;
+    refresh_all(&app, result)
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProbeReport {
+    status: &'static str,
+    message: &'static str,
+    code: Option<u16>,
+    latency_ms: Option<u64>,
+}
+
+fn probe_error(message: &'static str) -> ProbeReport {
+    ProbeReport { status: "error", message, code: None, latency_ms: None }
+}
+
+fn proxy_probe_request(target: &ProxyTarget<'_>) -> String {
+    use base64::Engine;
+    let auth = target.userinfo.map(|user| format!("Proxy-Authorization: Basic {}\r\n", base64::engine::general_purpose::STANDARD.encode(user))).unwrap_or_default();
+    format!("GET http://{PROBE_HOST}/ HTTP/1.1\r\nHost: {PROBE_HOST}\r\n{auth}Connection: close\r\n\r\n")
+}
+
+fn proxy_probe_status(response: &[u8], latency_ms: u64) -> ProbeReport {
+    let code = std::str::from_utf8(response).ok().and_then(|response| {
+        let mut words = response.lines().next()?.split_whitespace();
+        if !matches!(words.next()?, "HTTP/1.0" | "HTTP/1.1") { return None; }
+        let code = words.next()?;
+        (code.len() == 3).then(|| code.parse::<u16>().ok()).flatten()
+    });
+    match code {
+        Some(200..=399) => ProbeReport { status: "ok", message: "The proxy answered. Traffic through it can reach the internet.", code, latency_ms: Some(latency_ms) },
+        Some(407) => ProbeReport { status: "auth", message: "The proxy requires a user name and password.", code, latency_ms: Some(latency_ms) },
+        _ => ProbeReport { code, ..probe_error("The proxy did not return a successful HTTP response.") },
+    }
+}
+
+async fn probe_proxy(url: &str) -> ProbeReport {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let Ok(target) = validated_proxy_url(url) else { return probe_error("That is not a proxy address. Use http://host:port."); };
+    let started = std::time::Instant::now();
+    let result = tokio::time::timeout(std::time::Duration::from_secs(8), async {
+        let mut stream = tokio::net::TcpStream::connect((target.host, target.port)).await?;
+        stream.write_all(proxy_probe_request(&target).as_bytes()).await?;
+        let mut bytes = Vec::new();
+        let mut buffer = [0; 1024];
+        while bytes.len() < 8192 {
+            let remaining = (8192 - bytes.len()).min(buffer.len());
+            let read = stream.read(&mut buffer[..remaining]).await?;
+            if read == 0 { break; }
+            bytes.extend_from_slice(&buffer[..read]);
+            if bytes.windows(2).any(|pair| pair == b"\r\n") { break; }
+        }
+        Ok::<_, std::io::Error>(proxy_probe_status(&bytes, started.elapsed().as_millis() as u64))
+    }).await;
+    match result {
+        Ok(Ok(report)) => report,
+        Ok(Err(_)) => probe_error("Could not reach the proxy. Check the address and that the proxy is running."),
+        Err(_) => probe_error("The proxy did not answer in time. Check the address and try again."),
+    }
+}
+
+#[tauri::command]
+pub async fn provider_test_proxy(proxy_id: Option<String>, url: Option<String>) -> Result<ProbeReport> {
+    let url = match url.filter(|url| !url.is_empty()) {
+        Some(url) => url,
+        None => crate::blocking(move || {
+            with_runtime(|runtime| {
+                let id = proxy_id.as_deref().ok_or("Choose a saved proxy to test.")?;
+                if !runtime.settings.proxies.iter().any(|proxy| proxy.id == id) { return Err("Choose a saved proxy to test.".into()); }
+                crate::secret_store::get(PROXY_SERVICE, id).ok_or_else(|| "Choose a saved proxy to test.".into())
+            })
+        }).await?,
+    };
+    Ok(probe_proxy(&url).await)
+}
+
+#[cfg(test)]
+mod proxy_tests {
+    use super::*;
+
+    fn settings() -> Settings {
+        let id = uuid::Uuid::new_v4().to_string();
+        crate::secret_store::set(PROXY_SERVICE, &id, "http://user:secret@proxy.example:3128").unwrap();
+        Settings {
+            proxies: vec![Proxy { id: id.clone(), label: "Office".into(), no_proxy: "office.example".into() }],
+            active_proxy: Some(id),
+            ..Settings::default()
+        }
+    }
+
+    fn env(settings: &Settings, provider: &str) -> BTreeMap<String, String> {
+        effective_environment(settings, provider).into_iter().collect()
+    }
+
+    fn runtime() -> Runtime {
+        let dir = std::env::temp_dir().join(format!("pandacode-proxies-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&dir).unwrap();
+        Runtime { path: dir.join("provider-settings.json"), settings: Settings::default() }
+    }
+
+    #[test]
+    fn proxy_urls_validate_in_order_without_echoing_input() {
+        for url in ["http://proxy.example", "https://user:secret@proxy.example:65535/", "http://[::1]:3128", "http://proxy.example:"] {
+            assert!(validated_proxy_url(url).is_ok(), "{url}");
+        }
+        for (url, message) in [
+            (format!("http://{}", "x".repeat(4097)), "A proxy URL is at most 4096 characters."),
+            ("http://user:secret@proxy\n".into(), "A proxy URL cannot contain whitespace or control characters."),
+            ("http://proxy\u{7f}".into(), "A proxy URL cannot contain whitespace or control characters."),
+            ("socks://proxy".into(), "A proxy URL starts with http:// or https://."),
+            ("http://".into(), "A proxy URL starts with http:// or https://."),
+            ("http://user:secret@:1234".into(), "A proxy URL needs a host, like http://proxy.example:3128."),
+            ("http://proxy:0/path".into(), "A proxy URL port is 1 to 65535."),
+            ("http://proxy:65536".into(), "A proxy URL port is 1 to 65535."),
+            ("http://proxy:abc".into(), "A proxy URL port is 1 to 65535."),
+            ("http://[::1]:abc".into(), "A proxy URL port is 1 to 65535."),
+            ("http://proxy/path".into(), "A proxy URL cannot have a path, query or fragment."),
+            ("http://proxy//".into(), "A proxy URL cannot have a path, query or fragment."),
+            ("http://proxy?x".into(), "A proxy URL cannot have a path, query or fragment."),
+            ("http://proxy#x".into(), "A proxy URL cannot have a path, query or fragment."),
+        ] {
+            assert_eq!(validated_proxy_url(&url).err().unwrap(), message);
+        }
+    }
+
+    #[test]
+    fn display_masks_everything_before_last_at() {
+        assert_eq!(proxy_display_url("http://user:secret@proxy.example:3128"), "http://***@proxy.example:3128");
+        assert_eq!(proxy_display_url("https://u@p@proxy/"), "https://***@proxy/");
+        assert_eq!(proxy_display_url("http://proxy:3128"), "http://proxy:3128");
+        assert_eq!(proxy_display_url("http://@proxy"), "http://***@proxy");
+    }
+
+    #[test]
+    fn active_proxy_supplies_all_three_variables_and_opt_out_has_own_choice() {
+        let mut settings = settings();
+        let vars = env(&settings, "codex");
+        assert_eq!(vars.len(), 3);
+        assert_eq!(vars["HTTP_PROXY"], "http://user:secret@proxy.example:3128");
+        assert_eq!(vars["HTTPS_PROXY"], vars["HTTP_PROXY"]);
+        assert!(vars["NO_PROXY"].contains("office.example"));
+        for value in ALWAYS_DIRECT { assert!(vars["NO_PROXY"].split(',').any(|part| part == value)); }
+        settings.proxy_disabled.push("codex".into());
+        assert!(env(&settings, "codex").is_empty());
+        assert_eq!(env(&settings, "claude").len(), 3);
+        settings.provider_proxy.insert("codex".into(), settings.active_proxy.clone().unwrap());
+        assert_eq!(env(&settings, "codex"), vars);
+        settings.provider_proxy.insert("codex".into(), "missing".into());
+        assert!(env(&settings, "codex").is_empty());
+    }
+
+    #[test]
+    fn explicit_variables_win_and_empty_proxy_values_leave_previous_values() {
+        let mut settings = settings();
+        settings.global_environment.insert("HTTP_PROXY".into(), "http://global:80".into());
+        settings.environment.insert("codex".into(), BTreeMap::from([
+            ("HTTP_PROXY".into(), String::new()), ("HTTPS_PROXY".into(), "http://own:80".into()),
+            ("NO_PROXY".into(), "explicit.example".into()), ("EMPTY".into(), String::new()),
+        ]));
+        let vars = env(&settings, "codex");
+        assert_eq!(vars["HTTP_PROXY"], "http://global:80");
+        assert_eq!(vars["HTTPS_PROXY"], "http://own:80");
+        assert_eq!(vars["NO_PROXY"], "explicit.example");
+        assert_eq!(vars["EMPTY"], "");
+        assert_eq!(proxy_env_conflicts(&settings)["codex"], PROXY_VARS);
+        settings.global_environment.clear();
+        settings.environment.get_mut("codex").unwrap().clear();
+        settings.environment.get_mut("codex").unwrap().insert("HTTP_PROXY".into(), String::new());
+        assert_eq!(env(&settings, "codex")["HTTP_PROXY"], "http://user:secret@proxy.example:3128");
+        assert!(!proxy_env_conflicts(&settings).contains_key("codex"));
+    }
+
+    #[test]
+    fn secret_environment_proxy_override_is_resolved_but_never_reported() {
+        let mut settings = settings();
+        let account = secret_account(Some("cursor"), "HTTP_PROXY");
+        crate::secret_store::set(SERVICE, &account, "http://secret-override:80").unwrap();
+        settings.secret_environment.insert("cursor".into(), vec!["HTTP_PROXY".into()]);
+        assert_eq!(env(&settings, "cursor")["HTTP_PROXY"], "http://secret-override:80");
+        assert_eq!(proxy_env_conflicts(&settings)["cursor"], ["HTTP_PROXY"]);
+        let reply = serde_json::to_string(&configuration_for_settings(&settings).unwrap()).unwrap();
+        assert!(!reply.contains("secret-override"));
+        crate::secret_store::remove(SERVICE, &account);
+    }
+
+    #[test]
+    fn no_proxy_merge_is_trimmed_stable_and_case_insensitive() {
+        let merged = merged_no_proxy(" global.example,LOCALHOST,office.example ", "office.example, OFFICE.example, ");
+        assert!(merged.starts_with("office.example,global.example,LOCALHOST,127.0.0.1,::1,"));
+        assert_eq!(merged.split(',').filter(|value| value.eq_ignore_ascii_case("localhost")).count(), 1);
+        assert_eq!(validated_no_proxy("  global.example  ").unwrap(), "global.example");
+        assert_eq!(validated_no_proxy("  ").unwrap(), "");
+        assert_eq!(validated_no_proxy(&"x".repeat(4097)).unwrap_err(), "The no-proxy list is at most 4096 characters.");
+        assert_eq!(validated_no_proxy("a\nb").unwrap_err(), "The no-proxy list cannot contain control characters.");
+    }
+
+    #[test]
+    fn proxy_save_limits_names_and_preserves_other_settings() {
+        let mut runtime = runtime();
+        save_proxy(&mut runtime, None, " Office ", "http://proxy:80", " example.com ").unwrap();
+        let id = runtime.settings.proxies[0].id.clone();
+        assert_eq!(runtime.settings.proxies[0].label, "Office");
+        assert_eq!(runtime.settings.proxies[0].no_proxy, "example.com");
+        assert!(save_proxy(&mut runtime, None, "office", "http://proxy", "").unwrap_err().contains("already exists"));
+        save_proxy(&mut runtime, Some(id.clone()), "OFFICE", "http://proxy:81", "").unwrap();
+        assert!(validated_proxy_label("").is_err());
+        assert!(validated_proxy_label(&"x".repeat(65)).is_err());
+        assert!(validated_proxy_label("a\nb").is_err());
+        for index in 1..MAX_PROXIES { save_proxy(&mut runtime, None, &format!("Proxy {index}"), "http://proxy", "").unwrap(); }
+        assert_eq!(save_proxy(&mut runtime, None, "Extra", "http://proxy", "").unwrap_err(), "You can save up to 16 proxies.");
+        for proxy in &runtime.settings.proxies { crate::secret_store::remove(PROXY_SERVICE, &proxy.id); }
+        std::fs::remove_dir_all(runtime.path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn global_no_proxy_persists_trimmed_and_empty_clears_it() {
+        let mut runtime = runtime();
+        let mut next = runtime.settings.clone();
+        next.global_no_proxy = validated_no_proxy("  corporate.example  ").unwrap();
+        persist(&mut runtime, next).unwrap();
+        let reloaded: Settings = serde_json::from_slice(&std::fs::read(&runtime.path).unwrap()).unwrap();
+        assert_eq!(reloaded.global_no_proxy, "corporate.example");
+        let reply = configuration_for_settings(&reloaded).unwrap();
+        assert_eq!(reply.global_no_proxy, "corporate.example");
+        let mut next = reloaded;
+        next.global_no_proxy = validated_no_proxy(" ").unwrap();
+        persist(&mut runtime, next).unwrap();
+        let saved: serde_json::Value = serde_json::from_slice(&std::fs::read(&runtime.path).unwrap()).unwrap();
+        assert!(saved.get("globalNoProxy").is_none());
+        std::fs::remove_dir_all(runtime.path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn removing_proxy_clears_all_references_and_store_entry() {
+        let mut runtime = runtime();
+        runtime.settings = settings();
+        let id = runtime.settings.active_proxy.clone().unwrap();
+        runtime.settings.provider_proxy.insert("codex".into(), id.clone());
+        remove_proxy(&mut runtime, &id).unwrap();
+        assert!(runtime.settings.proxies.is_empty());
+        assert!(runtime.settings.active_proxy.is_none());
+        assert!(runtime.settings.provider_proxy.is_empty());
+        assert!(crate::secret_store::get(PROXY_SERVICE, &id).is_none());
+        assert!(env(&runtime.settings, "codex").is_empty());
+        let reloaded: Settings = serde_json::from_slice(&std::fs::read(&runtime.path).unwrap()).unwrap();
+        assert!(reloaded.active_proxy.is_none());
+        std::fs::remove_dir_all(runtime.path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn unreadable_proxy_url_is_kept_on_reload_and_safe_in_configuration() {
+        let mut runtime = runtime();
+        let settings = settings();
+        let id = settings.active_proxy.clone().unwrap();
+        crate::secret_store::remove(PROXY_SERVICE, &id);
+        persist(&mut runtime, settings).unwrap();
+        let mut reloaded: Settings = serde_json::from_slice(&std::fs::read(&runtime.path).unwrap()).unwrap();
+        reconcile_proxies(&mut reloaded);
+        assert_eq!(reloaded.proxies.len(), 1);
+        assert_eq!(reloaded.active_proxy.as_deref(), Some(id.as_str()));
+        assert!(env(&reloaded, "codex").is_empty());
+        assert_eq!(proxy_views(&reloaded)[0].display_url, "");
+        std::fs::remove_dir_all(runtime.path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn hand_edited_reload_drops_junk_and_dangling_references() {
+        let mut settings: Settings = serde_json::from_value(serde_json::json!({
+            "executablePaths": {}, "unknownLegacyField": true,
+            "proxies": [
+                {"id":"one", "label":" Office ", "noProxy":" a.example "},
+                {"id":"one", "label":"Duplicate id"},
+                {"id":"two", "label":"office"},
+                {"id":"../bad", "label":"Bad id"},
+                {"id":"three", "label":""}
+            ],
+            "activeProxy":"missing", "providerProxy":{"codex":"one", "claude":"missing", "unknown":"one"},
+            "proxyDisabled":["codex", "unknown", "codex"], "globalNoProxy":" a.example "
+        })).unwrap();
+        reconcile_proxies(&mut settings);
+        assert_eq!(settings.proxies.len(), 1);
+        assert_eq!(settings.proxies[0].label, "Office");
+        assert_eq!(settings.proxies[0].no_proxy, "a.example");
+        assert!(settings.active_proxy.is_none());
+        assert_eq!(settings.provider_proxy, BTreeMap::from([("codex".into(), "one".into())]));
+        assert_eq!(settings.proxy_disabled, ["codex"]);
+        assert_eq!(settings.global_no_proxy, "a.example");
+        settings.global_no_proxy = "a\nb".into();
+        reconcile_proxies(&mut settings);
+        assert!(settings.global_no_proxy.is_empty());
+        for i in 0..MAX_PROXIES { settings.proxies.push(Proxy { id: format!("id-{i}"), label: format!("Label {i}"), no_proxy: String::new() }); }
+        reconcile_proxies(&mut settings);
+        assert!(settings.proxies.is_empty());
+        assert!(settings.provider_proxy.is_empty());
+    }
+
+    #[test]
+    fn configuration_and_settings_never_serialize_proxy_credentials() {
+        let settings = settings();
+        let reply = serde_json::to_value(configuration_for_settings(&settings).unwrap()).unwrap();
+        let serialized = reply.to_string();
+        assert!(!serialized.contains("user:secret"));
+        assert!(!serialized.contains("password"));
+        assert!(!serialized.contains("http://user"));
+        assert_eq!(reply["proxies"][0]["displayUrl"], "http://***@proxy.example:3128");
+        assert_eq!(reply["proxies"][0]["providers"].as_array().unwrap().len(), crate::providers::PROVIDERS.len());
+        assert_eq!(reply["useGlobalProxy"].as_object().unwrap().len(), crate::providers::PROVIDERS.len());
+        let saved = serde_json::to_string(&settings).unwrap();
+        assert!(!saved.contains("proxy.example"));
+        assert!(!saved.contains("secret"));
+        let empty = serde_json::to_value(Settings::default()).unwrap();
+        for name in ["proxies", "activeProxy", "providerProxy", "proxyDisabled", "globalNoProxy"] { assert!(empty.get(name).is_none()); }
+    }
+
+    #[test]
+    fn probe_target_request_and_status_never_report_credentials() {
+        let target = validated_proxy_url("http://user:secret@[::1]:3128").ok().unwrap();
+        assert_eq!(target.host, "::1");
+        assert_eq!(target.port, 3128);
+        let request = proxy_probe_request(&target);
+        assert!(request.starts_with("GET http://www.gstatic.com/ HTTP/1.1\r\nHost: www.gstatic.com\r\n"));
+        assert!(request.contains("Proxy-Authorization: Basic dXNlcjpzZWNyZXQ=\r\n"));
+        let direct = proxy_probe_request(&validated_proxy_url("http://proxy").ok().unwrap());
+        assert!(!direct.contains("Authorization"));
+        for (response, status, code) in [
+            ("HTTP/1.1 200 OK\r\n", "ok", Some(200)),
+            ("HTTP/1.0 302 Found\r\n", "ok", Some(302)),
+            ("HTTP/1.1 407 Proxy Authentication Required\r\n", "auth", Some(407)),
+            ("HTTP/1.1 500 user:secret\r\n", "error", Some(500)),
+            ("user:secret dXNlcjpzZWNyZXQ=", "error", None),
+        ] {
+            let report = proxy_probe_status(response.as_bytes(), 53);
+            assert_eq!(report.status, status);
+            assert_eq!(report.code, code);
+            assert_eq!(report.latency_ms, if status == "error" { None } else { Some(53) });
+            let reply = serde_json::to_string(&report).unwrap();
+            assert!(!reply.contains("secret"));
+            assert!(!reply.contains("dXNlcjpzZWNyZXQ="));
+            assert!(!reply.contains("Proxy-Authorization"));
+            assert!(reply.contains("latencyMs"));
+        }
+    }
+
+    #[tokio::test]
+    async fn probe_uses_absolute_form_over_a_real_local_connection() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut bytes = vec![0; 8192];
+            let size = stream.read(&mut bytes).await.unwrap();
+            let request = std::str::from_utf8(&bytes[..size]).unwrap();
+            assert!(request.starts_with("GET http://www.gstatic.com/ HTTP/1.1\r\n"));
+            stream.write_all(b"HTTP/1.1 407 Auth\r\n\r\n").await.unwrap();
+        });
+        let report = probe_proxy(&format!("http://user:secret@{address}")).await;
+        server.await.unwrap();
+        assert_eq!(report.status, "auth");
+        assert_eq!(report.code, Some(407));
+        assert!(report.latency_ms.is_some());
+        assert_eq!(probe_proxy("invalid").await.message, "That is not a proxy address. Use http://host:port.");
     }
 }

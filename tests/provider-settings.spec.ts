@@ -1,20 +1,20 @@
 import { pickModel, showHarness } from './model-picker-helper';
 import { expect, test, type Page } from '@playwright/test';
 
-test('global and per-provider environment variables are added, toggled, removed, and never echoed', async ({ page }) => {
+test('global and per-provider environment variables are added, shown, replaced, toggled, and removed', async ({ page }) => {
   const errors: string[] = []; page.on('pageerror', error => errors.push(error.message));
   await page.goto('/');
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
   const settings = page.getByRole('region', { name: 'Settings', exact: true });
   await settings.getByRole('tab', { name: 'Agents', exact: true }).click(); await settings.getByRole('tab', { name: 'Providers', exact: true }).click(); await page.locator('#settings-panel-providers details.connection-card').first().waitFor(); for (const s of await page.locator('#settings-panel-providers details.connection-card>summary').all()) await s.click();
 
-  // The global set applies to every harness and its values are never shown again.
+  // The global set applies to every harness and a plain value stays visible.
   const global = page.locator('#global-environment');
   await global.getByLabel('Variable name').fill('HTTPS_PROXY');
   await global.getByLabel('Variable value').fill('http://127.0.0.1:7890');
   await global.getByRole('button', { name: 'Add', exact: true }).click();
-  await expect(global.locator('.connection-env-var code')).toHaveText('HTTPS_PROXY');
-  await expect(global).not.toContainText('127.0.0.1:7890');
+  await expect(global.locator('.connection-env-var code').first()).toHaveText('HTTPS_PROXY');
+  await expect(global.locator('.connection-env-var .connection-env-value')).toHaveText('http://127.0.0.1:7890');
   await expect(global.getByLabel('Variable name')).toHaveValue('');
 
   // A second variable on the same set; an invalid name is refused with the reason.
@@ -34,7 +34,16 @@ test('global and per-provider environment variables are added, toggled, removed,
   await claude.getByLabel('Variable value').fill('1');
   await claude.locator('form[data-env-provider="claude"]').getByRole('button', { name: 'Add', exact: true }).click();
   await expect(claude.locator('.connection-env-var')).toHaveCount(1);
-  await expect(claude.locator('.connection-env-var code')).toHaveText('CLAUDE_CODE_EXTRA');
+  await expect(claude.locator('.connection-env-var code').first()).toHaveText('CLAUDE_CODE_EXTRA');
+  await expect(claude.locator('.connection-env-var .connection-env-value')).toHaveText('1');
+
+  // Replace edits a plain value in place and never pre-fills the saved one.
+  await claude.getByRole('button', { name: 'Replace CLAUDE_CODE_EXTRA' }).click();
+  const replacement = claude.locator('.connection-env-replace input');
+  await expect(replacement).toHaveValue('');
+  await replacement.fill('2');
+  await replacement.press('Enter');
+  await expect(claude.locator('.connection-env-var .connection-env-value')).toHaveText('2');
 
   // Toggling the global set off for one provider leaves the others alone.
   await claude.getByRole('checkbox', { name: 'Use global environment variables' }).uncheck();
@@ -48,6 +57,119 @@ test('global and per-provider environment variables are added, toggled, removed,
   await expect(claude.locator('.connection-env-var')).toHaveCount(0);
   await global.getByRole('button', { name: 'Remove HTTPS_PROXY' }).click();
   await expect(global.locator('.connection-env-var')).toHaveCount(1);
+  expect(errors).toEqual([]);
+});
+
+test('proxies are saved, activated, masked, and can be turned off per harness', async ({ page }) => {
+  const errors: string[] = []; page.on('pageerror', error => errors.push(error.message));
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  const settings = page.getByRole('region', { name: 'Settings', exact: true });
+  await settings.getByRole('tab', { name: 'Agents', exact: true }).click(); await settings.getByRole('tab', { name: 'Providers', exact: true }).click(); await page.locator('#settings-panel-providers details.connection-card').first().waitFor(); for (const s of await page.locator('#settings-panel-providers details.connection-card>summary').all()) await s.click();
+  await expect(page.locator('#global-environment')).toHaveJSProperty('open', true);
+
+  // A saved proxy shows a masked URL and its no-proxy list, and never the password it was given.
+  const proxiesCard = page.locator('#proxies');
+  const proxyList = proxiesCard.locator('.proxy-list');
+  const form = proxiesCard.locator('#proxy-form');
+  const globalNoProxy = proxiesCard.locator('#proxy-global-noproxy');
+  const saveGlobalNoProxy = proxiesCard.locator('[data-save-global-noproxy]');
+  await expect(proxiesCard.locator('.proxy-global small')).toContainText('loopback and private ranges, which are always included');
+  await globalNoProxy.fill('  .corp.example, 10.20.0.0/16  ');
+  await saveGlobalNoProxy.click();
+  await expect(page.locator('.connection-feedback')).toHaveText('Global no-proxy list saved.');
+  await expect(globalNoProxy).toHaveValue('.corp.example, 10.20.0.0/16');
+  await globalNoProxy.fill('');
+  await saveGlobalNoProxy.click();
+  await expect(page.locator('.connection-feedback')).toHaveText('Global no-proxy list cleared.');
+  await expect(globalNoProxy).toHaveValue('');
+  // Enter saves only this field, leaving the add-proxy form untouched.
+  await globalNoProxy.fill('.enter.example');
+  await globalNoProxy.press('Enter');
+  await expect(page.locator('.connection-feedback')).toHaveText('Global no-proxy list saved.');
+  await expect(globalNoProxy).toHaveValue('.enter.example');
+  await globalNoProxy.fill('');
+  await saveGlobalNoProxy.click();
+  await expect(page.locator('.connection-feedback')).toHaveText('Global no-proxy list cleared.');
+
+  await form.getByLabel('Name', { exact: true }).fill('Office proxy');
+  await form.getByLabel('Proxy URL', { exact: true }).fill('http://user:secret@proxy.example:3128');
+  await form.getByLabel('No proxy for', { exact: true }).fill('*.internal');
+  await proxiesCard.getByRole('button', { name: 'Add proxy', exact: true }).click();
+  const row = proxyList.locator('.proxy-row').filter({ hasText: 'Office proxy' });
+  await expect(row).toBeVisible();
+  await expect(row.locator('.proxy-name')).toHaveText('Office proxy');
+  await expect(row.locator('code')).toHaveText('http://***@proxy.example:3128');
+  await expect(row.locator('.proxy-noproxy')).toHaveText('No proxy for *.internal');
+  await expect(proxyList).not.toContainText('secret');
+
+  const result = row.locator('[data-proxy-test]');
+  await row.locator('[data-test-proxy]').click();
+  await expect(result).toBeVisible();
+  await expect(result).toHaveAttribute('data-status', 'ok');
+  await expect(result).toHaveText('The proxy answered. Traffic through it can reach the internet. (53 ms)');
+  await expect(row.getByRole('button', { name: 'Test', exact: true })).toBeEnabled();
+  await expect(proxyList).not.toContainText('secret');
+
+  // Selecting it makes it the one active proxy, so every harness follows it.
+  const active = row.getByRole('radio', { name: /Active/ });
+  await active.check();
+  await expect(active).toBeChecked();
+  await expect(proxyList.locator('.proxy-usage')).toHaveText('21 harnesses');
+  await expect(result).toBeHidden();
+  await row.locator('[data-test-proxy]').click();
+  await expect(result).toHaveAttribute('data-status', 'ok');
+
+  // Codex turns the global proxy off; its own select wakes up and picks the saved proxy.
+  const codex = page.locator('.connection-card', { has: page.locator('form[data-env-provider="codex"]') });
+  await codex.locator('details.connection-proxy > summary').click();
+  const useGlobal = codex.locator('[data-use-global-proxy="codex"]');
+  await expect(useGlobal).toBeChecked();
+  await useGlobal.uncheck();
+  await expect(useGlobal).not.toBeChecked();
+  // Opting out drops Codex from the count; choosing the saved proxy for itself puts it back.
+  await expect(proxyList.locator('.proxy-usage')).toHaveText('20 harnesses');
+  await expect(result).toBeVisible();
+  await expect(result).toHaveAttribute('data-status', 'ok');
+  const harnessProxy = codex.getByRole('combobox', { name: 'Proxy for this harness' });
+  await expect(harnessProxy).toBeEnabled();
+  await harnessProxy.selectOption({ label: 'Office proxy' });
+  await expect(harnessProxy).toHaveValue(/.+/);
+  await expect(proxyList.locator('.proxy-usage')).toHaveText('21 harnesses');
+
+  // Editing clears row health; an empty URL tests the saved secret without exposing it.
+  await row.getByRole('button', { name: 'Edit', exact: true }).click();
+  await expect(result).toBeHidden();
+  const formResult = form.locator('[data-proxy-test-form]');
+  const formTest = form.locator('[data-test-proxy-form]');
+  await expect(form.getByLabel('Proxy URL', { exact: true })).toHaveValue('');
+  await formTest.click();
+  await expect(formResult).toHaveAttribute('data-status', 'ok');
+  await expect(formResult).toContainText('The proxy answered.');
+  await expect(form).not.toContainText('secret');
+  await form.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await expect(formResult).toBeHidden();
+
+  // Unsaved form probes report authentication and connection failures without creating rows.
+  await formTest.click();
+  await expect(form.getByLabel('Proxy URL', { exact: true })).toBeFocused();
+  await expect(formResult).toBeHidden();
+  await form.getByLabel('Proxy URL', { exact: true }).fill('http://auth.invalid:3128');
+  await formTest.click();
+  await expect(formResult).toBeVisible();
+  await expect(formResult).toHaveAttribute('data-status', 'auth');
+  await expect(formResult).toHaveText('The proxy requires a user name and password.');
+  await form.getByLabel('Proxy URL', { exact: true }).fill('http://unreachable.invalid:3128');
+  await formTest.click();
+  await expect(formResult).toHaveAttribute('data-status', 'error');
+  await expect(formResult).toHaveText('Could not reach the proxy. Check the address and that the proxy is running.');
+  await expect(proxyList.locator('.proxy-name')).toHaveCount(1);
+  await expect(proxiesCard).not.toContainText('secret');
+
+  // Removing it takes the row away and the harness falls back to no proxy.
+  await proxyList.getByRole('button', { name: 'Remove Office proxy' }).click();
+  await expect(proxyList.locator('.proxy-row').filter({ hasText: 'Office proxy' })).toHaveCount(0);
+  await expect(harnessProxy).toHaveValue('');
   expect(errors).toEqual([]);
 });
 
@@ -71,7 +193,7 @@ test('every harness has environment settings, and all but GLM, MiMo and Alibaba 
   expect([...editors.env].sort()).toEqual(['*', ...roster].sort());
   expect([...editors.executables].sort()).toEqual(roster.filter(id => id !== 'glm' && id !== 'mimo' && id !== 'alibaba').sort());
 
-  // A generated card works like a hand-written one, and never echoes a value.
+  // A generated card works like a hand-written one, and a plain value stays visible.
   const codex = page.locator('.connection-card', { has: page.locator('form[data-env-provider="codex"]') });
   await expect(codex.locator('h3')).toContainText('Codex');
   await expect(codex.locator('.connection-state')).toHaveText(/Installed/);
@@ -79,12 +201,64 @@ test('every harness has environment settings, and all but GLM, MiMo and Alibaba 
   await codex.locator('details.connection-env > summary').click();
   await expect(codex.getByRole('checkbox', { name: 'Use global environment variables' })).toBeChecked();
   await codex.getByLabel('Variable name').fill('CODEX_EXTRA');
-  await codex.getByLabel('Variable value').fill('proxy-secret-value');
+  await codex.getByLabel('Variable value').fill('plain-value');
   await codex.getByRole('button', { name: 'Add', exact: true }).click();
-  await expect(codex.locator('.connection-env-var code')).toHaveText('CODEX_EXTRA');
-  await expect(codex).not.toContainText('proxy-secret-value');
+  await expect(codex.locator('.connection-env-var code').first()).toHaveText('CODEX_EXTRA');
+  await expect(codex.locator('.connection-env-var .connection-env-value')).toHaveText('plain-value');
   await codex.getByRole('button', { name: 'Remove CODEX_EXTRA' }).click();
   await expect(codex.locator('.connection-env-var')).toHaveCount(0);
+  expect(errors).toEqual([]);
+});
+
+test('a secret variable is masked, replaceable, never echoed, and offered on both lists', async ({ page }) => {
+  const errors: string[] = []; page.on('pageerror', error => errors.push(error.message));
+  // A secure store is what a secret needs; the browser preview cannot offer one,
+  // so this test answers the configuration itself with one saved secret and one
+  // saved plain variable.
+  await page.route('**/src/preview.ts*', async route => {
+    const response = await route.fetch();
+    await route.fulfill({ response, body: (await response.text()).replace(/switch\s*\(command\)\s*\{/, `
+      if (command === 'provider_configuration') return Promise.resolve({ executablePaths: {}, providers: [['claude', 'Claude Code'], ['codex', 'Codex']], secureStorageAvailable: true, mimoEndpoints: [], globalEnvironment: [{ name: 'SHARED_TOKEN', secret: true }, { name: 'PLAIN_ONE', secret: false, value: 'visible-value' }], environment: {}, useGlobalEnvironment: {}, glmKeySaved: false, glmKeyFromEnvironment: false, mimoKeySaved: false, mimoKeyFromEnvironment: false, deepseekKeySaved: false, deepseekKeyFromEnvironment: false, commandcodeKeySaved: false, commandcodeKeyFromEnvironment: false, alibabaKeySaved: false, alibabaKeyFromEnvironment: false, mimoEndpoint: null, claudeConnectionMode: 'inherit', claudeCliRefresh: true });
+      switch (command) {
+    `) });
+  });
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  const settings = page.getByRole('region', { name: 'Settings', exact: true });
+  await settings.getByRole('tab', { name: 'Agents', exact: true }).click(); await settings.getByRole('tab', { name: 'Providers', exact: true }).click(); await page.locator('#settings-panel-providers details.connection-card').first().waitFor();
+
+  // A plain variable shows its value; a secret shows a mask and never the value.
+  const global = page.locator('#global-environment');
+  await global.locator('summary').first().click();
+  const plainRow = global.locator('.connection-env-var').filter({ hasText: 'PLAIN_ONE' });
+  await expect(plainRow.locator('.connection-env-value')).toHaveText('visible-value');
+  const secretRow = global.locator('.connection-env-var').filter({ hasText: 'SHARED_TOKEN' });
+  await expect(secretRow.locator('.connection-env-masked')).toContainText('••••••••');
+  await expect(secretRow.locator('.connection-env-value')).toHaveCount(0);
+  await expect(secretRow).not.toContainText('visible-value');
+
+  // Replacing a secret asks for a new value without ever pre-filling the old one.
+  await global.getByRole('button', { name: 'Replace SHARED_TOKEN' }).click();
+  const replacement = global.locator('.connection-env-replace input');
+  await expect(replacement).toHaveValue('');
+  await expect(replacement).toHaveAttribute('type', 'password');
+  await replacement.press('Escape');
+  await expect(global.locator('.connection-env-replace')).toHaveCount(0);
+
+  // Both lists offer the Secret tickbox, and ticking it hides the typed value.
+  const codexCard = page.locator('.connection-card', { has: page.locator('form[data-env-provider="codex"]') });
+  await codexCard.locator('summary').first().click();
+  await codexCard.locator('details.connection-env > summary').click();
+  for (const form of [global.locator('form[data-env-provider="*"]'), codexCard.locator('form[data-env-provider="codex"]')]) {
+    const tick = form.getByRole('checkbox', { name: 'Secret' });
+    await expect(tick).toBeEnabled();
+    const value = form.getByLabel('Variable value');
+    await expect(value).toHaveJSProperty('type', 'text');
+    await tick.check();
+    await expect(value).toHaveJSProperty('type', 'password');
+    await tick.uncheck();
+    await expect(value).toHaveJSProperty('type', 'text');
+  }
   expect(errors).toEqual([]);
 });
 
