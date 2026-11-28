@@ -66,10 +66,17 @@ For UI changes, also run the relevant Playwright tests in Chrome and WebKit
 (the app runs in WKWebView on macOS):
 
 ```sh
-npx playwright install chromium webkit               # once
+npx playwright install webkit                        # once
 npx playwright test tests/your-area.spec.ts
 npx playwright test -c playwright.webkit.config.ts tests/your-area.spec.ts
 ```
+
+The Chrome suite drives your installed Google Chrome rather than Playwright's
+bundled Chromium: `playwright.config.ts` sets `executablePath` to
+`/Applications/Google Chrome.app/Contents/MacOS/Google Chrome`, which
+`PANDACODE_TEST_CHROME` overrides. WebKit is the only browser Playwright has to
+download. The test server is reused if one is already on the port, so in a
+second checkout set `PW_PORT=<free port>` to avoid testing another checkout.
 
 The full browser suite takes several minutes; pass file paths or `-g "title"`
 for a subset. Ordinary tests never call paid models. Live provider tests are
@@ -80,8 +87,14 @@ When a change alters how the app looks, refresh the README screenshots with
 browser preview with the sample data in `scripts/screenshots/showcase.js` and
 writes framed WebP images to `docs/screenshots/`.
 
-CI (`.github/workflows/ci.yml`) runs the typecheck, unit tests, website build,
-and `cargo test --lib`/Clippy on Linux for every pull request.
+CI (`.github/workflows/ci.yml`) runs four jobs on every pull request: the
+typecheck and bundle (`npm run build`), the Node unit tests, the release-script
+tests and the website build on Linux; `cargo test --lib` and
+`cargo clippy -- -D warnings` on Linux, plus the release-profile real-audio
+smoke; the Panda Router ONNX parity tests on macOS; and Clippy across the
+Apple silicon, Intel Mac, Windows x64, Windows arm64 and Linux arm64 targets.
+It never runs the Playwright suite or builds installers, so run the browser
+tests yourself for UI changes.
 
 ## Pull requests
 
@@ -106,8 +119,10 @@ Types: `feat`, `fix`, `refactor`, `docs`, `test`, `chore`, `perf`, `ci`.
 - No telemetry, analytics or calls home. Network requests must go only to
   services the user chose, or be public, anonymous checks documented in the
   README's privacy section.
-- Never commit secrets, API keys or personal paths. Provider keys belong in the
-  OS keychain (`secret_store.rs`).
+- Never commit secrets, API keys or personal paths. Provider keys go through
+  `secret_store.rs`, which keeps them in a 0600 `secrets.json` in app data on
+  macOS (never the Keychain) and in the OS store elsewhere; they must never
+  reach the webview or an agent.
 - Keep files small and focused, and handle errors explicitly.
 - By contributing, you agree your contributions are licensed under the
   [PandaCode License](LICENSE).

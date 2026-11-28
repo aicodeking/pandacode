@@ -865,6 +865,7 @@ function sampleDailyTokens(): { date: string; tokens: number }[] {
   });
 }
 const previewQueueHolds = new Map<string, string>();
+let previewHoldSeq = 0;
 
 /** Preview queues persist in localStorage so a reload behaves like a restart. */
 type PreviewQueued = { id: string; sessionId: string; position: number; text: string; attachments: unknown[]; createdAt: number; updatedAt: number };
@@ -1940,6 +1941,12 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     }
     case 'archive_codex_task': { const task = codexTask(args.sessionId); assertIdle(task); task.archived = true; task.updatedAt = Date.now(); break; }
     case 'export_task': { const task = session(args.sessionId); result = `# ${task.title}\n\n` + (messages[task.id] ?? []).map(message => `## ${message.role}\n\n${message.content}\n\n`).join(''); break; }
+    case 'export_debug_bundle': {
+      const task = session(args.sessionId), note = String(args.note ?? '').trim();
+      result = `# Debug: ${task.title}\n\n- Session: ${task.id}\n- Messages: ${(messages[task.id] ?? []).length}\n- Provider: ${task.provider}\n- Note: ${note || '(none)'}\n- Tool output: ${args.includeOutput ? 'included' : 'omitted'}\n- Changed files: ${args.includeChanges ? 'included' : 'omitted'}\n`;
+      break;
+    }
+    case 'save_debug_bundle': { session(args.sessionId); result = undefined; break; }
     // Rows as `list_subagents` sends them: no tools and a short preview; the full one is `get_subagent`.
     case 'list_subagents': return [...(mirrorSubagents.get(String(args.sessionId))?.values() ?? [])].map(saved => { const { tools, ...row } = saved as { prompt?: string; response?: string; tools?: unknown[] }; return { ...row, prompt: String(row.prompt ?? '').slice(0, 1025), response: String(row.response ?? '').slice(0, 1025), toolCount: tools?.length ?? 0 }; }) as T;
     case 'get_subagent': return structuredClone(mirrorSubagents.get(String(args.sessionId))?.get(String(args.agentId)) ?? null) as T;
@@ -1975,7 +1982,7 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       s.limitedAt = null; s.limitedUntil = null; s.resumeAtReset = false;
       if (previewQueueHolds.get(s.id) === 'limited') {
         previewQueueHolds.set(s.id, 'reset');
-        emit('queue-changed', { sessionId: s.id, held: true, reason: 'reset' });
+        emit('queue-changed', { sessionId: s.id, held: true, reason: 'reset', holdSeq: ++previewHoldSeq });
       }
       result = null; break;
     }
@@ -1984,7 +1991,7 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       const { sessionId } = args, held = Boolean(args.held), reason = args.reason ?? 'stopped';
       if (held) previewQueueHolds.set(sessionId, reason);
       else previewQueueHolds.delete(sessionId);
-      emit('queue-changed', { sessionId, held, ...(held ? { reason } : {}) });
+      emit('queue-changed', { sessionId, held, holdSeq: ++previewHoldSeq, ...(held ? { reason } : {}) });
       break;
     }
     case 'queue_list': result = previewQueue().filter(entry => !args.sessionId || entry.sessionId === args.sessionId); break;

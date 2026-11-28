@@ -3,6 +3,9 @@
 .web-server-state .remote-dot{margin-right:4px}
 .web-server-port-controls{display:flex;align-items:center;gap:8px;flex:none}
 .setting-row .web-server-port-controls input.web-server-port-input{width:76px;height:32px;padding:0 10px;border:1px solid var(--ds-border);border-radius:var(--ds-control-radius);background:var(--ds-card-inset);color:var(--text);font:var(--type-body)/var(--type-body-leading) var(--mono);text-align:center}
+/* Bind address and trusted names need more room than a port; all three share the control look. */
+.setting-row .web-server-port-controls input.web-server-host-input{width:calc(var(--control-lg) * 6);max-width:100%;text-align:left}
+.setting-row .web-server-port-controls input.web-server-allowed-hosts-input{width:calc(var(--control-lg) * 9);max-width:100%;text-align:left}
 .web-server-port-controls .secondary-button{padding:0 12px;min-height:32px}
 .web-server-link{display:flex;flex-direction:column;gap:8px;margin:4px calc(var(--ds-row-pad-x) - var(--ds-card-pad)) 4px;padding:10px 12px;border:1px solid var(--ds-border);border-radius:var(--ds-inner-radius);background:var(--ds-card-inset);min-width:0}
 .web-server-link-head{display:flex;align-items:center;gap:6px;min-width:0}

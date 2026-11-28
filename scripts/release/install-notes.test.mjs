@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { test } from 'node:test';
+import { fileURLToPath } from 'node:url';
 import { installNotes, macosNote, UNQUARANTINE } from './install-notes.mjs';
 
 test('an unsigned macOS build says how to clear the quarantine attribute', () => {
@@ -46,6 +48,23 @@ test('every published asset is named once', () => {
   ]) {
     assert.equal(notes.split(asset).length - 1, 1, asset);
   }
+});
+
+test('the Linux AppImage note gives a FUSE 2 workaround and links to the install guide', () => {
+  const notes = installNotes();
+  assert.match(notes, /FUSE 2 \(`libfuse2`\)/);
+  assert.match(notes, /`--appimage-extract-and-run`/);
+  assert.match(notes, /\(https:\/\/github\.com\/aicodeking\/pandacode#install\)/);
+});
+
+test('a release version pins the install guide to the release tag', () => {
+  assert.match(installNotes({ version: '1.2.3' }), /\(https:\/\/github\.com\/aicodeking\/pandacode\/blob\/v1\.2\.3\/README\.md#install\)/);
+});
+
+test('the CLI accepts both signing and version options', () => {
+  const script = fileURLToPath(new URL('./install-notes.mjs', import.meta.url));
+  const notes = execFileSync(process.execPath, [script, '--signed', '--version', '1.2.3'], { encoding: 'utf8' });
+  assert.equal(notes, installNotes({ signed: true, version: '1.2.3' }));
 });
 
 test('the macOS note names the same command the uninstaller uses', () => {

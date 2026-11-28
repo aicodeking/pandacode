@@ -79,6 +79,26 @@ fn resolve_for(
     windows: bool,
     env: &impl Fn(&str) -> Option<OsString>,
 ) -> Result<Launch, String> {
+    if windows
+        && path
+            .extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("ps1"))
+    {
+        if let (Some(directory), Some(stem)) = (path.parent(), path.file_stem()) {
+            for extension in [".exe", ".com", ".cmd", ".bat"] {
+                let mut file_name = stem.to_os_string();
+                file_name.push(extension);
+                let sibling = directory.join(file_name);
+                if sibling.is_file() {
+                    return resolve_for(&sibling, windows, env);
+                }
+            }
+        }
+        return Err(
+            "PowerShell (.ps1) scripts cannot be launched directly on Windows. Select the .cmd or .exe launcher instead."
+                .into(),
+        );
+    }
     let batch = path.extension().is_some_and(|extension| {
         extension.eq_ignore_ascii_case("cmd") || extension.eq_ignore_ascii_case("bat")
     });
@@ -137,24 +157,25 @@ fn resolve_for(
         .and_then(|name| name.to_str())
         .unwrap_or("")
         .to_ascii_lowercase();
-    let package =
-        match name.as_str() {
-            "codex" => "@openai/codex",
-            "claude" => "@anthropic-ai/claude-code",
-            "opencode" => "opencode-ai",
-            "pi" => "@earendil-works/pi-coding-agent",
-            "dsh" => "@deepseek-ai/dsh",
-            "command-code" | "cmdc" | "commandcode" => "command-code",
-            "copilot" => "@github/copilot",
-            "cline" => "cline",
-            "kilo" | "kilocode" => "@kilocode/cli",
-            "netlify" => "netlify-cli",
-            "npx" => "npm",
-            _ => return Err(
+    let packages: &[&str] = match name.as_str() {
+        "codex" => &["@openai/codex"],
+        "claude" => &["@anthropic-ai/claude-code"],
+        "opencode" => &["@opencode/cli", "opencode-ai"],
+        "pi" => &["@earendil-works/pi-coding-agent"],
+        "dsh" => &["@deepseek-ai/dsh"],
+        "command-code" | "cmdc" | "commandcode" => &["command-code"],
+        "copilot" => &["@github/copilot"],
+        "cline" => &["cline"],
+        "kilo" | "kilocode" => &["@kilocode/cli"],
+        "netlify" => &["netlify-cli"],
+        "npx" => &["npm"],
+        _ => {
+            return Err(
                 "This batch launcher is unsupported. Select the native harness executable instead."
                     .into(),
-            ),
-        };
+            )
+        }
+    };
     let directory = path
         .parent()
         .ok_or("The npm launcher has no installation folder.")?;
@@ -166,11 +187,38 @@ fn resolve_for(
     } else {
         directory.join("node_modules")
     };
-    let script = match modules.join(package).canonicalize() {
-        Ok(package) => declared_entry(&package, &name)?,
-        Err(_) => shim_entry(path, directory, &name)
-            .or_else(|| sibling_launcher(path, directory))
-            .ok_or_else(|| format!("The npm harness package could not be found. Reinstall it with `npm install -g {package}` or select its native executable."))?,
+    let mut installed_error = None;
+    let mut declared = None;
+    for package in packages {
+        if let Ok(package_dir) = modules.join(package).canonicalize() {
+            match declared_entry(&package_dir, &name) {
+                Ok(entry) => {
+                    declared = Some(entry);
+                    break;
+                }
+                Err(error) => {
+                    installed_error.get_or_insert(error);
+                }
+            }
+        }
+    }
+    let script = match declared {
+        Some(entry) => entry,
+        None => {
+            if let Some(error) = installed_error {
+                return Err(error);
+            }
+            shim_entry(path, directory, &name)
+                .or_else(|| sibling_launcher(path, directory))
+                .ok_or_else(|| {
+                    let install_hint = packages
+                        .iter()
+                        .map(|package| format!("`npm install -g {package}`"))
+                        .collect::<Vec<_>>()
+                        .join(" or ");
+                    format!("The npm harness package could not be found. Reinstall it with {install_hint} or select its native executable.")
+                })?
+        }
     };
     let host = script.file_name().and_then(|name| name.to_str()).unwrap_or("").to_ascii_lowercase();
     if ["cmd.exe", "powershell.exe", "pwsh.exe", "wscript.exe", "cscript.exe", "mshta.exe"].contains(&host.as_str()) {
@@ -752,7 +800,7 @@ fn executable_path_for(
 
 fn find_in_directories(name: &str, dirs: Vec<PathBuf>, windows: bool) -> Option<PathBuf> {
     let extensions: &[&str] = if windows {
-        &[".exe", ".com", ".cmd", ".bat", ""]
+        &[".exe", ".com", ".cmd", ".bat"]
     } else {
         &[""]
     };
@@ -1525,6 +1573,93 @@ mod tests {
         assert_eq!(
             find_in_directories("codex", vec![f.0.join("missing"), f.0.join("tools")], true),
             Some(exe)
+        );
+    }
+
+    #[test]
+    fn windows_opencode_v2_npm_cli_resolves_cjs_under_node() {
+        let f = Fixture::new();
+        let shim = f.file("npm/opencode.cmd", "@echo off\r\n");
+        let node = f.file("npm/node.exe", "");
+        f.file(
+            "npm/node_modules/@opencode/cli/package.json",
+            r#"{"bin":{"opencode":"./bin/opencode.cjs"}}"#,
+        );
+        let script = f.file(
+            "npm/node_modules/@opencode/cli/bin/opencode.cjs",
+            "#!/usr/bin/env node\n",
+        );
+        let launch = resolve(&shim, true).unwrap();
+        assert_eq!(launch.program, external_path_for(&node, true));
+        assert_eq!(launch.args, [external_path_for(&script, true).into_os_string()]);
+    }
+
+    #[test]
+    fn windows_opencode_supports_opencode_ai_and_hints_both_packages_when_missing() {
+        let f = Fixture::new();
+        let shim = f.file("npm/opencode.cmd", "@echo off\r\n");
+        let error = resolve(&shim, true).err().unwrap();
+        assert!(error.contains("npm install -g @opencode/cli"), "{error}");
+        assert!(error.contains("npm install -g opencode-ai"), "{error}");
+
+        f.file(
+            "npm/node_modules/opencode-ai/package.json",
+            r#"{"bin":{"opencode":"bin/opencode.exe"}}"#,
+        );
+        let binary = f.file("npm/node_modules/opencode-ai/bin/opencode.exe", "");
+        let launch = resolve(&shim, true).unwrap();
+        assert_eq!(launch.program, external_path_for(&binary, true));
+        assert!(launch.args.is_empty());
+    }
+
+    #[test]
+    fn windows_ps1_shim_resolves_sibling_cmd_or_exe_and_rejects_orphan() {
+        let f = Fixture::new();
+        let orphan = f.file("orphan/opencode.ps1", "#!/usr/bin/env pwsh\n");
+        let error = resolve(&orphan, true).err().unwrap();
+        assert!(error.contains(".cmd") && error.contains(".exe"), "{error}");
+
+        let ps1 = f.file("npm/opencode.ps1", "#!/usr/bin/env pwsh\n");
+        f.file("npm/opencode.cmd", "@echo off\r\n");
+        let node = f.file("npm/node.exe", "");
+        f.file(
+            "npm/node_modules/@opencode/cli/package.json",
+            r#"{"bin":{"opencode":"./bin/opencode.cjs"}}"#,
+        );
+        let script = f.file(
+            "npm/node_modules/@opencode/cli/bin/opencode.cjs",
+            "#!/usr/bin/env node\n",
+        );
+        let launch = resolve(&ps1, true).unwrap();
+        assert_eq!(launch.program, external_path_for(&node, true));
+        assert_eq!(launch.args, [external_path_for(&script, true).into_os_string()]);
+
+        // A sibling native .exe wins over .cmd when resolving a .ps1 shim.
+        let exe = f.file("npm/opencode.exe", "");
+        let launch = resolve(&ps1, true).unwrap();
+        assert_eq!(launch.program, external_path_for(&exe, true));
+        assert!(launch.args.is_empty());
+
+        // Uppercase .PS1 is handled the same way.
+        let upper = f.file("upper/OPENCODE.PS1", "");
+        let upper_exe = f.file("upper/OPENCODE.exe", "");
+        let launch = resolve(&upper, true).unwrap();
+        assert_eq!(launch.program, external_path_for(&upper_exe, true));
+    }
+
+    #[test]
+    fn windows_discovery_skips_ps1_and_extensionless_posix_scripts() {
+        let f = Fixture::new();
+        f.file("first/opencode", "#!/bin/sh\n");
+        f.file("first/opencode.ps1", "#!/usr/bin/env pwsh\n");
+        assert_eq!(
+            find_in_directories("opencode", vec![f.0.join("first")], true),
+            None
+        );
+        let cmd = f.file("second/opencode.cmd", "@echo off\r\n");
+        assert_eq!(
+            find_in_directories("opencode", vec![f.0.join("first"), f.0.join("second")], true),
+            Some(cmd)
         );
     }
 }

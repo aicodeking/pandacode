@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 // Drafts and the open thread survive any exit, a crash included, without bringing back what was
 // sent, filling storage, or reopening a thread that takes the app down.
 const {
-  PersistedDrafts, decodeDraft, rememberOpenThread, threadToReopen, beginThreadRestore, finishThreadRestore,
+  PersistedDrafts, decodeDraft, decodeDraftAttachments, rememberOpenThread, threadToReopen, beginThreadRestore, finishThreadRestore,
   DRAFT_PREFIX, OPEN_THREAD_KEY, PREVIOUS_THREAD_KEY, OPEN_NEW_TASK_KEY, NEW_TASK_DRAFT, RESTORING_KEY, MAX_DRAFT_CHARS, DRAFT_MAX_AGE, DRAFTS_BYTE_BUDGET,
   expireDraftsWhileRunning, finishThreadRestoreAfterPaint, windowStable, pageClosed, leavePage, PAGE_ALIVE_KEY, DRAFT_FUTURE_SLACK, WINDOW_DIED_KEY, WINDOW_STABLE_AFTER, PAINT_WAIT,
 } = await import('../src/launch-restore.ts');
@@ -959,4 +959,226 @@ test('drafts are flushed when the window is hidden and on pagehide; main.ts flus
   assert.match(main, /flushDraftsOnLeave\(state\.drafts\)/);
   assert.match(main, /const leave = \(\) => \{ state\.drafts\.flush\(\);/, 'app-quitting and pagehide write waiting drafts');
   assert.match(main, /function selectSession\([^)]*\)[^{]*\{\n  state\.drafts\.flush\(\);/, 'a thread switch writes waiting drafts first');
+});
+
+// Attachments ride in the draft record beside the text, under the same age, budget, Keep draft,
+// Clear drafts, New-task key and deletion rules (issue #413: images used to vanish at restart).
+
+const image = (id, extra = {}) => ({ kind: 'image', id, name: `${id}.png`, width: 2, height: 3, thumbnail: `data:image/png;base64,${id}`, source: 'file', ...extra });
+const documentAttachment = (id, extra = {}) => ({ kind: 'document', id, path: `/tmp/${id}.txt`, name: `${id}.txt`, size: 12, text: 'file text', truncated: false, method: 'text', ...extra });
+const folderAttachment = (id, extra = {}) => ({ kind: 'folder', id, path: `/tmp/${id}`, name: id, files: 2, folders: 1, listing: 'a.txt\nb/', truncated: false, ...extra });
+const withAttachments = (items, { t = NOW, text = 'prompt' } = {}) => JSON.stringify({ t, text, a: items });
+
+test('decodeDraftAttachments reads a validated array from the record and nothing else', () => {
+  assert.deepEqual(decodeDraftAttachments(null), []);
+  assert.deepEqual(decodeDraftAttachments('{'), []);
+  assert.deepEqual(decodeDraftAttachments('[]'), []);
+  assert.deepEqual(decodeDraftAttachments(stored('text')), [], 'a record without attachments');
+  assert.deepEqual(decodeDraftAttachments(JSON.stringify({ t: NOW, text: 'x', a: 'nope' })), []);
+  assert.deepEqual(decodeDraftAttachments(withAttachments([image('i1'), documentAttachment('d1'), folderAttachment('f1')])), [image('i1'), documentAttachment('d1'), folderAttachment('f1')]);
+});
+
+test('an image attached to a draft survives reload with its thumbnail, kind and order', () => {
+  const store = memory();
+  const drafts = new PersistedDrafts(store, () => NOW);
+  drafts.set('a', 'look at these');
+  const first = image('i1', { thumbnail: 'data:image/png;base64,AAAA' });
+  const second = image('i2', { source: 'paste', thumbnail: 'data:image/png;base64,BBBB' });
+  drafts.setAttachments('a', [first, second]);
+  const record = JSON.parse(store.getItem(DRAFT_PREFIX + 'a'));
+  assert.equal(record.text, 'look at these');
+  assert.deepEqual(record.a, [first, second], 'in the composer’s order');
+  const next = new PersistedDrafts(store, () => NOW);
+  assert.equal(next.get('a'), 'look at these');
+  assert.deepEqual(next.attachments('a'), [first, second]);
+  assert.equal(next.attachments('a')[0].thumbnail, 'data:image/png;base64,AAAA');
+  assert.equal(next.attachments('a')[1].kind, 'image');
+  assert.deepEqual(next.attachments('b'), [], 'a task with no draft has no attachments');
+});
+
+test('an attachments-only draft (blank text) is stored and read back', () => {
+  const store = memory();
+  const drafts = new PersistedDrafts(store, () => NOW);
+  drafts.setAttachments('only', [image('i1')]);
+  const record = JSON.parse(store.getItem(DRAFT_PREFIX + 'only'));
+  assert.equal(record.text, '');
+  assert.deepEqual(record.a, [image('i1')]);
+  assert.deepEqual([...new PersistedDrafts(store, () => NOW).keys()], ['only'], 'blank text is kept when attachments are there');
+  const next = new PersistedDrafts(store, () => NOW);
+  assert.equal(next.get('only'), '');
+  assert.deepEqual(next.attachments('only'), [image('i1')]);
+  // A blank draft without attachments is still not a draft.
+  store.setItem(DRAFT_PREFIX + 'blank', stored('   '));
+  assert.equal(new PersistedDrafts(store, () => NOW).has('blank'), false);
+  assert.equal(store.getItem(DRAFT_PREFIX + 'blank'), null);
+});
+
+test('a stored draft keeps its valid attachments and drops only the malformed ones', () => {
+  const store = memory({ [DRAFT_PREFIX + 'a']: JSON.stringify({ t: NOW, text: 'look', a: [image('ok'), { kind: 'image', id: 'bad' }, { kind: 'video' }, 7] }) });
+  const drafts = new PersistedDrafts(store, () => NOW);
+  assert.equal(drafts.get('a'), 'look');
+  assert.deepEqual(drafts.attachments('a'), [image('ok')]);
+  drafts.set('a', 'look again');
+  assert.deepEqual(JSON.parse(store.getItem(DRAFT_PREFIX + 'a')).a, [image('ok')], 'only the valid entries are written back');
+});
+
+test('deleting a draft drops its attachments from memory and storage', () => {
+  const store = memory();
+  const drafts = new PersistedDrafts(store, () => NOW);
+  drafts.set('a', 'prompt');
+  drafts.setAttachments('a', [image('i1')]);
+  drafts.delete('a');
+  assert.equal(store.getItem(DRAFT_PREFIX + 'a'), null);
+  assert.deepEqual(drafts.attachments('a'), []);
+  const next = new PersistedDrafts(store, () => NOW);
+  assert.equal(next.has('a'), false);
+  assert.deepEqual(next.attachments('a'), []);
+});
+
+test('expiry drops attachments with the text, at launch and while running', () => {
+  const store = memory({ [DRAFT_PREFIX + 'old']: withAttachments([image('i1')], { t: NOW - DRAFT_MAX_AGE - 1 }) });
+  const drafts = new PersistedDrafts(store, () => NOW);
+  assert.equal(drafts.has('old'), false);
+  assert.deepEqual(drafts.attachments('old'), []);
+  assert.equal(store.getItem(DRAFT_PREFIX + 'old'), null);
+  let clock = NOW;
+  const running = new PersistedDrafts(memory(), () => clock);
+  running.set('kept', 'text');
+  running.setAttachments('kept', [image('i2')]);
+  clock += DRAFT_MAX_AGE + 1;
+  running.expire();
+  assert.equal(running.has('kept'), false);
+  assert.deepEqual(running.attachments('kept'), []);
+});
+
+test('Keep unsent drafts off drops stored attachments with the text, keeping them for this launch only', () => {
+  const store = memory({ [DRAFT_PREFIX + 'a']: withAttachments([image('i1')]) });
+  const drafts = new PersistedDrafts(store, () => NOW);
+  assert.deepEqual(drafts.attachments('a'), [image('i1')]);
+  drafts.setKeeping(false);
+  assert.equal(store.getItem(DRAFT_PREFIX + 'a'), null, 'the stored record, text and attachments, goes at once');
+  assert.deepEqual(drafts.attachments('a'), [image('i1')], 'the open composer keeps them for this launch');
+  drafts.setAttachments('a', [image('i2')]);
+  assert.equal(store.getItem(DRAFT_PREFIX + 'a'), null, 'nothing is written while off');
+  const next = new PersistedDrafts(store, () => NOW);
+  assert.equal(next.has('a'), false);
+  assert.deepEqual(next.attachments('a'), []);
+});
+
+test('Clear saved drafts keeps the shown draft’s attachments in memory and drops the rest', () => {
+  const store = memory();
+  const drafts = new PersistedDrafts(store, () => NOW);
+  drafts.setAttachments('shown', [image('i1')]);
+  drafts.setAttachments('hidden', [image('i2')]);
+  drafts.clearStored(id => id === 'shown');
+  assert.equal(store.getItem(DRAFT_PREFIX + 'shown'), null);
+  assert.equal(store.getItem(DRAFT_PREFIX + 'hidden'), null);
+  assert.deepEqual(drafts.attachments('shown'), [image('i1')], 'the open composer keeps its chips');
+  assert.deepEqual(drafts.attachments('hidden'), []);
+  drafts.setAttachments('shown', [image('i1')]);
+  assert.deepEqual(JSON.parse(store.getItem(DRAFT_PREFIX + 'shown')).a, [image('i1')], 'stored again on its next change');
+});
+
+test('a New task’s attachments move to the project key and back again', () => {
+  const store = memory();
+  const drafts = newTasks(new PersistedDrafts(store, () => NOW));
+  drafts.set('n1', 'plan');
+  drafts.setAttachments('n1', [image('i1'), documentAttachment('d1')]);
+  assert.equal(store.getItem(DRAFT_PREFIX + 'n1'), null, 'never under the draft session’s id');
+  assert.deepEqual(JSON.parse(store.getItem(DRAFT_PREFIX + NEW_TASK_DRAFT + 'p')).a, [image('i1'), documentAttachment('d1')]);
+  // The next launch: the next New task in the project takes over text and attachments.
+  const next = newTasks(new PersistedDrafts(store, () => NOW));
+  assert.equal(next.get('n2'), 'plan');
+  assert.deepEqual(next.attachments('n2'), [image('i1'), documentAttachment('d1')]);
+  // Published: both move back under the thread’s own id.
+  next.newTaskKey = () => undefined;
+  next.reclaim('n2');
+  assert.equal(store.getItem(DRAFT_PREFIX + NEW_TASK_DRAFT + 'p'), null);
+  const record = JSON.parse(store.getItem(DRAFT_PREFIX + 'n2'));
+  assert.equal(record.text, 'plan');
+  assert.deepEqual(record.a, [image('i1'), documentAttachment('d1')]);
+  const last = new PersistedDrafts(store, () => NOW);
+  assert.equal(last.get('n2'), 'plan');
+  assert.deepEqual(last.attachments('n2'), [image('i1'), documentAttachment('d1')]);
+});
+
+test('attaching on a fresh New task keeps the project’s kept text', () => {
+  const store = memory({ [DRAFT_PREFIX + NEW_TASK_DRAFT + 'p']: stored('saved plan') });
+  const drafts = newTasks(new PersistedDrafts(store, () => NOW));
+  drafts.setAttachments('n2', [image('i1')]);
+  assert.equal(drafts.get('n2'), 'saved plan');
+  const record = JSON.parse(store.getItem(DRAFT_PREFIX + NEW_TASK_DRAFT + 'p'));
+  assert.equal(record.text, 'saved plan');
+  assert.deepEqual(record.a, [image('i1')]);
+});
+
+test('a send or discard clears attachments without resurrecting the draft or its project key', () => {
+  const store = memory({ [DRAFT_PREFIX + NEW_TASK_DRAFT + 'p']: stored('saved plan') });
+  const drafts = newTasks(new PersistedDrafts(store, () => NOW));
+  drafts.setAttachments('n2', [image('i1')]);
+  assert.equal(drafts.get('n2'), 'saved plan', 'the New task took the kept text');
+  // clearComposer: the draft is deleted, then the list is cleared (attachments.clear)
+  drafts.delete('n2');
+  drafts.setAttachments('n2', []);
+  assert.equal(store.getItem(DRAFT_PREFIX + NEW_TASK_DRAFT + 'p'), null, 'nothing is written back to the project key');
+  assert.equal(drafts.get('n2'), undefined);
+  assert.deepEqual([...drafts.keys()], [], 'and no empty draft sits in memory');
+});
+
+test('setAttachments coalesces with the write timer and clears the key when text and attachments are both gone', () => {
+  const store = memory(), timer = manualTimer();
+  const drafts = new PersistedDrafts(store, () => NOW, timer);
+  drafts.setAttachments('a', [image('i1')]);
+  assert.deepEqual(store.writes, [DRAFT_PREFIX + 'a'], 'the first change of a burst is written at once');
+  assert.equal(decodeDraft(store.getItem(DRAFT_PREFIX + 'a')).text, '', 'an image-only draft is stored');
+  store.writes.length = 0;
+  drafts.setAttachments('a', [image('i2')]);
+  assert.deepEqual(store.writes, [], 'a later change, with the same text, waits for the timer');
+  assert.deepEqual(JSON.parse(store.getItem(DRAFT_PREFIX + 'a')).a, [image('i1')], 'storage still has the old list');
+  assert.deepEqual(drafts.attachments('a'), [image('i2')], 'memory has the new one at once');
+  timer.tick();
+  assert.deepEqual(store.writes, [DRAFT_PREFIX + 'a']);
+  assert.deepEqual(JSON.parse(store.getItem(DRAFT_PREFIX + 'a')).a, [image('i2')]);
+  drafts.flush();
+  // Removing the list when the text is blank too removes the draft at once.
+  drafts.setAttachments('a', []);
+  assert.equal(store.getItem(DRAFT_PREFIX + 'a'), null);
+  // With text, the record stays; clearing the text then removes it.
+  drafts.setAttachments('b', [image('i3')]);
+  drafts.set('b', 'words');
+  drafts.flush();
+  assert.equal(decodeDraft(store.getItem(DRAFT_PREFIX + 'b')).text, 'words');
+  assert.deepEqual(JSON.parse(store.getItem(DRAFT_PREFIX + 'b')).a, [image('i3')]);
+  drafts.setAttachments('b', []);
+  assert.equal(decodeDraft(store.getItem(DRAFT_PREFIX + 'b')).text, 'words', 'attachments gone, text kept');
+  assert.equal(JSON.parse(store.getItem(DRAFT_PREFIX + 'b')).a, undefined);
+  drafts.set('b', '');
+  assert.equal(store.getItem(DRAFT_PREFIX + 'b'), null);
+});
+
+test('stored attachments count toward DRAFTS_BYTE_BUDGET', () => {
+  const store = memory();
+  let clock = NOW;
+  const drafts = new PersistedDrafts(store, () => clock);
+  const text = 'x'.repeat(40_000), thumbnail = 'data:image/png;base64,' + 'y'.repeat(50_000);
+  const count = 9;
+  for (let index = 0; index < count; index++) {
+    clock++;
+    drafts.set(`t${index}`, text);
+    drafts.setAttachments(`t${index}`, [image(`i${index}`, { thumbnail })]);
+  }
+  const total = [...store.data].filter(([key]) => key.startsWith(DRAFT_PREFIX)).reduce((sum, [, value]) => {
+    const record = JSON.parse(value);
+    return sum + record.text.length * 2 + (record.a ? JSON.stringify(record.a).length * 2 : 0);
+  }, 0);
+  assert.ok(total <= DRAFTS_BYTE_BUDGET, `${total} bytes stored`);
+  assert.ok(store.getItem(DRAFT_PREFIX + `t${count - 1}`), 'the newest draft is stored with its attachment');
+  assert.equal(store.getItem(DRAFT_PREFIX + 't0'), null, 'the oldest went with its attachment');
+  assert.deepEqual(drafts.attachments('t0'), [image('i0', { thumbnail })], 'but stays for this launch');
+  // An attachments-only draft fits and is kept like any other.
+  clock++;
+  const onlyThumb = 'data:image/png;base64,' + 'z'.repeat(1000);
+  drafts.setAttachments('image-only', [image('last', { thumbnail: onlyThumb })]);
+  assert.deepEqual(JSON.parse(store.getItem(DRAFT_PREFIX + 'image-only')).a, [image('last', { thumbnail: onlyThumb })]);
+  assert.equal(decodeDraft(store.getItem(DRAFT_PREFIX + 'image-only')).text, '');
 });

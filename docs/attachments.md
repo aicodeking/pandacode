@@ -14,7 +14,9 @@ dropped too. On macOS and Linux plain text can be dragged into the message box a
 lands at the caret; on Windows the native drop handler still takes every drag, so
 it cannot yet. Attachments belong to their task
 and stay put while you switch tasks; they leave with the message that sends them
-and come back if that send fails.
+and come back if that send fails. They are also kept with the thread's unsent draft,
+so a restart for an update brings them back with the text ([crash recovery](crash-recovery.md#what-a-launch-restores));
+an image whose capture the registry has pruned by then shows as **File missing**.
 
 ## Images
 

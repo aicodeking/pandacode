@@ -184,12 +184,12 @@ const RECONCILE_CANDIDATES_FALLBACK_SQL: &str = "SELECT session_id FROM architec
 
 /// `stale_candidates`, through the snapshots when `store`'s team tracker is unusable.
 pub(crate) fn stale_candidates_in(store: &Store) -> Result<Vec<String>> {
-    session_ids(&store.db, if store.team_meta_usable() { STALE_CANDIDATES_SQL } else { STALE_CANDIDATES_FALLBACK_SQL })
+    crate::architect::tracker_or_snapshot(store, STALE_CANDIDATES_SQL, STALE_CANDIDATES_FALLBACK_SQL, |sql| session_ids(&store.db, sql))
 }
 
 /// `reconcile_candidates`, through the snapshots when `store`'s team tracker is unusable.
 pub(crate) fn reconcile_candidates_in(store: &Store) -> Result<Vec<String>> {
-    session_ids(&store.db, if store.team_meta_usable() { RECONCILE_CANDIDATES_SQL } else { RECONCILE_CANDIDATES_FALLBACK_SQL })
+    crate::architect::tracker_or_snapshot(store, RECONCILE_CANDIDATES_SQL, RECONCILE_CANDIDATES_FALLBACK_SQL, |sql| session_ids(&store.db, sql))
 }
 
 /// Teams saved by older versions can be failed, paused or completed with workers still saved as

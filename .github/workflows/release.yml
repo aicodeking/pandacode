@@ -334,7 +334,11 @@ jobs:
           {
             cat "releases/$VERSION.md"
             printf '\n\n'
-            if [ "$SIGNED" = "true" ]; then node scripts/release/install-notes.mjs --signed; else node scripts/release/install-notes.mjs; fi
+            if [ "$SIGNED" = "true" ]; then
+              node scripts/release/install-notes.mjs --signed --version "$VERSION"
+            else
+              node scripts/release/install-notes.mjs --version "$VERSION"
+            fi
           } > "$RUNNER_TEMP/notes.md"
       - name: Write the updater manifest
         run: |

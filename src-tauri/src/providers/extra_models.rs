@@ -98,6 +98,16 @@ pub(super) async fn opencode(path: &Path) -> Result<Vec<ModelInfo>, String> {
     }
 }
 
+/// OpenCode v2.4+ waits for plugins during `--standalone models` without leaving a
+/// background service behind.
+pub(super) async fn opencode_v2(path: &Path) -> Result<Vec<ModelInfo>, String> {
+    let models = discover(path, &["--standalone", "models"], parse_plain).await?;
+    if models.len() <= 1 {
+        return Err("OpenCode returned no models".into());
+    }
+    Ok(models)
+}
+
 async fn discover(
     path: &Path,
     args: &[&str],
@@ -227,5 +237,26 @@ openrouter/z-ai/glm-5.2
     #[test]
     fn malformed_catalog_errors_do_not_echo_input() {
         assert!(!parse(b"SECRET").unwrap_err().contains("SECRET"));
+    }
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn opencode_v2_uses_standalone_models_and_rejects_empty_output() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("pandacode-extra-models-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let script = root.join("opencode");
+        std::fs::write(
+            &script,
+            "#!/bin/sh\nif [ \"$*\" = '--standalone models' ]; then\n  printf 'opencode/first\\nopencode/second\\n'\nelse\n  exit 9\nfi\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let models = opencode_v2(&script).await.unwrap();
+        let ids: Vec<_> = models.iter().map(|model| model.id.as_str()).collect();
+        assert_eq!(ids, ["default", "opencode/first", "opencode/second"]);
+
+        std::fs::write(&script, "#!/bin/sh\nexit 0\n").unwrap();
+        assert_eq!(opencode_v2(&script).await.unwrap_err(), "OpenCode returned no models");
+        std::fs::remove_dir_all(&root).unwrap();
     }
 }

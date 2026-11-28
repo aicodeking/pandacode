@@ -28,6 +28,7 @@ pub(crate) mod git;
 pub(crate) mod github;
 pub(crate) mod projects;
 pub(crate) mod rewind;
+pub(crate) mod rooms;
 pub(crate) mod search;
 pub(crate) mod schedules;
 pub(crate) mod settings;
@@ -196,7 +197,7 @@ impl PartialEq for Parsed {
 
 /// Every feature group, in the order `host.hello` lists them. A new feature file adds
 /// itself here (and its `mod` line above) once.
-const GROUPS: [(&str, &[Method]); 16] = [
+const GROUPS: [(&str, &[Method]); 17] = [
     ("hello", HELLO),
     ("threads", threads::METHODS),
     ("composer", composer::METHODS),
@@ -213,6 +214,7 @@ const GROUPS: [(&str, &[Method]); 16] = [
     ("settings", settings::METHODS),
     ("rewind", rewind::METHODS),
     ("search", search::METHODS),
+    ("rooms", rooms::METHODS),
 ];
 
 /// Every registry method.

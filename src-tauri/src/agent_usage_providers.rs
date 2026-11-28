@@ -21,12 +21,15 @@ const KIMI_GLOBAL_BASE: &str = "https://api.kimi.ai/coding/v1";
 const GLM_URL: &str = "https://api.z.ai/api/monitor/usage/quota/limit";
 const OPENCODE_URL: &str = "https://opencode.ai/zen/go/v1/usage";
 const DEEPSEEK_URL: &str = "https://api.deepseek.com/user/balance";
+const COMMANDCODE_CREDITS_URL: &str = "https://api.commandcode.ai/alpha/billing/credits";
+const COMMANDCODE_USAGE_URL: &str = "https://api.commandcode.ai/alpha/usage/summary";
 
 pub(crate) async fn fetch(provider: &str) -> Usage {
     let mut usage = match provider {
         "kimi" => fetch_kimi().await,
         "glm" => fetch_glm().await,
         "deepseek" => fetch_deepseek().await,
+        "commandcode" => fetch_commandcode().await,
         "opencode" => fetch_opencode().await,
         "antigravity" => fetch_antigravity().await,
         _ => Usage::empty(
@@ -175,6 +178,59 @@ async fn fetch_deepseek() -> Usage {
         Ok(value) => parse_deepseek(&value),
         Err(error) => error.into_usage("deepseek"),
     }
+}
+
+/// Command Code's two billing reads: the plan windows and credits, and the
+/// billing-period spend that makes the monthly pool's used share. Only the
+/// bearer key and fixed URLs travel; neither response text is echoed.
+async fn fetch_commandcode() -> Usage {
+    // Same rule as GLM and DeepSeek: a failed background read cannot establish
+    // which key the harness uses, so it never falls back to the environment.
+    let saved = tokio::task::spawn_blocking(crate::provider_settings::commandcode_key).await;
+    let saved = saved.ok().and_then(Result::ok).ok_or(());
+    let api_key = match saved_key_or_environment(saved, env_key("COMMAND_CODE_API_KEY")) {
+        Ok(Some(key)) => key,
+        Ok(None) => {
+            return Usage::empty(
+                "commandcode",
+                "signedOut",
+                "Add your Command Code API key in Settings → Agents to read your plan usage.",
+            )
+        }
+        Err(()) => {
+            return Usage::empty(
+                "commandcode",
+                "unavailable",
+                "The configured Command Code account could not be verified without opening secure storage. View your plan usage in Command Code Studio.",
+            )
+        }
+    };
+    let client = match http_client() {
+        Ok(client) => client,
+        Err(error) => return error.into_usage("commandcode"),
+    };
+    let credits = match request_json(
+        client
+            .get(COMMANDCODE_CREDITS_URL)
+            .bearer_auth(&api_key)
+            .header("Accept", "application/json"),
+    )
+    .await
+    {
+        Ok(value) => value,
+        Err(error) => return error.into_usage("commandcode"),
+    };
+    // The spend read only sizes the monthly window: a failure there must not
+    // hide the 5-hour and weekly limits that the credits response gave.
+    let summary = request_json(
+        client
+            .get(COMMANDCODE_USAGE_URL)
+            .bearer_auth(&api_key)
+            .header("Accept", "application/json"),
+    )
+    .await
+    .unwrap_or(Value::Null);
+    parse_commandcode(&credits, &summary)
 }
 
 #[derive(Deserialize)]
@@ -1054,6 +1110,82 @@ fn deepseek_amount(value: &Value) -> Option<String> {
         .then(|| text.to_owned())
 }
 
+/// A credits bucket: absent (or null) counts as zero, while a present but
+/// unreadable one leaves the whole pool unknown instead of guessing.
+fn commandcode_balance(credits: &Value, field: &str) -> Option<f64> {
+    match credits.get(field) {
+        None | Some(Value::Null) => Some(0.0),
+        Some(value) => number(value),
+    }
+}
+
+/// One window limit. A missing cap, a zero cap or unreadable numbers skip the
+/// window; `resetAt` is epoch milliseconds.
+fn commandcode_window(entry: &Value, label: &str) -> Option<UsageWindow> {
+    let cap = number(&entry["cap"]).filter(|cap| *cap > 0.0)?;
+    let used = number(&entry["used"])?;
+    Some(UsageWindow::new(
+        label,
+        (used / cap * 100.0).clamp(0.0, 100.0),
+        entry["resetAt"]
+            .as_i64()
+            .filter(|ms| *ms > 0)
+            .and_then(|ms| epoch_iso(ms / 1000)),
+    ))
+}
+
+fn parse_commandcode(credits: &Value, summary: &Value) -> Usage {
+    let limits = &credits["windowLimits"];
+    let mut windows: Vec<UsageWindow> = [("fiveHour", "5-hour"), ("weekly", "Weekly")]
+        .into_iter()
+        .filter_map(|(field, label)| commandcode_window(&limits[field], label))
+        .collect();
+    // Absent credit buckets count as zero, but a missing credits object leaves
+    // the pool itself unknown rather than inventing an empty one.
+    let remaining = credits
+        .get("credits")
+        .filter(|balance| balance.is_object())
+        .and_then(|balance| {
+            ["monthlyCredits", "purchasedCredits", "freeCredits"]
+                .into_iter()
+                .try_fold(0.0, |total, field| {
+                    commandcode_balance(balance, field).map(|value| total + value)
+                })
+        });
+    let used = number(&summary["totalCost"]).or_else(|| number(&summary["totalCredits"]));
+    let mut message = None;
+    match (
+        used.filter(|used| *used >= 0.0),
+        remaining.filter(|remaining| *remaining >= 0.0),
+    ) {
+        (Some(used), Some(remaining)) if used + remaining > 0.0 => {
+            windows.push(UsageWindow::new(
+                "Monthly credits",
+                (used / (used + remaining) * 100.0).clamp(0.0, 100.0),
+                None,
+            ));
+            // Show the pool in dollars and cents, as a statement would: the
+            // API reports fractional credits whose exact sum can straddle a cent.
+            let used_cents = (used * 100.0).round();
+            let pool_cents = used_cents + (remaining * 100.0).round();
+            message = Some(format!(
+                "${:.2} of ${:.2} credits used this billing period.",
+                used_cents / 100.0,
+                pool_cents / 100.0
+            ));
+        }
+        (None, Some(remaining)) => {
+            message = Some(format!("${:.2} credits left.", remaining));
+        }
+        _ => {}
+    }
+    let mut usage = ready("commandcode", windows, "Command Code billing API");
+    if usage.status == "ready" {
+        usage.message = message;
+    }
+    usage
+}
+
 fn parse_opencode(value: &Value) -> Usage {
     let mut windows = Vec::new();
     for (field, label) in [
@@ -1269,6 +1401,113 @@ mod tests {
             assert_eq!(usage.status, "unavailable", "case: {body}");
             assert!(usage.windows.is_empty());
         }
+    }
+
+    /// Recorded live Command Code billing payloads.
+    fn commandcode_fixtures() -> (Value, Value) {
+        (
+            json!({"credits":{"belowThreshold":false,"creditThreshold":0,"monthlyCredits":68.699074271,"purchasedCredits":0,"freeCredits":0},"windowLimits":{"limited":true,"exceeded":null,"fiveHour":{"used":1.298331809,"cap":14,"exceeded":false,"resetAt":1795708935914_i64},"weekly":{"used":1.300925729,"cap":35,"exceeded":false,"resetAt":1795955817816_i64}},"sandboxAccess":true,"sandboxMinutes":{"usedMinutes":0,"limitMinutes":0,"overageUsd":0,"resetAt":1796083200000_i64}}),
+            json!({"totalCount":1029,"totalCost":1.2955396364,"totalCredits":1.2955396364,"totalMonthlyCredits":1.2955396364,"totalPurchasedCredits":0,"totalFreeCredits":0,"periodBasis":"billing-period","periodStart":"2026-11-22T12:13:05.000Z","daily":[]}),
+        )
+    }
+
+    #[test]
+    fn commandcode_reads_recorded_live_credits_and_window_limits() {
+        let (credits, summary) = commandcode_fixtures();
+        let usage = parse_commandcode(&credits, &summary);
+        assert_eq!(usage.status, "ready");
+        assert_eq!(usage.windows.len(), 3);
+        assert_eq!(
+            usage.windows.iter().map(|w| w.label.as_str()).collect::<Vec<_>>(),
+            ["5-hour", "Weekly", "Monthly credits"]
+        );
+        for (window, expected) in usage.windows.iter().zip([9.2738, 3.7169, 1.8509]) {
+            assert!(
+                (window.used_percent - expected).abs() < 1e-3,
+                "{}: {}",
+                window.label,
+                window.used_percent
+            );
+        }
+        assert_eq!(
+            usage.windows[0].resets_at.as_deref(),
+            epoch_iso(1795708935914 / 1000).as_deref()
+        );
+        assert!(usage.windows[2].resets_at.is_none());
+        assert_eq!(usage.source.as_deref(), Some("Command Code billing API"));
+        assert!(usage.plan.is_none());
+        assert_eq!(
+            usage.message.as_deref(),
+            Some("$1.30 of $70.00 credits used this billing period.")
+        );
+    }
+
+    #[test]
+    fn commandcode_missing_fields_never_become_windows_or_leak_details() {
+        const PRIVATE: &str = "PRIVATE_DIAGNOSTIC";
+        for (credits, summary) in [
+            (json!(null), json!(null)),
+            (json!({}), json!({})),
+            (json!({"windowLimits":{},"credits":{}}), json!({})),
+            (
+                json!({"windowLimits":{"fiveHour":{"used":1,"cap":0},"weekly":{"used":1,"cap":0}},"credits":{}}),
+                json!({}),
+            ),
+            (
+                json!({"windowLimits":{"fiveHour":{"used":PRIVATE,"cap":14},"weekly":{"used":true,"cap":null}},"credits":{}}),
+                json!({"totalCost":PRIVATE}),
+            ),
+            (
+                json!({"credits":{"monthlyCredits":PRIVATE,"purchasedCredits":0,"freeCredits":0}}),
+                json!({"totalCost":1.0}),
+            ),
+            (
+                json!({"windowLimits":{"fiveHour":{"used":0,"cap":0}},"credits":{"monthlyCredits":0,"purchasedCredits":0,"freeCredits":0}}),
+                json!({"totalCost":0.0}),
+            ),
+        ] {
+            let usage = parse_commandcode(&credits, &summary);
+            assert_ne!(usage.status, "ready", "case: {credits} {summary}");
+            assert!(usage.windows.is_empty(), "case: {credits} {summary}");
+            let serialized = serde_json::to_string(&usage).unwrap();
+            assert!(!serialized.contains(PRIVATE), "case: {credits} {summary}");
+            assert!(
+                usage
+                    .message
+                    .as_deref()
+                    .is_some_and(|message| !message.is_empty() && message.len() < 200),
+                "case: {credits} {summary}"
+            );
+        }
+        // A known monthly pool with no readable spend still reports what is left.
+        let only_remaining = parse_commandcode(
+            &json!({"windowLimits":{"fiveHour":{"used":1,"cap":2}},"credits":{"monthlyCredits":68.699074271}}),
+            &json!({}),
+        );
+        assert_eq!(only_remaining.status, "ready");
+        assert_eq!(only_remaining.windows.len(), 1);
+        assert_eq!(
+            only_remaining.message.as_deref(),
+            Some("$68.70 credits left.")
+        );
+    }
+
+    #[test]
+    fn commandcode_clamps_used_over_cap_and_reset_milliseconds() {
+        let usage = parse_commandcode(
+            &json!({"windowLimits":{"fiveHour":{"used":20,"cap":14,"resetAt":1795708935914_i64},"weekly":{"used":70,"cap":35,"resetAt":"soon"}}}),
+            &json!({}),
+        );
+        assert_eq!(usage.status, "ready");
+        assert_eq!(usage.windows.len(), 2);
+        assert_eq!(usage.windows[0].used_percent, 100.0);
+        assert_eq!(usage.windows[1].used_percent, 100.0);
+        assert_eq!(
+            usage.windows[0].resets_at.as_deref(),
+            epoch_iso(1795708935914 / 1000).as_deref()
+        );
+        assert!(usage.windows[1].resets_at.is_none());
+        assert!(usage.message.is_none());
     }
 
     #[tokio::test]

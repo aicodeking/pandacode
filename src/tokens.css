@@ -12,6 +12,10 @@
 --mono-size:var(--type-meta);
 --type-prose-compact-leading:1.25;--leading-code:1.55;
 --code-inline-size:.9em;--md-heading-lg:1.19em;--md-cite-size:.82em;--md-katex-size:1.05em;
+/* Thread measure, shared by the reading column and the composer (Settings → Appearance → Reading width). These stay in
+   CSS px: the app's interface zoom scales them with everything else, while the preview's text-only scale must not
+   stretch the measure. */
+--reading-width:830px;--composer-width:950px;
 --space-0-5:.1429rem;--space-1:.2857rem;--space-2:.5714rem;--space-3:.8571rem;--space-5:1.4286rem;--space-6:1.7143rem;
 /* One select image shared by page and shadow-root controls in every window. */
 --select-chevron:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' fill='none'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%23000' stroke-opacity='.5' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
@@ -37,6 +41,8 @@
 --tone-warning-bg:color-mix(in srgb,var(--warning) 12%,transparent);
 --diff-add-bg:var(--tone-success-bg);--diff-del-bg:var(--tone-danger-bg);
 }
+/* Appearance → Reading width: Wide follows a large window for code- and table-heavy threads; lines run longer. */
+html[data-reading-width="wide"]{--reading-width:1040px;--composer-width:1160px}
 /* Step down dialog content roles; outer glass plates and portaled menus/tooltips keep page roles. */
 dialog>*:not(.pp-lb-plate,.tool-image-viewer-plate,.floating-menu,.tip-bubble),dialog>:is(.pp-lb-plate,.tool-image-viewer-plate)>*:not(.floating-menu,.tip-bubble){--ds-card-radius:var(--radius-inner);--ds-inner-radius:var(--radius-control);--ds-control-radius:var(--radius-chip)}
 html[data-theme="dark"]{--info:#15a0ec;--warning:#e3b24f;--select-chevron:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' fill='none'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%23fff' stroke-opacity='.55' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E")}

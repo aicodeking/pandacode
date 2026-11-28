@@ -20,6 +20,43 @@ fn codex_usage_limit(error: &Value) -> bool {
     info == "usageLimitExceeded" || info.get("usageLimitExceeded").is_some()
 }
 
+/// A Codex login another pooled account can take over from: its OAuth session could not be
+/// refreshed (`unauthorized`) or the account is signed out (`authenticationRequired`). Both
+/// variants arrive as a plain string or as a `{variant: {}}` object, as usage limits do.
+pub(super) fn codex_auth_failure(error: &Value) -> bool {
+    let info = &error["codexErrorInfo"];
+    ["unauthorized", "authenticationRequired"]
+        .iter()
+        .any(|variant| info == *variant || info.get(*variant).is_some())
+}
+
+/// The same unrecoverable login in an error message. A Codex app-server auth error reaches the
+/// pool as the run's `Err` (its handler returns `Err` rather than pushing the payload), so the
+/// wording is what the pool sees: "Your access token could not be refreshed…", a failed token
+/// refresh, `unauthorized`, or an OAuth `invalid_grant`. Quota and per-turn errors are not here.
+pub(super) fn auth_failure_message(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    [
+        "unauthorized",
+        "unauthenticated",
+        "authentication required",
+        "authenticationrequired",
+        "authentication failed",
+        "not authenticated",
+        "sign in again",
+        "log in again",
+        "log out and sign in",
+        "could not be refreshed",
+        "failed to refresh token",
+        "could not refresh token",
+        "token refresh failed",
+        "refresh token was rejected",
+        "invalid_grant",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
+}
+
 /// Fatal warning banner emitted by Antigravity as assistant text on turn end.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct AntigravitySoftError {
@@ -481,6 +518,67 @@ mod tests {
         let event = p.codex_limited(&json!({"error":{"codexErrorInfo":{"usageLimitExceeded":{}}}})).unwrap();
         assert_eq!(event.data.unwrap()["resetsAt"], 200_000);
         assert_eq!(codex_exhausted_reset(&json!({"primary":{"usedPercent":99,"resetsAt":5}})), None);
+    }
+
+    #[test]
+    fn codex_auth_failures_are_login_errors_only() {
+        for error in [
+            json!({"message":"login","codexErrorInfo":"unauthorized"}),
+            json!({"message":"login","codexErrorInfo":"authenticationRequired"}),
+            json!({"codexErrorInfo":{"unauthorized":{}}}),
+            json!({"codexErrorInfo":{"authenticationRequired":{}}}),
+        ] {
+            assert!(codex_auth_failure(&error), "{error}");
+        }
+        // A usage limit rotates through the limit path, and a bad request or a per-turn limit is
+        // no reason to leave the account.
+        for error in [
+            json!({"codexErrorInfo":"usageLimitExceeded"}),
+            json!({"codexErrorInfo":{"usageLimitExceeded":{}}}),
+            json!({"codexErrorInfo":"badRequest"}),
+            json!({"codexErrorInfo":"contextWindowExceeded"}),
+            json!({"codexErrorInfo":"serverOverloaded"}),
+            json!({"codexErrorInfo":{"badRequest":{}}}),
+            json!({"message":"boom"}),
+            json!({}),
+        ] {
+            assert!(!codex_auth_failure(&error), "{error}");
+        }
+    }
+
+    #[test]
+    fn auth_failure_messages_name_an_unrefreshable_login_only() {
+        for message in [
+            "unauthorized",
+            "Unauthorized: 401",
+            "authentication required",
+            "AuthenticationRequired",
+            "Not authenticated",
+            "Your access token could not be refreshed. Please log out and sign in again.",
+            "Your access token could not be refreshed because you have since logged out or signed in to another account. Please sign in again.",
+            "failed to refresh token while getting account: 403 Forbidden",
+            "OAuth refresh token was rejected: invalid_grant",
+        ] {
+            assert!(auth_failure_message(message), "{message}");
+        }
+        for message in [
+            "usageLimitExceeded",
+            "You have reached your usage limit",
+            "rate limit exceeded",
+            "429 Too Many Requests",
+            "badRequest: missing field `model`",
+            "contextWindowExceeded",
+            "context window exceeded",
+            "serverOverloaded",
+            // Ordinary harness failures and a user-cancelled run must reach the user untouched.
+            "cargo test failed: expected 4, got 5",
+            "TypeError: cannot read properties of undefined",
+            "The run was cancelled by the user",
+            "Provider exited before responding",
+            "Syntax error in session-429 at line 429",
+        ] {
+            assert!(!auth_failure_message(message), "{message}");
+        }
     }
 
     #[test]
