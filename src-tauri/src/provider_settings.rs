@@ -2074,7 +2074,7 @@ mod tests {
         let mut runtime = runtime(&directory);
         let name = unique_name();
         save_environment_variable(&mut runtime, "claude", &name, "private-value", true).unwrap();
-        assert_eq!(runtime.settings.secret_environment["claude"], [name.clone()]);
+        assert_eq!(runtime.settings.secret_environment["claude"], [name.as_str()]);
         assert!(!runtime.settings.environment.contains_key("claude"), "no plain value for a secret");
         let file = std::fs::read_to_string(&runtime.path).unwrap();
         assert!(!file.contains("private-value"), "the secret value never enters the file");
@@ -2110,7 +2110,7 @@ mod tests {
         // Plain to secret: the plain value goes, so it can never shadow the secret.
         save_environment_variable(&mut runtime, "claude", &name, "secret-value", true).unwrap();
         assert!(!runtime.settings.environment.contains_key("claude"), "the plain value is removed");
-        assert_eq!(runtime.settings.secret_environment["claude"], [name.clone()]);
+        assert_eq!(runtime.settings.secret_environment["claude"], [name.as_str()]);
         assert_eq!(
             crate::secret_store::get(SERVICE, &secret_account(Some("claude"), &name)).as_deref(),
             Some("secret-value")
