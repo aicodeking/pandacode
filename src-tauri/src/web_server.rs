@@ -2084,6 +2084,7 @@ const WEB_ALLOWED_COMMANDS: &[&str] = &[
     "github_pull_request", "github_pull_request_diff", "github_merge_pull_request",
     "github_detect_pull_request", "github_link_pull_request", "simulator_status", "simulator_select",
     "simulator_create_duo", "simulator_pose", "simulator_power", "simulator_frame", "simulator_input",
+    "simulator_emulator_flags", "simulator_set_emulator_flags",
     "simulator_appearance", "simulator_capture", "android_setup", "vm_status", "vm_show", "vm_create",
     "vm_power", "vm_frame", "vm_input", "vm_desktop", "vm_setup", "cloud_connections", "cloud_connect",
     "cloud_colab_config", "cloud_colab_install_cli", "cloud_colab_runtime_action", "cloud_colab_set_config",
