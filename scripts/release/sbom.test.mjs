@@ -143,6 +143,13 @@ test('the npm inventory excludes the mobile app and other unshipped code, and th
   assert.ok(NOTES.includes('The mobile app, the website, the relay and the npx package are not shipped in the desktop app and are excluded.'));
 });
 
+test('coverage notes identify the Linux AppImage libraries that go unscanned', () => {
+  const notes = NOTES.join('\n');
+  assert.doesNotMatch(notes, /WebKitGTK[^.]*?(?:supplied by the host|not bundled)/);
+  assert.match(notes, /Linux AppImages bundle WebKitGTK, JavaScriptCoreGTK, GTK, and supporting shared libraries under usr\/lib/);
+  assert.match(notes, /both Linux AppImages remain incomplete \/ not-scanned and their bundled shared libraries are not scanned/);
+});
+
 test('a missing database build time is reported as unknown with a warning', async () => {
   const base = { version: '1.2.3', commit: 'abc', scanners: { syft: '1', grype: '2' }, entries: [], notes: ['n'] };
   assert.equal(coverage(base).vulnerabilityDbBuilt, 'unknown');

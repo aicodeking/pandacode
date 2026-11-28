@@ -7,7 +7,8 @@
 // usual confirmation for an app downloaded from the internet, then opens it, so the
 // notes do not ask for any extra step.
 //
-//   node scripts/release/install-notes.mjs [--signed]
+//   node scripts/release/install-notes.mjs [--signed] [--version X.Y.Z]
+import { parseArgs } from 'node:util';
 import { isMain } from './common.mjs';
 
 /// The command that clears the quarantine attribute on an installed app.
@@ -32,7 +33,10 @@ export function macosNote(signed) {
 }
 
 /// The whole "Installing" section, for a signed or an unsigned release.
-export function installNotes({ signed = false } = {}) {
+export function installNotes({ signed = false, version } = {}) {
+  const installGuide = version
+    ? `https://github.com/aicodeking/pandacode/blob/v${version}/README.md#install`
+    : 'https://github.com/aicodeking/pandacode#install';
   const terminalNote = signed
     ? '`npx pandacode` downloads, verifies and installs the right build.'
     : '`npx pandacode` downloads, verifies and installs the right build, and signs it locally on macOS, so no Gatekeeper warning appears.';
@@ -47,14 +51,21 @@ export function installNotes({ signed = false } = {}) {
     '- **Linux arm64:** `chmod +x PandaCode-Linux-aarch64.AppImage` and run it.',
     '- **Any of the above, from a terminal:** ' + terminalNote,
     '',
+    `If your Linux distribution lacks FUSE 2 (\`libfuse2\`), install it or run the AppImage with \`--appimage-extract-and-run\`. See the [install guide](${installGuide}).`,
+    '',
     'The installers each have a `.sha256` checksum beside them. Installed copies update themselves from this page. Build from source: see CONTRIBUTING.md.',
     '',
   ].join('\n');
 }
 
 function main() {
-  const signed = process.argv.slice(2).includes('--signed');
-  process.stdout.write(installNotes({ signed }));
+  const { values } = parseArgs({
+    options: {
+      signed: { type: 'boolean' },
+      version: { type: 'string' },
+    },
+  });
+  process.stdout.write(installNotes(values));
 }
 
 if (isMain(import.meta.url)) {

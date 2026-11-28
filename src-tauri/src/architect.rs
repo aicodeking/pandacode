@@ -577,7 +577,7 @@ pub(crate) fn is_active(store: &Store, sid: &str) -> bool {
 /// One task's status in the `architect_team_meta` tracker.
 const TRACKER_STATUS_SQL: &str = "SELECT status FROM architect_team_meta WHERE session_id=?1";
 /// The same status parsed from the snapshot, for a process without a usable tracker.
-const SNAPSHOT_STATUS_SQL: &str = "SELECT CASE WHEN json_valid(content) THEN json_extract(content,'$.status') END FROM architect_teams WHERE session_id=?1";
+const SNAPSHOT_STATUS_SQL: &str = "SELECT CASE WHEN json_valid(content, 2) THEN json_extract(content,'$.status') END FROM architect_teams WHERE session_id=?1";
 /// Runs a tracker read, and when `architect_team_meta` has gone missing (another build repaired
 /// this data folder) disables the trackers and answers the same question from the snapshots.
 /// Without this a read would quietly report "no team": `is_active` swallows its error, so a
@@ -605,7 +605,7 @@ pub(crate) fn tracker_or_snapshot<T>(store: &Store, tracker: &str, snapshot: &st
 /// instead of parsing every snapshot. Its query plan is checked in `architect::watchdog::query_tests`.
 pub(super) const ACTIVE_TEAMS: &str = "SELECT session_id FROM architect_team_meta WHERE status IN ('running','waiting')";
 /// `ACTIVE_TEAMS` from the snapshots, for a newer schema without a usable tracker.
-const ACTIVE_TEAMS_FALLBACK: &str = "SELECT session_id FROM architect_teams WHERE json_valid(content) AND json_extract(content,'$.status') IN ('running','waiting')";
+const ACTIVE_TEAMS_FALLBACK: &str = "SELECT session_id FROM architect_teams WHERE json_valid(content, 2) AND json_extract(content,'$.status') IN ('running','waiting')";
 /// The leads of every working team, read once per task listing (`crate::reconcile_listed`) so it
 /// never asks `is_active` for each task.
 pub(crate) fn active_team_session_ids(store: &Store) -> Result<std::collections::HashSet<String>> {
@@ -618,9 +618,9 @@ pub(crate) fn active_team_session_ids(store: &Store) -> Result<std::collections:
 }
 /// The teams the watchdog may run: see [`runnable_team_rows`]. Its query plan is checked in
 /// `architect::watchdog::query_tests`.
-pub(super) const RUNNABLE_TEAMS_SQL: &str = "SELECT session_id,content FROM architect_teams WHERE session_id IN (SELECT session_id FROM architect_team_meta WHERE status IN ('running','waiting') UNION SELECT w.parent_session_id FROM architect_workers w JOIN sessions s ON s.id=w.session_id WHERE s.status IN ('running','waiting')) AND json_valid(content) ORDER BY json_extract(content,'$.updatedAt'),session_id";
+pub(super) const RUNNABLE_TEAMS_SQL: &str = "SELECT session_id,content FROM architect_teams WHERE session_id IN (SELECT session_id FROM architect_team_meta WHERE status IN ('running','waiting') UNION SELECT w.parent_session_id FROM architect_workers w JOIN sessions s ON s.id=w.session_id WHERE s.status IN ('running','waiting')) AND json_valid(content, 2) ORDER BY json_extract(content,'$.updatedAt'),session_id";
 /// `RUNNABLE_TEAMS_SQL` from the snapshots, for a newer schema without a usable tracker.
-const RUNNABLE_TEAMS_FALLBACK_SQL: &str = "SELECT session_id,content FROM architect_teams WHERE CASE WHEN json_valid(content) THEN json_extract(content,'$.status') IN ('running','waiting') OR session_id IN (SELECT w.parent_session_id FROM architect_workers w JOIN sessions s ON s.id=w.session_id WHERE s.status IN ('running','waiting')) END ORDER BY json_extract(content,'$.updatedAt'),session_id";
+const RUNNABLE_TEAMS_FALLBACK_SQL: &str = "SELECT session_id,content FROM architect_teams WHERE CASE WHEN json_valid(content, 2) THEN json_extract(content,'$.status') IN ('running','waiting') OR session_id IN (SELECT w.parent_session_id FROM architect_workers w JOIN sessions s ON s.id=w.session_id WHERE s.status IN ('running','waiting')) END ORDER BY json_extract(content,'$.updatedAt'),session_id";
 
 /// `(session_id, content)` of every team the scheduler looks at, oldest update first: a working
 /// team, or one with a worker whose session still runs. Both candidate sets come from indexes
@@ -663,48 +663,37 @@ pub(crate) fn save(store: &Store, team: &mut TeamSnapshot) -> Result<()> {
     let content = serde_json::to_string(team).map_err(|e| e.to_string())?;
     write_snapshot(store, team, &content)
 }
-/// Writes a serialized team and its `architect_team_meta` row in one savepoint, so it is atomic
-/// whether or not the caller holds a transaction. The tracker row is set from the snapshot
-/// itself with `skip_sync=1`, so the update triggers parse no JSON (`storage::schema_v38::SCHEMA_38_RUNNING`);
-/// a new team has no tracker row yet and its insert trigger fills it. On failure the savepoint
-/// is rolled back, so `skip_sync=1` never outlives the save. Without a usable tracker (a newer
-/// schema that dropped or changed it) only the snapshot is written.
-///
-/// A different build on the same data folder can drop `architect_team_meta` while leaving its
-/// triggers on `architect_teams`, which makes every team write fail with "no such table". For
-/// that one error the dangling triggers are dropped, trackers are disabled for this process and
-/// the snapshot alone is retried.
 fn write_snapshot(store: &Store, team: &TeamSnapshot, content: &str) -> Result<()> {
-    const UPSERT: &str = "INSERT INTO architect_teams(session_id,content) VALUES(?1,?2) ON CONFLICT(session_id) DO UPDATE SET content=excluded.content";
-    let db = &store.db;
-    let sql_error = |e: rusqlite::Error| e.to_string();
-    let upsert = || db.prepare_cached(UPSERT)?.execute(params![team.session_id, content]);
-    // The bare upsert still fires the triggers, so a snapshot-only write is safe only once they
-    // are gone. Idempotent, and repeatable: a caller's rollback can put them back.
-    let drop_dangling = || {
-        let drops: String = crate::storage::TEAM_META_TRIGGERS
-            .iter()
-            .map(|trigger| format!("DROP TRIGGER IF EXISTS {trigger};"))
-            .collect();
-        db.execute_batch(&drops)
+    let saved = if store.team_meta_usable() {
+        try_tracked_save(&store.db, team, content)
+    } else {
+        upsert_snapshot(&store.db, team, content).map(|_| ())
     };
-    if !store.team_meta_usable() {
-        return match upsert().map(|_| ()).map_err(sql_error) {
-            // This process already healed, but a caller's transaction rolled the drops back, so
-            // the dangling triggers are attached again. Re-drop them instead of failing the save.
-            Err(error) if team_meta_table_missing(&error) => {
-                drop_dangling().map_err(sql_error)?;
-                upsert().map(|_| ()).map_err(sql_error)
-            }
-            other => other,
-        };
+    match saved {
+        Err(error) if team_meta_table_missing(&error) => {
+            recover_missing_team_meta(store, team, content, &error)
+        }
+        other => other,
     }
-    let saved = crate::storage::run_savepoint(db, "architect_team_save", || {
+}
+
+fn upsert_snapshot(db: &rusqlite::Connection, team: &TeamSnapshot, content: &str) -> Result<usize> {
+    const UPSERT: &str = "INSERT INTO architect_teams(session_id,content) VALUES(?1,?2) ON CONFLICT(session_id) DO UPDATE SET content=excluded.content";
+    db.prepare_cached(UPSERT)
+        .and_then(|mut upsert| upsert.execute(params![team.session_id, content]))
+        .map_err(|e| e.to_string())
+}
+
+/// The tracker update lets the triggers skip parsing existing snapshots. A new team's insert
+/// trigger creates its tracker row. The savepoint rolls back `skip_sync` if either write fails.
+fn try_tracked_save(db: &rusqlite::Connection, team: &TeamSnapshot, content: &str) -> Result<()> {
+    let sql_error = |e: rusqlite::Error| e.to_string();
+    storage::run_savepoint(db, "architect_team_save", || {
         let needs_cutoff = i64::from(team.legacy_prompt_through_id.is_none());
         db.prepare_cached("UPDATE architect_team_meta SET status=?2,valid_json=1,needs_legacy_cutoff=?3,skip_sync=1 WHERE session_id=?1")
             .and_then(|mut update| update.execute(params![team.session_id, team.status, needs_cutoff]))
             .map_err(sql_error)?;
-        if upsert().map_err(sql_error)? != 1 {
+        if upsert_snapshot(db, team, content)? != 1 {
             return Err("The architect team snapshot write did not affect one row.".into());
         }
         let synced = db.prepare_cached("SELECT skip_sync=0 FROM architect_team_meta WHERE session_id=?1")
@@ -714,30 +703,46 @@ fn write_snapshot(store: &Store, team: &TeamSnapshot, content: &str) -> Result<(
             return Err("The architect team metadata did not clear skip_sync.".into());
         }
         Ok(())
-    }, sql_error);
-    match saved {
-        Ok(()) => Ok(()),
-        Err(error) if team_meta_table_missing(&error) => {
-            // Do not recreate the table: `repair_v38_objects` rebuilds it at the next open, and
-            // creating it here would ping-pong with the build that dropped it.
-            if let Err(heal) = drop_dangling() {
-                // Trackers stay enabled, so the next save runs the savepoint and can heal again
-                // instead of taking the snapshot-only branch into the same dangling triggers.
-                eprintln!("Saving team {}: dropping dangling team trackers: {heal}", team.session_id);
-                return Err(error);
-            }
-            upsert().map_err(sql_error)?;
-            // Only now is it worth disabling trackers: the triggers are gone and the snapshot
-            // landed, so the snapshot-only path cannot run into a trigger that names the table.
-            store.disable_team_trackers();
-            eprintln!(
-                "Saving team {}: `architect_team_meta` is missing (another PandaCode build repaired this data folder); dropped its dangling triggers and disabled team trackers until restart: {error}",
-                team.session_id
-            );
-            Ok(())
+    }, sql_error)
+}
+
+/// Another connection may have repaired or upgraded the database after the failed save.
+fn recover_missing_team_meta(store: &Store, team: &TeamSnapshot, content: &str, error: &str) -> Result<()> {
+    let db = &store.db;
+    let sql_error = |e: rusqlite::Error| e.to_string();
+    let dropped = store.in_transaction_immediate(|| {
+        let version: i32 = db.pragma_query_value(None, "user_version", |row| row.get(0)).map_err(sql_error)?;
+        if i64::from(version) > storage::SCHEMA_VERSION {
+            return Err(error.to_owned());
         }
-        Err(error) => Err(error),
+        let tracker_exists: bool = db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='architect_team_meta')",
+            [],
+            |row| row.get(0),
+        ).map_err(sql_error)?;
+        if tracker_exists {
+            try_tracked_save(db, team, content)?;
+            return Ok(false);
+        }
+
+        // Startup repair can recreate the tracker. Drop the dangling triggers and save together
+        // so the drops roll back if the save fails. A caller's rollback can also put them back.
+        let drops: String = storage::TEAM_META_TRIGGERS
+            .iter()
+            .map(|trigger| format!("DROP TRIGGER IF EXISTS {trigger};"))
+            .collect();
+        db.execute_batch(&drops).map_err(sql_error)?;
+        upsert_snapshot(db, team, content)?;
+        Ok(true)
+    })?;
+    if dropped {
+        store.disable_team_trackers();
+        eprintln!(
+            "Saving team {}: `architect_team_meta` is missing (another PandaCode build repaired this data folder); dropped its dangling triggers and disabled team trackers until restart: {error}",
+            team.session_id
+        );
     }
+    Ok(())
 }
 /// The narrow error a mixed-version repair leaves behind: `architect_team_meta` is gone while its
 /// triggers stay on `architect_teams`. Every other failure keeps the savepoint rollback.
@@ -4074,6 +4079,94 @@ mod team_meta_heal_tests {
     fn team_meta_triggers(db: &rusqlite::Connection) -> Vec<String> {
         let mut query = db.prepare("SELECT name FROM sqlite_master WHERE type='trigger' AND name IN ('architect_team_meta_insert','architect_team_meta_update_clear','architect_team_meta_update_sync') ORDER BY name").unwrap();
         query.query_map([], |row| row.get(0)).unwrap().collect::<std::result::Result<_, _>>().unwrap()
+    }
+
+    #[test]
+    fn write_snapshot_does_not_drop_triggers_rebuilt_by_another_connection() {
+        let directory = std::env::temp_dir().join(format!("pandacode-team-heal-race-{}", storage::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("store.sqlite");
+        let store = Store::open(&path).unwrap();
+        let project = store.add_project(&directory).unwrap();
+        let sid = store.create_session(&project.id, "claude", "default", "ask").unwrap().id;
+        let mut team = new_team(sid.clone(), config());
+        team.status = "completed".into();
+        save(&store, &mut team).unwrap();
+        assert!(store.team_meta_usable());
+        store.db.execute_batch("DROP TABLE architect_team_meta").unwrap();
+
+        team.status = "waiting".into();
+        let content = serde_json::to_string(&team).unwrap();
+        // Split the save at the failure so startup repair can commit before recovery begins.
+        let error = try_tracked_save(&store.db, &team, &content).unwrap_err();
+        assert!(team_meta_table_missing(&error), "{error}");
+        let rebuilt = Store::open(&path).unwrap();
+        assert_eq!(team_meta_triggers(&rebuilt.db), storage::TEAM_META_TRIGGERS);
+        recover_missing_team_meta(&store, &team, &content, &error).unwrap();
+
+        assert!(store.team_meta_usable());
+        assert_eq!(team_meta_triggers(&rebuilt.db), storage::TEAM_META_TRIGGERS);
+        let tracked: (String, i64) = rebuilt.db.query_row(
+            "SELECT status,skip_sync FROM architect_team_meta WHERE session_id=?1",
+            [&sid],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        ).unwrap();
+        assert_eq!(tracked, ("waiting".into(), 0));
+        assert_eq!(load(&rebuilt, &sid).unwrap().unwrap().status, "waiting");
+        drop(rebuilt);
+        drop(store);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn write_snapshot_never_drops_persistent_triggers_on_newer_schema() {
+        let directory = std::env::temp_dir().join(format!("pandacode-team-heal-v39-{}", storage::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("store.sqlite");
+        let original = Store::open(&path).unwrap();
+        let project = original.add_project(&directory).unwrap();
+        let sid = original.create_session(&project.id, "claude", "default", "ask").unwrap().id;
+        let mut team = new_team(sid.clone(), config());
+        team.status = "completed".into();
+        save(&original, &mut team).unwrap();
+        let triggers = team_meta_triggers(&original.db);
+        assert_eq!(triggers, storage::TEAM_META_TRIGGERS);
+        original.db.execute_batch("PRAGMA user_version=39; DROP TABLE architect_team_meta;").unwrap();
+
+        let reopened = Store::open(&path).unwrap();
+        assert!(!reopened.team_meta_usable());
+        assert!(original.team_meta_usable());
+        team.status = "waiting".into();
+        let content = serde_json::to_string(&team).unwrap();
+        // Also cover a connection that cached tracker support before the version changed.
+        for store in [&reopened, &original] {
+            let error = write_snapshot(store, &team, &content).unwrap_err();
+            assert!(team_meta_table_missing(&error), "{error}");
+            assert_eq!(team_meta_triggers(&store.db), triggers);
+            assert_eq!(load(store, &sid).unwrap().unwrap().status, "completed");
+        }
+        drop(reopened);
+        drop(original);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn json5_active_team_status_matches_across_tracker_and_fallback() {
+        let store = Store::open(std::path::Path::new(":memory:")).unwrap();
+        let project = store.add_project(&std::env::temp_dir()).unwrap();
+        let sid = store.create_session(&project.id, "claude", "default", "ask").unwrap().id;
+        let content = "{status:'running',updatedAt:1,workers:[]}";
+        store.db.execute("INSERT INTO architect_teams(session_id,content) VALUES(?1,?2)", params![sid, content]).unwrap();
+
+        let assert_active = || {
+            assert!(is_active(&store, &sid));
+            assert!(active_team_session_ids(&store).unwrap().contains(&sid));
+            assert_eq!(runnable_team_rows_in(&store).unwrap(), vec![(sid.clone(), content.to_owned())]);
+        };
+        assert!(store.team_meta_usable());
+        assert_active();
+        store.disable_team_trackers();
+        assert_active();
     }
 
     #[test]

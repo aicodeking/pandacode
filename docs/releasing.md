@@ -82,8 +82,16 @@ release (it never blocks publishing; a failed job just means they are missing):
 
 An inventory that errors or finds no components is listed as **incomplete** and its scan
 as `not-scanned`; it is never reported as clean. Compressed installers often end up
-incomplete, which is why the lockfile SBOMs are published beside them. The WebView and
-other operating-system libraries are supplied by the host, not bundled, and not scanned.
+incomplete, which is why the lockfile SBOMs are published beside them.
+
+On macOS and Windows, the host supplies the WebView (`WKWebView` or `WebView2`) and
+other operating-system libraries. These libraries are not bundled or scanned.
+Linux AppImages bundle `WebKitGTK`, `JavaScriptCoreGTK`, `GTK`, and supporting shared
+libraries under `usr/lib`. The host supplies `glibc`, Wayland/EGL, and GPU drivers.
+Syft finds no identifiable package inventory inside the compressed AppImages, so
+both Linux AppImages remain `incomplete` / `not-scanned` and their bundled shared
+libraries are not scanned.
+
 The same summary appears on the workflow run page. Findings are reported, not gating;
 record any reviewed exception (scope, reason, owner, expiry) in the release notes.
 If the report is missing or empty, the job summary explicitly says coverage is

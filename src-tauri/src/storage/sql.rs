@@ -69,7 +69,7 @@ macro_rules! legacy_prompt_cutoff_set {
 }
 macro_rules! legacy_prompt_cutoff_pred {
     () => {
-        "CASE WHEN json_valid(content,6) THEN COALESCE(json_type(content,'$.legacyPromptThroughId'),'null') END='null'"
+        "CASE WHEN json_valid(content,2) THEN COALESCE(json_type(content,'$.legacyPromptThroughId'),'null') END='null'"
     };
 }
 /// Through the `architect_team_meta_legacy_cutoff` partial index on the trigger-kept tracker
@@ -98,11 +98,14 @@ macro_rules! interrupt_team_set {
 }
 macro_rules! interrupt_teams {
     ($candidates:literal) => {
+        // Pull unchanged elements as JSON so their types and number tokens survive recovery.
         concat!("UPDATE architect_teams SET content=CASE WHEN json_type(content,'$.workers')='array' THEN ",
             interrupt_team_set!(),
-            ",'$.workers',json((SELECT json_group_array(json(CASE WHEN json_extract(value,'$.status') IN ('running','waiting') THEN json_set(value,'$.status','stopped') ELSE value END)) FROM json_each(content,'$.workers') WHERE type='object'))) ELSE ",
+            ",'$.workers',json((SELECT json_group_array(CASE
+                 WHEN type='object' AND json_extract(value,'$.status') IN ('running','waiting') THEN json(json_set(value,'$.status','stopped'))
+                 ELSE json(content -> fullkey) END) FROM json_each(content,'$.workers')))) ELSE ",
             interrupt_team_set!(),
-            ") END WHERE ", $candidates, "json_valid(content,6) AND json_extract(content,'$.status') IN ('running','waiting');")
+            ") END WHERE ", $candidates, "CASE WHEN json_valid(content,2) THEN json_extract(content,'$.status') END IN ('running','waiting');")
     };
 }
 /// Through the architect_team_meta_status index, with a status re-check on each snapshot.

@@ -132,7 +132,8 @@ export const NOTES = [
   'Artifact SBOMs list only what syft can identify inside the installer; compressed installers (DMG, NSIS, AppImage) often yield little or nothing, which is reported as incomplete.',
   'The Rust and npm SBOMs come from Cargo.lock and package-lock.json at the release commit and describe build dependencies, not a verified inventory of any one installer.',
   'The mobile app, the website, the relay and the npx package are not shipped in the desktop app and are excluded.',
-  'The WebView and other operating-system libraries (WebKitGTK, WebView2, WKWebView, glibc) are supplied by the host, are not bundled, and are not scanned.',
+  'On macOS and Windows, the host supplies the WebView (WKWebView or WebView2) and other operating-system libraries. These libraries are not bundled or scanned.',
+  'Linux AppImages bundle WebKitGTK, JavaScriptCoreGTK, GTK, and supporting shared libraries under usr/lib. The host supplies glibc, Wayland/EGL, and GPU drivers. Syft finds no identifiable package inventory inside the compressed AppImages, so both Linux AppImages remain incomplete / not-scanned and their bundled shared libraries are not scanned.',
   'Findings are reported, not gating. Checksums and signatures are separate provenance checks and are unchanged.',
 ];
 

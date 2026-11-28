@@ -507,3 +507,289 @@ fn json5_running_team_snapshot_is_tracked_interrupted_and_unblocks_guards() {
     let store = state.store.lock().unwrap();
     crate::remove_project_with_team_check(&store, "project").expect("recovered JSON5 teams no longer block project removal");
 }
+
+#[test]
+fn corrupt_jsonb_rows_do_not_block_open_or_bypass_guards() {
+    let (fixture, db) = TestDatabase::v37();
+    let mut corrupt = scalar::<Vec<u8>>(&db, r#"SELECT jsonb('{"status":"running"}')"#);
+    let status = corrupt.windows(b"running".len()).position(|part| part == b"running").unwrap();
+    // Damage the status value's header inside the object, leaving its outer header intact.
+    corrupt[status - 1] = 0xff;
+    let validation: (i64, i64, i64) = db.query_row(
+        "SELECT json_valid(?1,6),json_valid(?1,2),json_valid(?1,8)",
+        [&corrupt],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    ).unwrap();
+    assert_eq!(validation, (1, 0, 0));
+    assert_eq!(
+        db.query_row("SELECT json_extract(?1,'$.status')", [&corrupt], |row| row.get::<_, String>(0))
+            .unwrap_err().to_string(),
+        "malformed JSON",
+    );
+
+    batch(&db, r#"
+        INSERT INTO projects(id,name,path) VALUES('project','Migration Lab','/work/pandacode');
+        INSERT INTO sessions(id,project_id,title,provider,model,mode,status,created_at,updated_at) VALUES
+            ('bad','project','Corrupt snapshots','codex','gpt-5','auto','running',1,1),
+            ('good','project','Healthy snapshots','codex','gpt-5','auto','running',1,1);
+        INSERT INTO architect_teams(session_id,content)
+            VALUES('good','{status:"running",legacyPromptThroughId:0,workers:[]}');
+        INSERT INTO subagents(session_id,id,content,updated_at)
+            VALUES('good','child','{status:"waiting",tools:[]}',1);
+        INSERT INTO messages(session_id,role,content,created_at,tool_id)
+            VALUES('good','tool','{type:"tool_activity",version:1,status:"running"}',1,'tool');
+    "#);
+    for sql in [
+        "INSERT INTO architect_teams(session_id,content) VALUES('bad',?1)",
+        "INSERT INTO subagents(session_id,id,content,updated_at) VALUES('bad','child',?1,1)",
+        "INSERT INTO messages(session_id,role,content,created_at,tool_id) VALUES('bad','tool',?1,1,'tool')",
+    ] {
+        db.execute(sql, [&corrupt]).unwrap();
+    }
+    drop(db);
+
+    let store = Store::open_with_before_recovery(&fixture.path(), || {
+        let db = Connection::open(fixture.path()).unwrap();
+        assert_eq!(strings(&db, "SELECT session_id FROM running_tools", []), ["good"]);
+        assert_eq!(strings(&db, "SELECT session_id FROM running_subagents", []), ["good"]);
+        assert_eq!(strings(&db, "SELECT session_id FROM architect_team_meta WHERE valid_json=0 AND status IS NULL AND needs_legacy_cutoff=0", []), ["bad"]);
+        assert_eq!(strings(&db, "SELECT session_id FROM architect_team_meta WHERE valid_json=1 AND status='running'", []), ["good"]);
+    }).unwrap();
+    assert!(assert_current(&store.db).is_empty());
+    for (table, settled) in [("architect_teams", "interrupted"), ("subagents", "stopped"), ("messages", "failed")] {
+        assert_eq!(
+            scalar::<Vec<u8>>(&store.db, &format!("SELECT content FROM {table} WHERE session_id='bad'")),
+            corrupt,
+        );
+        assert_eq!(
+            scalar::<String>(&store.db, &format!("SELECT json_extract(content,'$.status') FROM {table} WHERE session_id='good'")),
+            settled,
+        );
+    }
+    assert_eq!(scalar::<i64>(&store.db, "SELECT (SELECT count(*) FROM running_tools) + (SELECT count(*) FROM running_subagents)"), 0);
+    assert_eq!(store.db.execute("DELETE FROM architect_team_meta WHERE session_id='bad' AND valid_json=0", []).unwrap(), 1);
+    assert_eq!(
+        crate::remove_project_with_team_check(&store, "project"),
+        Err("Cannot remove this project: a saved architect team snapshot is malformed JSON.".into()),
+    );
+    assert!(store.project("project").is_ok());
+
+    let (state, _) = crate::concurrent_task_tests::test_state();
+    *state.store.lock().unwrap() = store;
+    assert_eq!(
+        crate::agent_updates::reserve_install(&state).err().as_deref(),
+        Some("Cannot update an agent while a saved team snapshot is malformed JSON."),
+    );
+}
+
+#[test]
+fn recovery_preserves_mixed_worker_entries_and_exact_numeric_tokens() {
+    let (fixture, db) = TestDatabase::v37();
+    batch(&db, "INSERT INTO projects(id,name,path) VALUES('project','Migration Lab','/work/pandacode');");
+    let cases = [
+        ("empty", Some("[]"), Some("[]")),
+        ("null", Some("null"), Some("null")),
+        ("missing", None, None),
+        ("string", Some("'bad'"), Some(r#""bad""#)),
+        ("number", Some("42"), Some("42")),
+        ("object", Some("{}"), Some("{}")),
+        (
+            "mixed",
+            Some("[{status:'running',wide:9223372036854775808},{status:'waiting'},{status:'idle'},'keep','txt',[1, 2],[1,9223372036854775808],true,false,null,9223372036854775808,18446744073709551615,0.12345678901234567890,0x2a,+.50,]"),
+            Some(r#"[{"status":"SETTLED","wide":9223372036854775808},{"status":"SETTLED"},{"status":"idle"},"keep","txt",[1,2],[1,9223372036854775808],true,false,null,9223372036854775808,18446744073709551615,0.12345678901234567890,42,0.50]"#),
+        ),
+    ];
+    for (id, input, _) in cases {
+        db.execute(
+            "INSERT INTO sessions(id,project_id,title,provider,model,mode,status,created_at,updated_at)
+             VALUES(?1,'project','Recovery arrays','codex','gpt-5','auto','running',1,1)",
+            [id],
+        ).unwrap();
+        for (table, key, insert) in [
+            ("architect_teams", "workers", "INSERT INTO architect_teams(session_id,content) VALUES(?1,?2)"),
+            ("subagents", "tools", "INSERT INTO subagents(session_id,id,content,updated_at) VALUES(?1,'child',?2,1)"),
+        ] {
+            let field = input.map_or_else(String::new, |value| format!("{key}:{value},"));
+            let content = format!("{{status:'running',legacyPromptThroughId:0,{field}}}");
+            db.execute(insert, params![id, content]).unwrap_or_else(|error| panic!("{table}/{id}: {error}"));
+        }
+    }
+    drop(db);
+
+    let store = Store::open(&fixture.path()).unwrap();
+    for (table, key, outer_status, entry_status) in [
+        ("architect_teams", "workers", "interrupted", "stopped"),
+        ("subagents", "tools", "stopped", "failed"),
+    ] {
+        let select = format!("SELECT content,json_extract(content,'$.status'),content -> ?2 FROM {table} WHERE session_id=?1");
+        for (id, _, expected) in cases {
+            let (raw, status, field): (String, String, Option<String>) = store.db.query_row(
+                &select,
+                params![id, format!("$.{key}")],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            ).unwrap();
+            assert_eq!(status, outer_status, "{table}/{id}");
+            let expected = expected.map(|field| field.replace("SETTLED", entry_status));
+            assert_eq!(field, expected, "{table}/{id}");
+            if let Some(expected) = expected {
+                assert!(raw.contains(&format!("\"{key}\":{expected}")), "{table}/{id}: {raw}");
+            }
+        }
+    }
+    assert!(assert_current(&store.db).is_empty());
+}
+
+fn tracker_triggers(db: &Connection) -> Vec<String> {
+    strings(db, "SELECT sql FROM sqlite_schema WHERE type='trigger' AND
+        (name GLOB 'running_tools_*' OR name GLOB 'running_subagents_*' OR name GLOB 'architect_team_meta_*')
+        ORDER BY rowid", [])
+}
+
+fn install_released_tracker_triggers(db: &Connection, canonical: &[String], release: u32) {
+    for trigger in V38_TRACKER_TRIGGERS {
+        batch(db, &format!("DROP TRIGGER {trigger}"));
+    }
+    // 0.3.156–0.3.158 share the tracker definitions. The team tracker used the
+    // one-argument check in those releases and switched to flag 6 by 0.3.161.
+    for sql in canonical {
+        let old = if release < 161 && sql.starts_with("CREATE TRIGGER architect_team_meta_") {
+            sql.replace("json_valid(NEW.content,2)", "json_valid(NEW.content)")
+        } else {
+            sql.replace("json_valid(NEW.content,2)", "json_valid(NEW.content,6)")
+        };
+        batch(db, &old);
+    }
+    assert_eq!(tracker_triggers(db).iter().filter(|sql| sql.contains("json_valid(NEW.content,6)")).count(),
+        if release < 161 { 6 } else { 8 });
+}
+
+#[test]
+fn multi_version_existing_install_upgrade_and_rollback_matrix() {
+    let canonical_store = Store::open(Path::new(":memory:")).unwrap();
+    let canonical_triggers = tracker_triggers(&canonical_store.db);
+    assert_eq!(canonical_triggers.len(), V38_TRACKER_TRIGGERS.len());
+    assert_eq!(canonical_triggers.iter().filter(|sql| sql.contains("json_valid(NEW.content,2)")).count(), 8);
+
+    // The storage sources for each range are identical across the corresponding tags.
+    for release in [151, 152, 153, 154, 156, 157, 158, 161] {
+        let (fixture, mut db) = TestDatabase::v37();
+        if release < 156 {
+            install_legacy_team_status(&db);
+            assert!(tracker_triggers(&db).is_empty());
+        } else {
+            let tx = db.transaction().unwrap();
+            super::super::upgrade_v38(&tx).unwrap();
+            install_released_tracker_triggers(&tx, &canonical_triggers, release);
+            tx.commit().unwrap();
+        }
+        let project = fixture.0.join("project");
+        let worktree = fixture.0.join("worktree");
+        fs::create_dir(&project).unwrap();
+        fs::create_dir(&worktree).unwrap();
+        db.execute("INSERT INTO projects(id,name,path) VALUES('project','Migration Lab',?1)", [project.to_string_lossy()]).unwrap();
+        db.execute(
+            "INSERT INTO sessions(id,project_id,title,provider,model,mode,status,created_at,updated_at,worktree_path)
+             VALUES('lead','project','Migration matrix','codex','gpt-5','auto','idle',1,1,?1)",
+            [worktree.to_string_lossy()],
+        ).unwrap();
+        batch(&db, r#"
+            INSERT INTO messages(session_id,role,content,created_at) VALUES('lead','user','Original prompt',1);
+            INSERT INTO messages(session_id,role,content,created_at,tool_id)
+                VALUES('lead','tool','{"type":"tool_activity","version":1,"status":"completed"}',2,'tool');
+            INSERT INTO subagents(session_id,id,content,updated_at)
+                VALUES('lead','child','{"status":"completed","tools":[]}',2);
+            INSERT INTO architect_teams(session_id,content)
+                VALUES('lead','{"status":"idle","legacyPromptThroughId":2,"workers":[]}');
+        "#);
+        if release == 161 {
+            // The released model audit table and requested-model write.
+            batch(&db, "CREATE TABLE task_model_runs (
+                turn_message_id INTEGER PRIMARY KEY REFERENCES messages(id) ON DELETE CASCADE,
+                harness TEXT NOT NULL, requested_model TEXT NOT NULL, requested_effort TEXT, reported_model TEXT
+            );
+            INSERT INTO task_model_runs(turn_message_id,harness,requested_model,requested_effort)
+                VALUES(1,'codex','gpt-5','high') ON CONFLICT(turn_message_id) DO NOTHING;");
+        }
+        let mut original = snapshot(&db, false);
+        assert_eq!(version(&db), 37);
+        assert!(integrity_and_foreign_keys(&db).is_empty());
+        drop(db);
+
+        let upgraded = Store::open(&fixture.path()).unwrap();
+        let mut before_rollback = snapshot(&upgraded.db, false);
+        if release < 161 {
+            let audit = before_rollback.get("task_model_runs").unwrap();
+            assert!(audit.rows.is_empty());
+            original.insert("task_model_runs".into(), TableSnapshot {
+                columns: audit.columns.clone(),
+                rows: Vec::new(),
+            });
+        }
+        assert_eq!(before_rollback, original, "upgrade from 0.3.{release}");
+        assert_eq!(tracker_triggers(&upgraded.db), canonical_triggers);
+        assert!(assert_current(&upgraded.db).is_empty());
+        assert_release_reads(&fixture, 1);
+        drop(upgraded);
+
+        let old = Connection::open(fixture.path()).unwrap();
+        batch(&old, "PRAGMA foreign_keys=ON");
+        if release < 156 {
+            install_legacy_team_status(&old);
+        } else {
+            install_released_tracker_triggers(&old, &canonical_triggers, release);
+        }
+        assert_eq!(version(&old), 37);
+        // History append, tool/subagent upserts and the released team save.
+        batch(&old, r#"
+            INSERT INTO messages(session_id,role,content,created_at) VALUES('lead','user','Rollback prompt',3);
+            INSERT INTO messages(session_id,role,content,created_at,tool_id)
+                VALUES('lead','tool','{"type":"tool_activity","version":1,"status":"completed","output":"rollback"}',3,'tool')
+                ON CONFLICT(session_id,tool_id) DO UPDATE SET content=excluded.content;
+            INSERT INTO subagents(session_id,id,content,updated_at)
+                VALUES('lead','child','{"status":"completed","tools":[],"summary":"rollback"}',3)
+                ON CONFLICT(session_id,id) DO UPDATE SET content=excluded.content,updated_at=excluded.updated_at;
+            SAVEPOINT team_save;
+        "#);
+        let team = r#"{"status":"idle","legacyPromptThroughId":2,"workers":[],"note":"rollback"}"#;
+        if release < 156 {
+            old.execute(TEAM_SAVE, params!["lead", team]).unwrap();
+            old.execute(TEAM_STATUS_SAVE, params!["lead", "idle"]).unwrap();
+        } else {
+            old.execute("UPDATE architect_team_meta SET status=?2,valid_json=1,needs_legacy_cutoff=?3,skip_sync=1 WHERE session_id=?1",
+                params!["lead", "idle", 0]).unwrap();
+            old.execute(TEAM_SAVE, params!["lead", team]).unwrap();
+            assert_eq!(scalar::<i64>(&old, "SELECT skip_sync FROM architect_team_meta WHERE session_id='lead'"), 0);
+        }
+        batch(&old, "RELEASE team_save");
+        if release == 161 {
+            batch(&old, "UPDATE task_model_runs SET reported_model='gpt-5.1'
+                WHERE turn_message_id=1 AND reported_model IS NOT 'gpt-5.1';");
+            before_rollback.get_mut("task_model_runs").unwrap().rows[0][4] = "gpt-5.1".to_owned().into();
+        }
+        assert_release_reads(&fixture, 2);
+        assert!(integrity_and_foreign_keys(&old).is_empty());
+        let rolled_back = snapshot(&old, false);
+        before_rollback.get_mut("messages").unwrap().rows.push(vec![
+            3_i64.into(), "lead".to_owned().into(), "user".to_owned().into(),
+            "Rollback prompt".to_owned().into(), 3_i64.into(), Value::Null, Value::Null, Value::Null,
+        ]);
+        // The tool upsert consumes an autoincrement ID even though it updates the existing row.
+        expect(&mut before_rollback, "sqlite_sequence", "name", "messages", &[("seq", 4_i64.into())]);
+        expect(&mut before_rollback, "sessions", "id", "lead", &[("last_prompt_at", 3_i64.into())]);
+        expect_text(&mut before_rollback, "messages", "tool_id", "tool", "content",
+            r#"{"type":"tool_activity","version":1,"status":"completed","output":"rollback"}"#);
+        expect(&mut before_rollback, "subagents", "id", "child", &[
+            ("content", r#"{"status":"completed","tools":[],"summary":"rollback"}"#.to_owned().into()),
+            ("updated_at", 3_i64.into()),
+        ]);
+        expect_text(&mut before_rollback, "architect_teams", "session_id", "lead", "content", team);
+        assert_eq!(rolled_back, before_rollback, "rollback to 0.3.{release}");
+        drop(old);
+
+        let reopened = Store::open(&fixture.path()).unwrap();
+        assert_eq!(snapshot(&reopened.db, false), rolled_back, "re-upgrade from 0.3.{release}");
+        assert_eq!(tracker_triggers(&reopened.db), canonical_triggers);
+        assert!(assert_current(&reopened.db).is_empty());
+        assert_release_reads(&fixture, 2);
+    }
+}

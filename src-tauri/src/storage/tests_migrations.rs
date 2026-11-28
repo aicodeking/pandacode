@@ -131,8 +131,8 @@ fn a_corrupt_team_row_never_stops_the_store_opening() {
     let db = Connection::open(&path).unwrap();
     let broken: String = db.query_row("SELECT content FROM architect_teams WHERE session_id='not-json'", [], |row| row.get(0)).unwrap();
     assert_eq!(broken, "{broken");
-    let worker: String = db.query_row("SELECT json_extract(content,'$.workers[0].status') FROM architect_teams WHERE session_id='bad-worker'", [], |row| row.get(0)).unwrap();
-    assert_eq!(worker, "stopped");
+    let workers: (String, String) = db.query_row("SELECT json_extract(content,'$.workers[0]'), json_extract(content,'$.workers[1].status') FROM architect_teams WHERE session_id='bad-worker'", [], |row| Ok((row.get(0)?, row.get(1)?))).unwrap();
+    assert_eq!((workers.0.as_str(), workers.1.as_str()), ("x", "stopped"));
     let _ = std::fs::remove_dir_all(directory);
 }
 

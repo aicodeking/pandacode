@@ -332,12 +332,12 @@ fn start_services(app: tauri::AppHandle) {
                     None,
                     None,
                 );
-                match finish_limit_resume(&session_id, send, |id, reason| emit_queue_hold(&limits, id, reason)).await {
-                    Ok(true) => {
-                        let _ = limits.emit("queue-changed", serde_json::json!({ "sessionId": session_id, "held": false }));
+                match finish_limit_resume(&session_id, send, |id, reason, seq| emit_queue_hold(&limits, id, reason, seq)).await {
+                    Ok(Some(seq)) => {
+                        let _ = limits.emit("queue-changed", serde_json::json!({ "sessionId": session_id, "held": false, "holdSeq": seq }));
                         drain_queue(limits.clone(), session_id);
                     }
-                    Ok(false) => {}
+                    Ok(None) => {}
                     Err(error) => eprintln!("serve: the limit resume could not be sent: {error}"),
                 }
             }
@@ -380,39 +380,35 @@ pub(crate) fn run_end_hold_reason(successful: bool, stopped: bool, limited: bool
 async fn finish_limit_resume(
     session_id: &str,
     send: impl Future<Output = crate::Result<()>>,
-    notify: impl FnOnce(&str, &str),
-) -> crate::Result<bool> {
+    notify: impl FnOnce(&str, &str, u64),
+) -> crate::Result<Option<u64>> {
     // Keep the hold until the continuation takes its place ahead of any queued follow-up.
     match send.await {
-        Ok(()) => Ok(clear_resumable_hold(session_id)),
+        Ok(()) => Ok(message_queue::clear_queue_hold_if(session_id, &["limited", "reset", "restart"])),
         Err(error) => {
-            if message_queue::hold_queue_if_unheld(session_id, "failed") {
-                notify(session_id, "failed");
+            if let Some(seq) = message_queue::hold_queue_if_unheld(session_id, "failed") {
+                notify(session_id, "failed", seq);
             }
             Err(error)
         }
     }
 }
 
-fn clear_resumable_hold(session_id: &str) -> bool {
-    message_queue::clear_queue_hold_if(session_id, &["limited", "reset", "restart"])
-}
-
-pub(crate) fn release_limited_hold_to_reset(session_id: &str, notify: impl FnOnce(&str, &str)) -> bool {
-    if !message_queue::transition_queue_hold_reason(session_id, "limited", "reset") {
+pub(crate) fn release_limited_hold_to_reset(session_id: &str, notify: impl FnOnce(&str, &str, u64)) -> bool {
+    let Some(seq) = message_queue::transition_queue_hold_reason(session_id, "limited", "reset") else {
         return false;
-    }
-    notify(session_id, "reset");
+    };
+    notify(session_id, "reset", seq);
     true
 }
 
-pub(crate) fn emit_queue_hold(app: &tauri::AppHandle, session_id: &str, reason: &str) {
-    let _ = app.emit("queue-changed", serde_json::json!({ "sessionId": session_id, "held": true, "reason": reason }));
+pub(crate) fn emit_queue_hold(app: &tauri::AppHandle, session_id: &str, reason: &str, hold_seq: u64) {
+    let _ = app.emit("queue-changed", serde_json::json!({ "sessionId": session_id, "held": true, "reason": reason, "holdSeq": hold_seq }));
 }
 
 pub(crate) fn hold_queue(app: &tauri::AppHandle, session_id: &str, reason: &str) {
-    message_queue::set_queue_hold_state(session_id, true, Some(reason));
-    emit_queue_hold(app, session_id, reason);
+    let seq = message_queue::set_queue_hold_state(session_id, true, Some(reason));
+    emit_queue_hold(app, session_id, reason, seq);
 }
 
 static DRAINING: LazyLock<Mutex<HashMap<String, bool>>> = LazyLock::new(Default::default);
@@ -828,10 +824,6 @@ mod tests {
         }
     }
 
-    fn set_hold(session_id: &str, reason: &str) {
-        message_queue::set_queue_hold_state(session_id, true, Some(reason));
-    }
-
     #[tokio::test]
     async fn limit_resume_keeps_the_queue_held_until_send_succeeds() {
         let session_id = crate::storage::id();
@@ -842,31 +834,31 @@ mod tests {
             ("stopped", false),
             ("failed", false),
         ] {
-            set_hold(&session_id, reason);
+            let hold_seq = message_queue::set_queue_hold_state(&session_id, true, Some(reason));
             let mut notified = Vec::new();
             let send = async {
                 assert_eq!(message_queue::queue_hold_reason(&session_id).as_deref(), Some(reason));
                 assert!(!can_drain(&session_id, false, Some(500), Some(1000), 1000));
                 Ok(())
             };
-            assert_eq!(
-                finish_limit_resume(&session_id, send, |id, reason| {
-                    notified.push((id.to_owned(), reason.to_owned()));
-                })
-                .await,
-                Ok(cleared)
-            );
+            let clear_seq = finish_limit_resume(&session_id, send, |id, reason, seq| {
+                notified.push((id.to_owned(), reason.to_owned(), seq));
+            })
+            .await
+            .unwrap();
+            assert_eq!(clear_seq.is_some(), cleared);
+            assert!(clear_seq.is_none_or(|seq| seq > hold_seq));
             assert!(notified.is_empty());
             assert_eq!(message_queue::queue_hold_reason(&session_id).as_deref(), (!cleared).then_some(reason));
         }
         message_queue::set_queue_hold_state(&session_id, false, None);
         let mut notified = Vec::new();
         assert_eq!(
-            finish_limit_resume(&session_id, async { Ok(()) }, |id, reason| {
-                notified.push((id.to_owned(), reason.to_owned()));
+            finish_limit_resume(&session_id, async { Ok(()) }, |id, reason, seq| {
+                notified.push((id.to_owned(), reason.to_owned(), seq));
             })
             .await,
-            Ok(false)
+            Ok(None)
         );
         assert!(notified.is_empty());
     }
@@ -875,10 +867,11 @@ mod tests {
     async fn failed_limit_resume_sets_a_hold_only_if_unheld() {
         let session_id = crate::storage::id();
         for reason in [None, Some("limited"), Some("reset"), Some("restart"), Some("stopped"), Some("failed")] {
-            message_queue::set_queue_hold_state(&session_id, reason.is_some(), reason);
+            let prior_seq = message_queue::set_queue_hold_state(&session_id, reason.is_some(), reason);
             let mut notified = Vec::new();
             let send = async { Err("send failed".to_owned()) };
-            let result = finish_limit_resume(&session_id, send, |id, reason| {
+            let result = finish_limit_resume(&session_id, send, |id, reason, seq| {
+                assert!(seq > prior_seq);
                 assert_eq!(message_queue::queue_hold_reason(id).as_deref(), Some(reason));
                 notified.push((id.to_owned(), reason.to_owned()));
             })
@@ -908,9 +901,10 @@ mod tests {
             (Some("failed"), Some("failed")),
             (None, None),
         ] {
-            message_queue::set_queue_hold_state(&session_id, before.is_some(), before);
+            let prior_seq = message_queue::set_queue_hold_state(&session_id, before.is_some(), before);
             let mut notified = Vec::new();
-            let transitioned = release_limited_hold_to_reset(&session_id, |id, reason| {
+            let transitioned = release_limited_hold_to_reset(&session_id, |id, reason, seq| {
+                assert!(seq > prior_seq);
                 assert_eq!(message_queue::queue_hold_reason(id).as_deref(), Some(reason));
                 notified.push((id.to_owned(), reason.to_owned()));
             });

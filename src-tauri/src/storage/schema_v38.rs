@@ -44,16 +44,17 @@ macro_rules! json5_status_escape {
 /// Whether a `messages` row (columns prefixed `NEW.`, or bare) is a running tool snapshot. The
 /// `instr` tests come first so the JSON is parsed only for rows that can match either a
 /// quoted `running` value (JSON5 also allows single quotes) or an escape such as `\u0072unning`.
+/// Flag 2 accepts JSON5 without accepting a superficially valid JSONB header.
 /// A missing type or version can produce NULL, so COALESCE keeps the stop trigger firing.
 macro_rules! running_tool {
     ($p:literal) => {
-        concat!($p, "role='tool' AND ", $p, "tool_id IS NOT NULL AND (instr(", $p, "content,'running')>0 OR instr(", $p, "content,'\\u')>0 OR ", json5_status_escape!($p), ") AND COALESCE(CASE WHEN json_valid(", $p, "content,6) THEN json_extract(", $p, "content,'$.type')='tool_activity' AND json_extract(", $p, "content,'$.version')=1 AND json_extract(", $p, "content,'$.status')='running' ELSE 0 END,0)=1")
+        concat!($p, "role='tool' AND ", $p, "tool_id IS NOT NULL AND (instr(", $p, "content,'running')>0 OR instr(", $p, "content,'\\u')>0 OR ", json5_status_escape!($p), ") AND COALESCE(CASE WHEN json_valid(", $p, "content,2) THEN json_extract(", $p, "content,'$.type')='tool_activity' AND json_extract(", $p, "content,'$.version')=1 AND json_extract(", $p, "content,'$.status')='running' ELSE 0 END,0)=1")
     };
 }
 /// Whether a `subagents` row's saved status is running or waiting, as `running_tool!`.
 macro_rules! running_subagent {
     ($p:literal) => {
-        concat!("(instr(", $p, "content,'running')>0 OR instr(", $p, "content,'waiting')>0 OR instr(", $p, "content,'\\u')>0 OR ", json5_status_escape!($p), ") AND COALESCE(CASE WHEN json_valid(", $p, "content,6) THEN json_extract(", $p, "content,'$.status') IN ('running','waiting') ELSE 0 END,0)=1")
+        concat!("(instr(", $p, "content,'running')>0 OR instr(", $p, "content,'waiting')>0 OR instr(", $p, "content,'\\u')>0 OR ", json5_status_escape!($p), ") AND COALESCE(CASE WHEN json_valid(", $p, "content,2) THEN json_extract(", $p, "content,'$.status') IN ('running','waiting') ELSE 0 END,0)=1")
     };
 }
 
@@ -63,7 +64,7 @@ macro_rules! running_subagent {
 /// JSON `null`).
 macro_rules! team_meta_values {
     ($c:literal) => {
-        concat!("CASE WHEN json_valid(", $c, ",6) THEN json_extract(", $c, ",'$.status') END,json_valid(", $c, ",6),CASE WHEN json_valid(", $c, ",6) AND COALESCE(json_type(", $c, ",'$.legacyPromptThroughId'),'null')='null' THEN 1 ELSE 0 END,0")
+        concat!("CASE WHEN json_valid(", $c, ",2) THEN json_extract(", $c, ",'$.status') END,json_valid(", $c, ",2),CASE WHEN json_valid(", $c, ",2) AND COALESCE(json_type(", $c, ",'$.legacyPromptThroughId'),'null')='null' THEN 1 ELSE 0 END,0")
     };
 }
 macro_rules! team_meta_upsert {
@@ -474,12 +475,12 @@ macro_rules! settle_tool_set {
 }
 macro_rules! settle_subagent_set {
     () => {
+        // json_each.value coerces scalar numbers into SQLite integers or floats.
+        // Fetch unchanged elements as JSON to keep wide integers and precise decimals.
         "UPDATE subagents SET content=CASE WHEN json_type(content,'$.tools')='array' THEN json_set(content,'$.status',?2,'$.updatedAt',?3,
         '$.tools',json((SELECT json_group_array(CASE
             WHEN type='object' AND json_extract(value,'$.status') IN ('running','waiting') THEN json(json_set(value,'$.status','failed'))
-            WHEN type IN ('object','array') THEN json(value)
-            WHEN type IN ('true','false') THEN json(type)
-            ELSE value END) FROM json_each(content,'$.tools'))))
+            ELSE json(content -> fullkey) END) FROM json_each(content,'$.tools'))))
         ELSE json_set(content,'$.status',?2,'$.updatedAt',?3) END,updated_at=?3 WHERE "
     };
 }

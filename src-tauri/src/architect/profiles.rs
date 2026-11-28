@@ -107,10 +107,11 @@ pub(crate) fn initialize(store: &Store) -> Result<()> {
     let mut library = TeamLibrary::default();
     {
         let mut statement = store.db.prepare(
-            "SELECT s.provider, s.model, s.reasoning_effort, CAST(json_extract(t.content, '$.config') AS TEXT)
+            "SELECT s.provider, s.model, s.reasoning_effort,
+                    CAST(CASE WHEN json_valid(t.content, 2) THEN json_extract(t.content, '$.config') END AS TEXT)
              FROM architect_teams t JOIN sessions s ON s.id=t.session_id
-             WHERE json_valid(t.content, 6) AND json_extract(t.content, '$.config') IS NOT NULL
-             ORDER BY json_extract(t.content, '$.updatedAt') DESC",
+             WHERE CASE WHEN json_valid(t.content, 2) THEN json_extract(t.content, '$.config') END IS NOT NULL
+             ORDER BY CASE WHEN json_valid(t.content, 2) THEN json_extract(t.content, '$.updatedAt') END DESC",
         ).map_err(|e| e.to_string())?;
         let snapshots = statement.query_map([], |row| {
             let architect = ModelSelection {
@@ -435,14 +436,67 @@ pub async fn architect_delete_profile(
 mod tests;
 
 #[cfg(test)]
+struct TestDatabase(std::path::PathBuf);
+
+#[cfg(test)]
+impl Drop for TestDatabase {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn initialize_ignores_damaged_jsonb_team_snapshot() {
+    let path = TestDatabase(
+        std::env::temp_dir().join(format!("pandacode-profile-jsonb-{}.db", storage::id())),
+    );
+    let store = Store::open(&path.0).unwrap();
+    store.db.execute_batch(
+        "DELETE FROM architect_library;
+         INSERT INTO projects(id,name,path) VALUES('project','Project','/project');
+         INSERT INTO sessions(id,project_id,title,provider,model,mode,status,created_at,updated_at)
+         VALUES('damaged','project','Damaged','codex','default','ask','idle',1,1);",
+    ).unwrap();
+
+    let mut damaged: Vec<u8> = store.db.query_row(
+        r#"SELECT jsonb('{"config":{},"updatedAt":1}')"#,
+        [],
+        |row| row.get(0),
+    ).unwrap();
+    let config_end = damaged.windows(b"config".len())
+        .position(|part| part == b"config").unwrap() + b"config".len();
+    // Damage the config value header while keeping the outer object header intact.
+    damaged[config_end] = 0xff;
+    let validation: (i64, i64) = store.db.query_row(
+        "SELECT json_valid(?1, 6), json_valid(?1, 2)",
+        [&damaged],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    ).unwrap();
+    assert_eq!(validation, (1, 0));
+    store.db.execute(
+        "INSERT INTO architect_teams(session_id,content) VALUES('damaged',?1)",
+        [&damaged],
+    ).unwrap();
+
+    initialize(&store).unwrap();
+    let library = read(&store).unwrap();
+    assert!(!library.enabled);
+    assert!(library.last_setup.is_none());
+    assert!(library.profiles.is_empty());
+
+    store.db.execute("DELETE FROM architect_library", []).unwrap();
+    drop(store);
+    let reopened = Store::open(&path.0).unwrap();
+    let library = read(&reopened).unwrap();
+    assert!(!library.enabled);
+    assert!(library.last_setup.is_none());
+    assert!(library.profiles.is_empty());
+}
+
+#[cfg(test)]
 #[test]
 fn missing_library_skips_malformed_and_invalid_team_snapshots() {
-    struct TestDatabase(std::path::PathBuf);
-    impl Drop for TestDatabase {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_file(&self.0);
-        }
-    }
     let path = TestDatabase(std::env::temp_dir().join(format!("pandacode-profile-seed-{}.db", storage::id())));
     let store = Store::open(&path.0).unwrap();
     store.db.execute_batch(
