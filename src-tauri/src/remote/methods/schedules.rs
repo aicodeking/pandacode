@@ -426,7 +426,7 @@ mod tests {
             id: "s1".into(), session_id: "t1".into(), session_title: "T".into(), project_id: "p".into(), project_name: "P".into(), title: String::new(), prompt: "x".into(),
             kind: "after".into(), interval_minutes: None, time_of_day: None, days: vec![], watch_session_id: Some("t2".into()), watch_session_title: None, only_on_success: false,
             next_run_at: None, last_run_at: None, enabled: true, created_by: "user".into(), created_by_session: None, run_count: 0, max_runs: None,
-            workflow_id: Some("wf-1".into()), chain_from_id: Some("s0".into()), created_at: 0, updated_at: 0, created_by_title: None, trigger_ok: None,
+            workflow_id: Some("wf-1".into()), chain_from_id: Some("s0".into()), created_at: 0, updated_at: 0, created_by_title: None, trigger_ok: None, cron: None, timezone: None,
         };
         let params = json!({"scheduleId": "s1", "input": {"sessionId": "t1", "prompt": "y", "kind": "after", "watchSessionId": "t2"}});
         let kept = keep_chain(input_param(&params).unwrap(), &names(&params), &before);

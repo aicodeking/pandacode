@@ -106,7 +106,14 @@ impl ReleasedReader {
 }
 
 fn assert_release_reads(fixture: &TestDatabase, prompt_count: u64) {
-    let reader = ReleasedReader::open_read_only(&fixture.path()).unwrap();
+    // The cron/timezone migration bumps the schema and rebuilds task_schedules.
+    // The released reader must refuse it, but its historical SQL must still read
+    // the task data through a direct read-only connection.
+    let refusal = ReleasedReader::open_read_only(&fixture.path()).err().unwrap();
+    assert!(refusal.contains("differs from expected 37"), "{refusal}");
+    let reader = ReleasedReader {
+        db: Connection::open_with_flags(fixture.path(), rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap(),
+    };
     assert_eq!(reader.prompt_activity(0).unwrap(), [(0, "codex".to_owned(), prompt_count)]);
     assert!(reader.prompt_activity(313).unwrap().is_empty());
 
@@ -119,7 +126,7 @@ fn assert_release_reads(fixture: &TestDatabase, prompt_count: u64) {
 }
 
 #[test]
-fn rollback_to_0_3_151_and_reupgrade_preserves_all_data() {
+fn legacy_0_3_151_queries_and_reupgrade_preserve_all_data() {
     let (fixture, db) = TestDatabase::v37();
     batch(&db, CORE_ROWS);
     let project_path = fixture.0.join("project");
@@ -138,7 +145,7 @@ fn rollback_to_0_3_151_and_reupgrade_preserves_all_data() {
 
     let old = Connection::open(fixture.path()).unwrap();
     batch(&old, "PRAGMA foreign_keys=ON");
-    assert_eq!(version(&old), 37, "v0.3.151 requires schema 37 for read-only lookups");
+    assert_eq!(version(&old), SCHEMA_VERSION, "legacy SQL does not change the migrated version");
     install_legacy_team_status(&old);
     let saved_status = "SELECT status FROM architect_team_status WHERE session_id='lead'";
     assert_eq!(scalar::<String>(&old, saved_status), "idle");
@@ -341,10 +348,10 @@ fn json5_running_snapshots_are_tracked_and_recovered() {
 #[test]
 fn read_only_store_accepts_supported_and_future_versions() {
     let (fixture, db) = TestDatabase::v37();
-    for schema in [36, 37, 38] {
+    for schema in [SCHEMA_VERSION - 1, SCHEMA_VERSION, SCHEMA_VERSION + 1] {
         db.pragma_update(None, "user_version", schema).unwrap();
         let current = Store::open_read_only(&fixture.path());
-        if schema < 37 {
+        if schema < SCHEMA_VERSION {
             assert!(current.err().unwrap().contains("open PandaCode to migrate"));
         } else {
             let reader = current.unwrap();
@@ -357,7 +364,7 @@ fn read_only_store_accepts_supported_and_future_versions() {
 
 #[test]
 fn future_schema_with_incompatible_recovery_tables_and_columns_opens_without_ddl() {
-    for schema in [SCHEMA_VERSION, 38, 39] {
+    for schema in [SCHEMA_VERSION, SCHEMA_VERSION + 1, SCHEMA_VERSION + 2] {
         let (fixture, db) = TestDatabase::v37();
         batch(&db, CORE_ROWS);
         drop(db);
@@ -368,7 +375,7 @@ fn future_schema_with_incompatible_recovery_tables_and_columns_opens_without_ddl
             ALTER TABLE machine_threads RENAME TO future_machine_threads;
             UPDATE sessions SET sidebar_order=NULL;",
         );
-        if schema == 39 {
+        if schema == SCHEMA_VERSION + 2 {
             batch(&store.db,
                 "ALTER TABLE architect_library RENAME TO future_architect_library;
                 ALTER TABLE sessions RENAME COLUMN archived TO future_archived;

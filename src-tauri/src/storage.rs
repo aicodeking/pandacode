@@ -202,7 +202,7 @@ pub(crate) use schema_v38::{
 };
 /// The newest `PRAGMA user_version`. Hot-query indexes and trackers are additive
 /// at version 37 so releases through v0.3.151 can still open the database.
-pub const SCHEMA_VERSION: i64 = 37;
+pub const SCHEMA_VERSION: i64 = 38;
 /// Most error rows one dismiss call may remove; the same limit as `DISMISS_BATCH` in src/thread-errors.ts (keep the two equal).
 pub const MAX_DISMISS_ERROR_IDS: usize = 500;
 /// The error every lookup of a task that has no row returns.
@@ -667,7 +667,7 @@ impl Store {
             }
             if version < 35 {
                 // Task schedules: wake-ups and timed messages for any thread (docs/schedules.md).
-                migration.execute_batch(crate::schedules::SCHEMA).map_err(|e| e.to_string())?;
+                migration.execute_batch(&crate::schedules::schema()).map_err(|e| e.to_string())?;
                 migration.execute_batch("PRAGMA user_version=35;").map_err(|e| e.to_string())?;
             }
             if version < 36 {
@@ -703,6 +703,34 @@ impl Store {
                   UPDATE task_schedules SET saved_remotely=1 WHERE id IN (SELECT j.value FROM scheduler_settings s, json_each(CASE WHEN json_valid(s.content) THEN s.content ELSE '{}' END,'$.remoteSaved') j WHERE s.id=1);
                   UPDATE scheduler_settings SET content=json_remove(content,'$.remoteSaved') WHERE id=1 AND json_valid(content);
                   PRAGMA user_version=37;").map_err(|e| e.to_string())?;
+            }
+            if version < 38 {
+                // Cron schedules and per-schedule timezones (issue #247): the five-field
+                // expression and the IANA zone name, both nullable — syntax is validated
+                // in Rust, like prompts — plus a `cron` schedule kind.
+                for (name, definition) in [("cron", "TEXT"), ("timezone", "TEXT")] {
+                    let exists: bool = migration.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('task_schedules') WHERE name=?1)", [name], |r| r.get(0)).map_err(|e| e.to_string())?;
+                    if !exists {
+                        migration.execute_batch(&format!("ALTER TABLE task_schedules ADD COLUMN {name} {definition};")).map_err(|e| e.to_string())?;
+                    }
+                }
+                // The kind CHECK bakes its values into the table, so databases from before
+                // the feature rebuild the long way once to let `cron` in.
+                let sql: String = migration.query_row("SELECT sql FROM sqlite_master WHERE type='table' AND name='task_schedules'", [], |r| r.get(0)).map_err(|e| e.to_string())?;
+                if !sql.contains("'cron'") {
+                    let table = crate::schedules::TABLE.replacen("task_schedules(", "task_schedules_new(", 1);
+                    migration
+                        .execute_batch(&format!(
+                            "{table}
+                        INSERT INTO task_schedules_new(id,session_id,title,prompt,kind,interval_minutes,time_of_day,days,watch_session_id,only_on_success,next_run_at,last_run_at,enabled,created_by,created_by_session,run_count,max_runs,consecutive_failures,trigger_ok,workflow_id,chain_from_id,saved_remotely,created_at,updated_at,cron,timezone)
+                        SELECT id,session_id,title,prompt,kind,interval_minutes,time_of_day,days,watch_session_id,only_on_success,next_run_at,last_run_at,enabled,created_by,created_by_session,run_count,max_runs,consecutive_failures,trigger_ok,workflow_id,chain_from_id,saved_remotely,created_at,updated_at,cron,timezone FROM task_schedules;
+                        DROP TABLE task_schedules;
+                        ALTER TABLE task_schedules_new RENAME TO task_schedules;"
+                        ))
+                        .map_err(|e| e.to_string())?;
+                    migration.execute_batch(crate::schedules::INDEXES).map_err(|e| e.to_string())?;
+                }
+                migration.execute_batch("PRAGMA user_version=38;").map_err(|e| e.to_string())?;
             }
             let upgrade_started = (version < SCHEMA_VERSION).then(std::time::Instant::now);
             if upgrade_started.is_some() {
