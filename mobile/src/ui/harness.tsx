@@ -17,7 +17,7 @@ export const HARNESSES: Record<string, Harness> = {
   grok: { name: 'Grok', logo: require('../../assets/providers/grok.png'), black: true },
   mimo: { name: 'MiMo', logo: require('../../assets/providers/mimo.png'), black: true },
   pi: { name: 'Pi', logo: require('../../assets/providers/pi.png') },
-  deepseek: { name: 'DeepSeek', logo: require('../../assets/providers/deepseek.png') },
+  deepseek: { name: 'DeepSeek', logo: require('../../assets/providers/deepseek.svg') },
   commandcode: { name: 'Command Code', logo: require('../../assets/providers/commandcode.png'), black: true },
   cline: { name: 'Cline', logo: require('../../assets/providers/cline.svg'), mono: true },
   'github-copilot': { name: 'GitHub Copilot', logo: require('../../assets/providers/github-copilot.svg'), mono: true },

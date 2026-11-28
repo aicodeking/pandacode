@@ -19,7 +19,7 @@ const logos: Partial<Record<ProviderId, string>> = {
   mimo: new URL('./assets/providers/mimo.png', import.meta.url).href,
   alibaba: new URL('./assets/providers/alibaba.svg', import.meta.url).href,
   pi: new URL('./assets/providers/pi.png', import.meta.url).href,
-  deepseek: new URL('./assets/providers/deepseek.png', import.meta.url).href,
+  deepseek: new URL('./assets/providers/deepseek.svg', import.meta.url).href,
   commandcode: new URL('./assets/providers/commandcode.png', import.meta.url).href,
   muse: new URL('./assets/providers/muse.svg', import.meta.url).href,
   omp: new URL('./assets/providers/omp.svg', import.meta.url).href,
