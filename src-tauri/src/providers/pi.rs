@@ -661,6 +661,25 @@ mod tests {
     }
 
     #[test]
+    fn pi_and_omp_plan_allowlist_allows_explore_and_list() {
+        use crate::custom_tools::{TOOL_LIST, TOOL_RUN, TOOL_SAVE};
+
+        let (_, allowlist) = include_str!("pi-extension.mjs")
+            .split_once("const PLAN_APP_TOOLS = new Set([")
+            .expect("Plan app tool allowlist");
+        let (allowlist, _) = allowlist.split_once("]);").expect("end of allowlist");
+        for (name, allowed) in [
+            (EXPLORE_TOOL, true),
+            (TOOL_LIST, true),
+            (TOOL_SAVE, false),
+            (TOOL_RUN, false),
+        ] {
+            let entry = format!("'{name}'");
+            assert_eq!(allowlist.contains(entry.as_str()), allowed, "{name}");
+        }
+    }
+
+    #[test]
     fn selected_models_are_verified_with_or_without_a_provider() {
         let mut state = state();
         state["data"]["model"] = json!({"provider":"anthropic","id":"sonnet"});

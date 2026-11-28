@@ -51,7 +51,6 @@ pub(super) fn configure(command: &mut Command, config: &RunConfig) {
         }
         "opencode" => {
             command.arg("acp");
-            command.env("OPENCODE_CONFIG_CONTENT", configuration(&config.mode));
         }
         "grok" => {
             // Global flags precede `agent`; agent flags precede the `stdio` transport.
@@ -447,7 +446,13 @@ fn grok_read_only(tool: &Value) -> bool {
         || matches!(field(tool, "kind"), "read" | "search" | "fetch" | "think")
 }
 
-pub(super) fn configuration(mode: &str) -> String {
+/// Apply process-local mode defaults using the schema discovered for this launch.
+pub(super) fn configuration(
+    mode: &str,
+    inline: Option<&str>,
+    disabled: &std::collections::BTreeSet<String>,
+    agents: &crate::skill_manager::OpenCodeAgents,
+) -> String {
     let permission = match mode {
         "full" => json!({"*":"allow"}),
         "auto" => json!({"*":"ask","read":"allow","glob":"allow","grep":"allow","edit":"allow"}),
@@ -455,25 +460,47 @@ pub(super) fn configuration(mode: &str) -> String {
         "plan" => json!({"*":"deny","read":"allow","glob":"allow","grep":"allow","list":"allow","lsp":"allow","webfetch":"allow","websearch":"allow","external_directory":"ask"}),
         _ => json!({"*":"ask","read":"allow","glob":"allow","grep":"allow"}),
     };
-    // Inline settings have the highest documented precedence and are private
-    // to this process. Preserve existing inline settings, except permissions
-    // which must follow the explicitly selected PandaCode policy.
-    let mut inline = std::env::var("OPENCODE_CONFIG_CONTENT")
-        .ok()
-        .and_then(|text| serde_json::from_str::<Value>(&text).ok())
-        .filter(Value::is_object)
-        .unwrap_or_else(|| json!({}));
-    inline["permission"] = permission.clone();
-    if !inline["agent"].is_object() {
-        inline["agent"] = json!({});
+    crate::skill_manager::opencode_enforcement_with(
+        inline.unwrap_or("{}"),
+        disabled,
+        agents,
+        Some(&permission),
+    )
+}
+
+/// Add only the bound server's grants to the effective launch, after connection and skill rules.
+pub(super) fn allow_tools(command: &mut Command, served: &[&str]) {
+    if served.is_empty() {
+        return;
     }
-    for mode in ["build", "plan"] {
-        if !inline["agent"][mode].is_object() {
-            inline["agent"][mode] = json!({});
+    let env = super::opencode_environment(command);
+    let agents = crate::skill_manager::opencode_all_agents_with_env(command.as_std().get_current_dir(), &env);
+    allow_tools_with_agents(command, served, &agents);
+}
+
+/// Apply bound-server tool grants using a pre-scanned OpenCode agent roster.
+pub(super) fn allow_tools_with_agents(
+    command: &mut Command,
+    served: &[&str],
+    agents: &crate::skill_manager::OpenCodeAgents,
+) {
+    if served.is_empty() {
+        return;
+    }
+    let inline = super::command_environment(command, "OPENCODE_CONFIG_CONTENT")
+        .unwrap_or_else(|| "{}".into());
+    let permission = super::command_environment(command, "OPENCODE_PERMISSION");
+    if let Some((inline, permission)) = crate::skill_manager::opencode_tool_grants_with(
+        &inline,
+        permission.as_deref(),
+        served,
+        agents,
+    ) {
+        command.env("OPENCODE_CONFIG_CONTENT", inline);
+        if let Some(permission) = permission {
+            command.env("OPENCODE_PERMISSION", permission);
         }
-        inline["agent"][mode]["permission"] = permission.clone();
     }
-    inline.to_string()
 }
 
 /// How much a harness's own mode ID approves without asking: 1 asks, 2 edits,
@@ -903,6 +930,9 @@ impl Protocol {
                 .is_some_and(|id| id != self.remote_id)
             {
                 step.write.push(json!({"jsonrpc":"2.0","id":value["id"],"result":{"outcome":{"outcome":"cancelled"}}}));
+                return Ok(step);
+            }
+            if self.allow_pandacode_tools(&value, &mut step) {
                 return Ok(step);
             }
             // ACP modes aren't universally approval policies. Keep user prompts
@@ -3553,10 +3583,97 @@ mod tests {
                 assert!(step.events.iter().any(|event| event.kind == "status"));
             }
         }
-        let full: Value = serde_json::from_str(&configuration("full")).unwrap();
+        for mode in ["ask", "auto", "plan"] {
+            let inline = configuration(mode, None, &Default::default(), &Default::default());
+            let unserved: Value = serde_json::from_str(&inline).unwrap();
+            assert!(!unserved.to_string().contains("pandacode_explore"), "{mode}: no rule for a tool this run does not list");
+            let (inline, _) = crate::skill_manager::opencode_tool_grants_with(
+                &inline, None, &[crate::providers::EXPLORE_TOOL], &Default::default(),
+            ).unwrap();
+            let config: Value = serde_json::from_str(&inline).unwrap();
+            assert_eq!(config["permission"]["pandacode_architect_pandacode_explore"], "allow", "{mode}");
+            assert_eq!(config["agent"]["plan"]["permission"]["pandacode_architect_pandacode_explore"], "allow", "{mode}");
+            assert_eq!(config["permission"].as_object().unwrap().keys().next().unwrap(), "*", "{mode}");
+        }
+        let full: Value = serde_json::from_str(&configuration("full", None, &Default::default(), &Default::default())).unwrap();
         assert_eq!(full["permission"]["*"], "allow");
         assert_eq!(full["agent"]["build"]["permission"]["*"], "allow");
         assert_eq!(full["agent"]["plan"]["permission"]["*"], "allow");
+    }
+
+    #[test]
+    fn opencode_configuration_preserves_exact_denies_and_mode_defaults() {
+        let tool = "pandacode_architect_pandacode_explore";
+        let alias = format!("{tool} *");
+        let saved = format!(r#"{{
+            // Keep the selected mode's policy for other actions.
+            "permission": {{"{tool}": "deny", "read": "deny"}},
+            "agent": {{
+                "build": {{"permission": {{"{alias}": "deny"}}}},
+                "plan": {{"permission": {{"{tool}": "deny"}}}}
+            }},
+        }}"#);
+        for (mode, effect) in [("auto", "ask"), ("full", "allow"), ("plan", "deny")] {
+            let value: Value = serde_json::from_str(&configuration(mode, Some(&saved), &Default::default(), &Default::default())).unwrap();
+            assert!(value.get("permissions").is_none() && value.get("agents").is_none());
+            assert_eq!(value["permission"]["*"], effect);
+            assert_eq!(value["permission"][tool], "deny");
+            assert_ne!(value["permission"]["read"], "deny");
+            assert_eq!(value["agent"]["build"]["permission"][&alias], "deny");
+            assert_eq!(value["agent"]["plan"]["permission"][tool], "deny");
+        }
+    }
+
+    #[test]
+    fn opencode_native_mode_policy_overrides_saved_rules_in_both_schemas() {
+        let tool = "pandacode_architect_pandacode_explore";
+        let prior = json!({"permissions":[
+            {"action":"edit","resource":"*","effect":"allow"},
+            {"action":"shell","resource":"*","effect":"allow"},
+            {"action":tool,"resource":"*","effect":"deny"}
+        ]});
+        let mut inline = prior.clone();
+        inline["agents"] = json!({"plan": prior, "build": prior});
+        let inline = inline.to_string();
+        let disabled = std::collections::BTreeSet::from(["review".into()]);
+        for (mode, default, edit) in [
+            ("plan", "deny", "deny"),
+            ("auto", "ask", "allow"),
+            ("ask", "ask", "ask"),
+            ("full", "allow", "allow"),
+        ] {
+            let output = configuration(mode, Some(&inline), &disabled, &Default::default());
+            let config: Value = serde_json::from_str(&output).unwrap();
+            for (legacy, native) in [
+                (&config, &config),
+                (&config["agent"]["plan"], &config["agents"]["plan"]),
+                (&config["agent"]["build"], &config["agents"]["build"]),
+            ] {
+                let rules = native["permissions"].as_array().unwrap();
+                assert_eq!(
+                    rules[0],
+                    json!({"action":"*","resource":"*","effect":default})
+                );
+                for (action, expected) in [
+                    ("edit", edit),
+                    ("shell", default),
+                    ("bash", default),
+                    (tool, "deny"),
+                ] {
+                    let rule = rules
+                        .iter()
+                        .rfind(|rule| rule["action"] == action || rule["action"] == "*")
+                        .unwrap();
+                    assert_eq!(rule["effect"], expected, "{mode}/{action}: {native}");
+                }
+                assert_eq!(legacy["permission"]["*"], default);
+                assert_eq!(legacy["permission"]["skill"]["review"], "deny");
+                assert!(rules
+                    .iter()
+                    .any(|rule| rule
+                        == &json!({"action":"skill","resource":"review","effect":"deny"})));
+            }
+        }
     }
 
     #[test]
@@ -3592,7 +3709,11 @@ mod tests {
         let mut c = Command::new("opencode");
         let mut cfg = config("opencode");
         cfg.mode = "plan".into();
-        configure(&mut c, &cfg);
+        c.env_remove("OPENCODE_CONFIG_CONTENT")
+            .env_remove("OPENCODE_PERMISSION")
+            .env_remove("OPENCODE_CONFIG")
+            .env_remove("OPENCODE_CONFIG_DIR");
+        super::super::configure_command(&mut c, &cfg);
         assert_eq!(
             c.as_std().get_args().collect::<Vec<_>>(),
             [std::ffi::OsStr::new("acp")]
@@ -3926,6 +4047,136 @@ mod tests {
         let step = p.receive(json!({"jsonrpc":"2.0","id":3,"result":{"stopReason":"end_turn"}})).unwrap();
         assert!(!step.done);
         assert_eq!(step.write[0]["params"]["prompt"][0]["text"], "retry me");
+    }
+
+    #[test]
+    fn opencode_allow_tools_discovers_builtin_and_project_v1_v2_agents() {
+        let root = std::env::temp_dir().join(format!(
+            "pandacode-acp-opencode-agents-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(root.join(".git")).unwrap();
+        std::fs::write(
+            root.join("opencode.json"),
+            r#"{
+                "agent": {"custom-v1": {"permission": {"*": "deny"}}},
+                "agents": {"custom-v2": {"permissions": [{"action": "*", "resource": "*", "effect": "deny"}]}}
+            }"#,
+        )
+        .unwrap();
+
+        let mut command = Command::new("opencode");
+        command.current_dir(&root);
+        command.env("OPENCODE_CONFIG_CONTENT", "{}");
+        allow_tools(&mut command, &["pandacode_explore"]);
+
+        let inline = command
+            .as_std()
+            .get_envs()
+            .find(|(k, _)| *k == "OPENCODE_CONFIG_CONTENT")
+            .and_then(|(_, v)| v.and_then(|v| v.to_str()))
+            .unwrap();
+        let value: Value = serde_json::from_str(inline).unwrap();
+        let tool = "pandacode_architect_pandacode_explore";
+        let trailing = "pandacode_architect_pandacode_explore *";
+        for agent in ["build", "plan", "general", "explore", "custom-v1", "custom-v2"] {
+            let rules = value["agents"][agent]["permissions"].as_array().unwrap();
+            for action in [tool, trailing] {
+                assert!(
+                    rules.iter().any(|rule| rule["action"] == action && rule["effect"] == "allow"),
+                    "{agent}/{action}: {value}"
+                );
+            }
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn opencode_allow_tools_keeps_opaque_inline_and_populates_permission_env() {
+        let opaque = r#"{"provider":{"work": broken"#;
+        let tool = "pandacode_architect_pandacode_explore";
+        let trailing = "pandacode_architect_pandacode_explore *";
+
+        // Without existing OPENCODE_PERMISSION: creates OPENCODE_PERMISSION with exact grants.
+        let mut command = Command::new("opencode");
+        command.env("OPENCODE_CONFIG_CONTENT", opaque);
+        command.env_remove("OPENCODE_PERMISSION");
+        allow_tools(&mut command, &["pandacode_explore"]);
+        let inline = super::super::command_environment(&command, "OPENCODE_CONFIG_CONTENT").unwrap();
+        let perm = super::super::command_environment(&command, "OPENCODE_PERMISSION").unwrap();
+        assert_eq!(inline, opaque);
+        let perm_val: Value = serde_json::from_str(&perm).unwrap();
+        assert_eq!(perm_val[tool], "allow");
+        assert_eq!(perm_val[trailing], "allow");
+
+        // With existing OPENCODE_PERMISSION: preserves existing rules and appends exact grants.
+        let mut command = Command::new("opencode");
+        command.env("OPENCODE_CONFIG_CONTENT", opaque);
+        command.env("OPENCODE_PERMISSION", r#"{"skill":{"review":"deny"}}"#);
+        allow_tools(&mut command, &["pandacode_explore"]);
+        let inline = super::super::command_environment(&command, "OPENCODE_CONFIG_CONTENT").unwrap();
+        let perm = super::super::command_environment(&command, "OPENCODE_PERMISSION").unwrap();
+        assert_eq!(inline, opaque);
+        let perm_val: Value = serde_json::from_str(&perm).unwrap();
+        assert_eq!(perm_val["skill"]["review"], "deny");
+        assert_eq!(perm_val[tool], "allow");
+        assert_eq!(perm_val[trailing], "allow");
+    }
+
+    #[test]
+    fn opencode_allow_tools_preserves_env_and_file_tokens_in_inline_config() {
+        let root = std::env::temp_dir().join(format!(
+            "pandacode-acp-opencode-tokens-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(root.join(".git")).unwrap();
+        std::fs::write(
+            root.join("opencode.jsonc"),
+            r#"{
+                "provider": {"work": {"options": {"timeout": {env:TIMEOUT}}}},
+                "agents": {"custom-v2": {"permissions": [{"action": "*", "resource": "*", "effect": "deny"}]}}
+            }"#,
+        )
+        .unwrap();
+
+        let tool = "pandacode_architect_pandacode_explore";
+        let trailing = "pandacode_architect_pandacode_explore *";
+
+        // 2.x inline config with `{env:...}` and `{file:...}` receives native 2.x grants inline
+        // for all built-ins + discovered agents without falling back to OPENCODE_PERMISSION.
+        let inline_v2 = r#"{"provider":{"work":{"options":{"timeout":{env:TIMEOUT},"cert":{file:./cert.pem}}}},"permissions":[{"action":"*","resource":"*","effect":"ask"}],"agents":{"build":{"permissions":[{"action":"*","resource":"*","effect":"deny"}]}}}"#;
+        let mut command = Command::new("opencode");
+        command.current_dir(&root);
+        command.env("OPENCODE_CONFIG_CONTENT", inline_v2);
+        command.env_remove("OPENCODE_PERMISSION");
+        allow_tools(&mut command, &["pandacode_explore"]);
+        let out = super::super::command_environment(&command, "OPENCODE_CONFIG_CONTENT").unwrap();
+        assert!(
+            super::super::command_environment(&command, "OPENCODE_PERMISSION").is_none(),
+            "inline config parsed cleanly; no OPENCODE_PERMISSION fallback needed"
+        );
+        assert!(out.contains(r#""timeout":{env:TIMEOUT}"#), "{out}");
+        assert!(out.contains(r#""cert":{file:./cert.pem}"#), "{out}");
+        let normalized = out
+            .replace("{env:TIMEOUT}", "\"ENV\"")
+            .replace("{file:./cert.pem}", "\"FILE\"");
+        let parsed: Value = serde_json::from_str(&normalized).unwrap();
+        assert!(parsed.get("permission").is_none(), "{out}");
+        assert!(parsed.get("agent").is_none(), "{out}");
+        for agent in ["build", "plan", "general", "explore", "custom-v2"] {
+            let rules = parsed["agents"][agent]["permissions"].as_array().unwrap();
+            let last_two = &rules[rules.len() - 2..];
+            assert_eq!(
+                last_two,
+                &[
+                    json!({"action": tool, "resource": "*", "effect": "allow"}),
+                    json!({"action": trailing, "resource": "*", "effect": "allow"}),
+                ],
+                "{agent}: {out}"
+            );
+        }
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -5277,6 +5528,47 @@ mod tests {
             ))
             .unwrap();
         assert!(!end_after_live.events.iter().any(|e| e.kind == "usage"));
+    }
+
+    #[test]
+    fn cline_and_antigravity_auto_approve_tool_list_in_plan_mode() {
+        use crate::custom_tools::{TOOL_LIST, TOOL_RUN, TOOL_SAVE};
+
+        for (provider, prefix, suffix) in [
+            ("cline", "pandacode_architect__", ": {}"),
+            ("antigravity", "mcp__pandacode_architect__", ""),
+        ] {
+            let mut cfg = config(provider);
+            cfg.mode = "plan".into();
+            let mut p = Protocol::new(cfg);
+            p.remote_id = "plan-mcp".into();
+            p.phase = 1;
+            p.mcp_server = (provider == "antigravity").then(|| json!({}));
+            // A resumed Plan turn may still advertise save and run.
+            p.mcp_tool_names.extend([TOOL_LIST, TOOL_SAVE, TOOL_RUN].map(str::to_owned));
+
+            for name in [TOOL_LIST, TOOL_SAVE, TOOL_RUN] {
+                let step = p.receive(json!({
+                    "jsonrpc": "2.0",
+                    "id": 42,
+                    "method": "session/request_permission",
+                    "params": {
+                        "sessionId": "plan-mcp",
+                        "toolCall": {"toolCallId": name, "title": format!("{prefix}{name}{suffix}"), "kind": "other", "locations": []},
+                        "options": [
+                            {"optionId": "allow", "kind": "allow_once"},
+                            {"optionId": "deny", "kind": "reject_once"}
+                        ]
+                    }
+                })).unwrap();
+                if name == TOOL_LIST {
+                    assert_eq!(step.write.len(), 1, "{provider} {name}");
+                    assert_eq!(step.write[0]["result"]["outcome"]["optionId"], "allow", "{provider} {name}");
+                } else {
+                    assert!(step.write.is_empty(), "{provider} {name}");
+                }
+            }
+        }
     }
 
     #[test]

@@ -10,10 +10,10 @@ const task = (page: Page) => page.evaluate(async () => {
 });
 const activeOption = (page: Page) => picker(page).locator('[role="option"][aria-selected="true"]');
 
-async function open(page: Page, url = '/?teams'): Promise<void> {
+async function open(page: Page, url = '/?teams', patch = (source: string) => source): Promise<void> {
   await page.route('**/src/preview.ts*', async route => {
     const response = await route.fetch();
-    await route.fulfill({ response, body: `${await response.text()}\nwindow.__pandacodePreviewUrl = import.meta.url;\n` });
+    await route.fulfill({ response, body: `${patch(await response.text())}\nwindow.__pandacodePreviewUrl = import.meta.url;\n` });
   });
   await page.goto(url);
   await expect(page.locator('.task-item.selected')).toHaveAttribute('data-id', 'session-1', { timeout: 15_000 });
@@ -478,6 +478,153 @@ test('a true harness switch clears a stale account binding after configuring the
   expect(calls).toEqual(['configure_session', 'connection_assign']);
   expect(await page.evaluate(() => (window as any).__accountSnapshot().tasks['session-1'])).toBeUndefined();
   expect(await accountCalls(page, 'connection_pool_set')).toEqual([]);
+});
+
+test('re-picking the task\'s current model still remembers it as the last-used choice', async ({ page }) => {
+  // The last pick was another harness on another task.
+  await page.addInitScript(() => {
+    localStorage.setItem('pandacode.provider', 'codex');
+    localStorage.setItem('pandacode.model.codex', 'gpt-5');
+  });
+  await open(page);
+  const stored = () => page.evaluate(() => ({ provider: localStorage.getItem('pandacode.provider'), model: localStorage.getItem('pandacode.model.claude') }));
+  expect(await stored()).toEqual({ provider: 'codex', model: null });
+  const before = await task(page);
+  expect(before).toMatchObject({ provider: 'claude', model: 'sonnet' });
+  const current = picker(page).locator('[role="option"][aria-current="true"]');
+  const label = (await current.getAttribute('aria-label'))!;
+  await current.click();
+  await expect(picker(page)).toHaveCount(0);
+  await expect.poll(stored).toEqual({ provider: 'claude', model: 'sonnet' });
+  await expect(page.locator('.task-item.selected')).toHaveAttribute('data-id', 'session-1');
+  expect(await task(page)).toMatchObject({ provider: 'claude', model: 'sonnet', resumeId: before.resumeId });
+  await trigger(page).click();
+  await expect(picker(page).locator('[aria-current="true"]')).toHaveAccessibleName(label);
+});
+
+test('re-picking the current model never calls configure_session, so a managed worker task is not refused', async ({ page }) => {
+  // Every configure_session is refused, as the architect refuses changes to a managed worker task.
+  const refused = 'This worker is managed by its architect. Use the team controls.';
+  await page.addInitScript(() => localStorage.setItem('pandacode.provider', 'codex'));
+  await open(page, '/?teams', source => {
+    const patched = source.replace(/switch\s*\(command\)\s*\{/, `(window.__pickerCalls ??= []).push(command); if (command === 'configure_session') throw new Error(${JSON.stringify(refused)}); switch (command) {`);
+    if (patched === source) throw new Error('preview command switch not found');
+    return patched;
+  });
+  const configures = () => page.evaluate(() => ((window as any).__pickerCalls ?? []).filter((c: string) => c === 'configure_session').length);
+  const stored = () => page.evaluate(() => ({ provider: localStorage.getItem('pandacode.provider'), model: localStorage.getItem('pandacode.model.claude') }));
+  const current = picker(page).locator('[role="option"][aria-current="true"]');
+  await current.click();
+  await expect(picker(page)).toHaveCount(0);
+  await expect.poll(stored).toEqual({ provider: 'claude', model: 'sonnet' });
+  expect(await configures()).toBe(0);
+  await expect(page.getByText(refused)).toHaveCount(0);
+  expect(await task(page)).toMatchObject({ provider: 'claude', model: 'sonnet' });
+  await expect(page.locator('#prompt')).toBeFocused();
+
+  // A real change still configures the task (and here is refused), which proves the patch is live.
+  await trigger(page).click();
+  await picker(page).getByRole('tab', { name: 'Codex', exact: true }).click();
+  await picker(page).getByRole('option', { name: 'Codex · GPT-6-Astra', exact: true }).click();
+  await expect.poll(configures).toBe(1);
+  expect(await task(page)).toMatchObject({ provider: 'claude', model: 'sonnet' });
+});
+
+test('re-picking the current model while on a named team leaves the team without configure_session', async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('pandacode.provider', 'codex'));
+  await open(page, '/?teams', source => {
+    const patched = source.replace(/switch\s*\(command\)\s*\{/, '(window.__pickerCalls ??= []).push({ command, args }); switch (command) {');
+    if (patched === source) throw new Error('preview command switch not found');
+    return patched;
+  });
+  const calls = (name: string) => page.evaluate(n => ((window as any).__pickerCalls ?? []).filter((c: any) => c.command === n).map((c: any) => c.args), name);
+  await picker(page).getByRole('tab', { name: 'Teams, 2' }).click();
+  await picker(page).getByRole('option', { name: 'Agent team · Ship crew', exact: true }).click();
+  await expect(picker(page)).toHaveCount(0);
+  await expect(trigger(page)).toContainText('Ship crew');
+  // Ship crew's architect is Claude Code · Claude Opus 5, which the task now runs on.
+  await expect.poll(async () => (await task(page)).model).toBe('opus');
+  expect(await task(page)).toMatchObject({ provider: 'claude', model: 'opus' });
+  const configuresBefore = (await calls('configure_session')).length;
+  const leavesBefore = (await calls('architect_configure')).filter((a: any) => a.config === null).length;
+
+  await trigger(page).click();
+  await picker(page).getByRole('tab', { name: 'Claude Code', exact: true }).click();
+  await picker(page).getByRole('option', { name: 'Claude Code · Claude Opus 5', exact: true }).click();
+  await expect(picker(page)).toHaveCount(0);
+  await expect(trigger(page)).not.toContainText('Ship crew');
+  await expect.poll(async () => (await calls('architect_configure')).filter((a: any) => a.config === null).length).toBe(leavesBefore + 1);
+  expect((await calls('architect_configure')).at(-1)).toMatchObject({ sessionId: 'session-1', config: null });
+  expect((await calls('configure_session')).length).toBe(configuresBefore);
+  await expect.poll(() => page.evaluate(() => ({ provider: localStorage.getItem('pandacode.provider'), model: localStorage.getItem('pandacode.model.claude') })))
+    .toEqual({ provider: 'claude', model: 'opus' });
+  expect(await task(page)).toMatchObject({ provider: 'claude', model: 'opus' });
+});
+
+const recordCommands = (source: string) => {
+  const patched = source.replace(/switch\s*\(command\)\s*\{/, '(window.__pickerCalls ??= []).push(command); switch (command) {');
+  if (patched === source) throw new Error('preview command switch not found');
+  return patched;
+};
+const commandCount = (page: Page, name: string) => page.evaluate(n => ((window as any).__pickerCalls ?? []).filter((c: string) => c === n).length, name);
+
+test('re-picking the current reasoning effort skips set_reasoning_effort', async ({ page }) => {
+  await open(page, '/?teams', recordCommands);
+  const group = picker(page).getByRole('radiogroup', { name: 'Effort' });
+  const radio = (name: string) => group.getByRole('radio', { name, exact: true });
+  const efforts = () => commandCount(page, 'set_reasoning_effort');
+  await expect(radio('Default')).toHaveAttribute('aria-checked', 'true');
+  // Re-picking the saved Default changes nothing. The picker's saveChoice and main.ts's onEffortSelect
+  // both skip an unchanged effort; this pins the end-to-end result that no IPC is sent.
+  await radio('Default').click();
+  await expect(radio('Default')).toHaveAttribute('aria-checked', 'true');
+  expect(await efforts()).toBe(0);
+  expect((await task(page)).reasoningEffort ?? null).toBeNull();
+
+  // A real change saves, which proves the spy is live.
+  await radio('High').click();
+  await expect.poll(efforts).toBe(1);
+  await expect.poll(async () => (await task(page)).reasoningEffort).toBe('high');
+  await expect(radio('High')).toHaveAttribute('aria-checked', 'true');
+
+  // Re-picking the now-saved High changes nothing either.
+  await radio('High').click();
+  await expect(radio('High')).toHaveAttribute('aria-checked', 'true');
+  await expect(trigger(page).locator('.model-effort')).toHaveText('High');
+  expect(await efforts()).toBe(1);
+  expect((await task(page)).reasoningEffort).toBe('high');
+});
+
+test('re-picking the current permission mode skips update_session', async ({ page }) => {
+  await open(page, '/?teams', recordCommands);
+  await page.keyboard.press('Escape');
+  await expect(picker(page)).toHaveCount(0);
+  const mode = page.locator('#mode-picker-trigger');
+  const menu = page.getByRole('dialog', { name: 'Permissions', exact: true });
+  const updates = () => commandCount(page, 'update_session');
+  const before = (await task(page)).mode as string;
+  const startUpdates = await updates();
+
+  await mode.click();
+  const current = menu.locator('[role="menuitemradio"][aria-checked="true"]');
+  await expect(current).toHaveCount(1);
+  const currentName = (await current.getAttribute('aria-label')) ?? (await current.innerText()).split('\n')[0].trim();
+  await current.click();
+  await expect(menu).toHaveCount(0);
+  await expect(mode).toHaveAttribute('data-mode', before);
+  expect(await updates()).toBe(startUpdates);
+  expect((await task(page)).mode).toBe(before);
+
+  // A different mode saves, which proves the spy is live.
+  await mode.click();
+  await expect(menu.locator('[role="menuitemradio"][aria-checked="true"]')).toHaveCount(1);
+  const other = menu.locator('[role="menuitemradio"][aria-checked="false"]:not([disabled]):not([aria-disabled="true"])').first();
+  await expect(other).not.toHaveAccessibleName(currentName);
+  await other.click();
+  await expect(menu).toHaveCount(0);
+  await expect.poll(updates).toBe(startUpdates + 1);
+  await expect.poll(async () => (await task(page)).mode).not.toBe(before);
+  await expect(mode).not.toHaveAttribute('data-mode', before);
 });
 
 const speed = (page: Page) => picker(page).getByRole('radiogroup', { name: 'Speed' });

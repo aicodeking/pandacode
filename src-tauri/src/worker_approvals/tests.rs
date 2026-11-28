@@ -616,7 +616,7 @@ fn always_ask_tools_match_every_harness_approval_shape() {
     // The producers these shapes copy; a change to one must update its fixture below.
     let mcp_host = include_str!("../providers/mcp_host.rs");
     assert!(mcp_host.contains(r#"const SERVER_NAME: &str = "pandacode_architect";"#));
-    assert!(mcp_host.contains(r#"text: format!("Allow {name}?\n{}", preview_json(args, TOOL_INPUT_LIMIT)),"#));
+    assert!(mcp_host.contains(r#"None => format!("Allow {name}?\n{}", preview_json(&args, TOOL_INPUT_LIMIT)),"#));
     let host_tools = include_str!("../providers/host_tools.rs");
     assert!(host_tools.contains("\"Allow {}?\\n{}\",\n                call.tool,"));
     assert!(host_tools.contains(r#""method":"item/tool/call""#));

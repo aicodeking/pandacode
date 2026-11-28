@@ -76,10 +76,8 @@ fn delete_owned(store: &Store, sid: &str, expected: &[String]) -> Result<()> {
     transaction.commit().map_err(|e| e.to_string())
 }
 
-pub(crate) fn delete_state(state: &AppState, sid: &str) -> Result<DeletedSessions> {
-    // Agent, harness, team and Jev admissions share this lock. No process or
-    // filesystem operations happen here; running work must be stopped first.
-    let agents = crate::run_requests::lock_agents(&state.agents).map_err(|e| e.to_string())?;
+/// The ids a delete would remove, or the reason it must wait. Call with the agents map locked.
+fn refuse_if_busy(state: &AppState, agents: &std::collections::HashMap<String, crate::RunningAgent>, sid: &str) -> Result<Vec<String>> {
     if state.shutdown.load(Ordering::SeqCst) != 0 {
         return Err("PandaCode is closing. Try again when it finishes.".into());
     }
@@ -103,8 +101,33 @@ pub(crate) fn delete_state(state: &AppState, sid: &str) -> Result<DeletedSession
                 .into(),
         );
     }
+    Ok(ids)
+}
+
+/// Frees and waits out every id's lingering CLI and warm spare (`quiesce`), root and workers.
+/// Every id is tried even after a failure, all at once (stalled workers cost one wait, not one
+/// each); the first error in id order is returned.
+async fn quiesce_all<F, Fut>(ids: &[String], quiesce: F) -> Result<()>
+where
+    F: Fn(String) -> Fut,
+    Fut: std::future::Future<Output = Result<()>>,
+{
+    let results = futures_util::future::join_all(ids.iter().map(|id| quiesce(id.clone()))).await;
+    results.into_iter().find_map(Result::err).map_or(Ok(()), Err)
+}
+
+pub(crate) fn delete_state(state: &AppState, sid: &str) -> Result<DeletedSessions> {
+    // Agent, harness, team and Jev admissions share this lock. No process or
+    // filesystem operations happen here; running work must be stopped first.
+    let agents = crate::run_requests::lock_agents(&state.agents).map_err(|e| e.to_string())?;
+    let ids = refuse_if_busy(state, &agents, sid)?;
     let store = state.store.lock().map_err(|e| e.to_string())?;
     delete_owned(&store, sid, &ids)?;
+    // Per-task memory goes with the rows. Paths that delete rows without coming through here
+    // (a bot reset deletes its conversations directly) are covered by the startup pruning
+    // (`session_state::retain`).
+    crate::app_instructions::forget(&ids);
+    crate::architect::coordination::forget(&ids);
     Ok(DeletedSessions {
         deleted_session_ids: ids,
     })
@@ -126,17 +149,14 @@ pub async fn delete_session(
     if window.label() != "main" {
         return Err("Only the main window can delete tasks.".into());
     }
-    // A deleted task never sends a follow-up; free its waiting agent.
-    crate::providers::discard_warm_agent(&session_id);
-    // Lingering agents go first, so their folders can be removed. A refused deletion keeps them.
-    let owned = {
+    // A deleted task never sends a follow-up; once the refusal checks pass, free every deleted
+    // task's waiting agent (workers too) and wait until it is gone.
+    let ids = {
         let state = app.state::<AppState>();
-        let store = state.store.lock().map_err(|e| e.to_string())?;
-        candidates(&store, &session_id)
+        let agents = crate::run_requests::lock_agents(&state.agents).map_err(|e| e.to_string())?;
+        refuse_if_busy(&state, &agents, &session_id)?
     };
-    for id in owned.iter().flatten() {
-        crate::providers::end_lingering(id).await;
-    }
+    quiesce_all(&ids, |id| async move { crate::providers::quiesce(&id).await }).await?;
     crate::blocking(move || {
         let cloud = app.state::<AppState>().store.lock().ok().and_then(|store| crate::cloud_agents::load(&store, &session_id).ok().flatten());
         let deleted = delete_with_files(&app.state::<AppState>(), &session_id, app.path().app_data_dir().ok().as_deref())?;
@@ -173,6 +193,62 @@ mod tests {
         child
     }
 
+    #[tokio::test]
+    async fn deleting_a_task_quiesces_the_root_and_every_worker() {
+        let (state, project) = test_state();
+        let (parent, child) = {
+            let store = state.store.lock().unwrap();
+            let parent = task(&store, &project);
+            let child = owned_worker(&store, &parent, &project);
+            (parent, child)
+        };
+        let ids = {
+            let agents = state.agents.lock().unwrap();
+            refuse_if_busy(&state, &agents, &parent).unwrap()
+        };
+        let seen = std::sync::Mutex::new(Vec::new());
+        quiesce_all(&ids, |id| {
+            seen.lock().unwrap().push(id);
+            async { Ok(()) }
+        })
+        .await
+        .unwrap();
+        assert_eq!(seen.into_inner().unwrap(), vec![parent, child]);
+    }
+
+    #[tokio::test]
+    async fn a_failing_quiesce_does_not_skip_the_other_ids_and_the_first_error_wins() {
+        let ids: Vec<String> = ["a", "b", "c"].map(String::from).to_vec();
+        let seen = std::sync::Mutex::new(Vec::new());
+        let error = quiesce_all(&ids, |id| {
+            seen.lock().unwrap().push(id.clone());
+            async move { if id == "a" || id == "b" { Err(format!("{id} failed")) } else { Ok(()) } }
+        })
+        .await
+        .unwrap_err();
+        assert_eq!(error, "a failed");
+        assert_eq!(seen.into_inner().unwrap(), ids);
+    }
+
+    /// Every quiesce must be in flight at once: a barrier of all four only opens if none waits
+    /// for another to finish, so a sequential implementation fails by timeout, not by timing.
+    #[tokio::test]
+    async fn quiesces_run_together_not_one_after_another() {
+        let ids: Vec<String> = ["a", "b", "c", "d"].map(String::from).to_vec();
+        let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(ids.len()));
+        let all = quiesce_all(&ids, |_| {
+            let barrier = barrier.clone();
+            async move {
+                barrier.wait().await;
+                Ok(())
+            }
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(10), all)
+            .await
+            .expect("quiesces ran one after another")
+            .unwrap();
+    }
+
     #[test]
     fn deleting_a_task_removes_its_and_its_workers_progress() {
         let (state, project) = test_state();
@@ -193,6 +269,31 @@ mod tests {
         assert!(!progress.join(&parent).exists() && !progress.join(&child).exists());
         assert_eq!(crate::progress::list(&progress, &other).unwrap().len(), 1);
         let _ = std::fs::remove_dir_all(&app_data);
+    }
+
+    #[test]
+    fn deleting_state_forgets_every_deleted_tasks_memory_and_no_other() {
+        use crate::app_instructions::{remember_catalog, History};
+        let (state, project) = test_state();
+        let (parent, child, other) = {
+            let store = state.store.lock().unwrap();
+            let parent = task(&store, &project);
+            let child = owned_worker(&store, &parent, &project);
+            (parent, child, task(&store, &project))
+        };
+        let natives = ["SendMessage".to_owned()];
+        for id in [&parent, &child, &other] {
+            remember_catalog(id, Some("conv-1"), None, &natives);
+            crate::custom_tools::test_note(id);
+        }
+        delete_state(&state, &parent).unwrap();
+        for id in [&parent, &child] {
+            assert_eq!(History::of(id, "claude", Some("conv-1")), History::unknown(false));
+            assert!(!crate::custom_tools::test_noted(id));
+        }
+        assert_eq!(History::of(&other, "claude", Some("conv-1")), History::holding(&["SendMessage"]));
+        assert!(crate::custom_tools::test_noted(&other));
+        crate::app_instructions::forget(std::slice::from_ref(&other));
     }
 
     #[test]

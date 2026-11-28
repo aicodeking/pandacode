@@ -75,6 +75,13 @@ pub fn handle() -> bool {
     }
 }
 
+/// Exits `serve` after saving session state's pending writes, as `RunEvent::Exit` does: a
+/// process exit skips the run loop's exit event.
+pub(crate) fn exit(code: i32) -> ! {
+    crate::session_state::flush();
+    std::process::exit(code)
+}
+
 /// The args that belong to `serve`: everything but the `serve` token itself, wherever it
 /// sits. Flags before `serve` count too, so `pandacode --port 8787 serve` hosts with the
 /// web UI instead of silently dropping `--port`.
@@ -149,7 +156,7 @@ fn serve(command: Command, modifiers: Modifiers) -> ! {
         crate::crash_guard::start(crate::crash_guard::Mode::Serve);
     }
     app.run(crate::on_run_event);
-    std::process::exit(0)
+    exit(0)
 }
 
 /// With the web UI on, the main window from tauri.conf.json is still created (web calls
@@ -186,11 +193,11 @@ fn start(app: &tauri::AppHandle, dir: &std::path::Path, command: Command, import
         Command::ExportBots { path } => match crate::headless_bots::run_export(app, &path) {
             Ok(()) => {
                 println!("Bot configuration written to {}.", path.display());
-                std::process::exit(0)
+                exit(0)
             }
             Err(error) => {
                 eprintln!("{error}");
-                std::process::exit(1)
+                exit(1)
             }
         },
         Command::SignOut => {
@@ -198,17 +205,17 @@ fn start(app: &tauri::AppHandle, dir: &std::path::Path, command: Command, import
             tauri::async_runtime::spawn(async move {
                 crate::remote::headless_sign_out(&app).await;
                 println!("Signed out of PandaCode Connect.");
-                std::process::exit(0)
+                exit(0)
             });
         }
         Command::FullAccess { enabled } => match crate::remote::headless_set_full_access(dir, enabled) {
             Ok(()) => {
                 println!("Full access for remote tasks is {}.", if enabled { "on" } else { "off" });
-                std::process::exit(0)
+                exit(0)
             }
             Err(error) => {
                 eprintln!("{error}");
-                std::process::exit(1)
+                exit(1)
             }
         },
         Command::SignIn { name } => {
@@ -216,7 +223,7 @@ fn start(app: &tauri::AppHandle, dir: &std::path::Path, command: Command, import
             tauri::async_runtime::spawn(async move {
                 if let Err(error) = crate::remote::headless_sign_in(&dir, name).await {
                     eprintln!("Sign-in failed: {error}");
-                    std::process::exit(1)
+                    exit(1)
                 }
                 crate::remote::headless_reload(&app, &dir);
                 if let Some(path) = import {
@@ -257,7 +264,7 @@ fn start(app: &tauri::AppHandle, dir: &std::path::Path, command: Command, import
             if !crate::remote::host_enabled(dir) {
                 if let Err(error) = crate::remote::headless_set_host_enabled(dir, true) {
                     eprintln!("Could not enable hosting: {error}");
-                    std::process::exit(1)
+                    exit(1)
                 }
                 crate::remote::headless_reload(app, dir);
                 println!("Hosting was off in the saved sign-in; turned it on.");

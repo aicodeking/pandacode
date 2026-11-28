@@ -21,7 +21,12 @@ use std::{
 
 mod host;
 mod team;
-pub(crate) use host::{instruction, with_host, TOOL as TRACK_TOOL};
+pub(crate) use host::{
+    claude_restricts_reads, edits_wait_for_run, instruction, turn_note, with_host,
+    TOOL as TRACK_TOOL,
+};
+#[cfg(test)]
+pub(crate) use host::edits_wait_for_approval;
 
 #[cfg(test)]
 const FILES: usize = 6000;
@@ -239,10 +244,14 @@ pub struct Tracker {
     limited: bool,
     snapshot_bytes: usize,
     observed_paths: BTreeSet<String>,
+    /// When this turn's capture window opened (`start`/`started`); see `untouched_this_turn`.
+    since: std::time::SystemTime,
     /// When this turn's latest write tool was seen (`storage::now`), 0 for none: a capture is saved
     /// as its turn ends, and this dates its changes by when they happened.
     last_write: i64,
 }
+/// The coarsest modification-time resolution `untouched_this_turn` allows for (FAT/exFAT).
+const MTIME_SLACK: std::time::Duration = std::time::Duration::from_secs(2);
 fn empty_snapshot() -> Snapshot {
     Snapshot {
         directory: None,
@@ -296,6 +305,7 @@ impl Tracker {
             limited: false,
             snapshot_bytes: 0,
             observed_paths: BTreeSet::new(),
+            since: std::time::SystemTime::now(),
             last_write: 0,
         }
     }
@@ -303,6 +313,9 @@ impl Tracker {
         self.last_write
     }
     pub fn started(&mut self) {
+        if !self.dirty_since_boundary {
+            self.since = std::time::SystemTime::now();
+        }
         self.dirty_since_boundary = true;
         if self.lease.is_none() {
             self.lease = Some(Lease::start(&self.root));
@@ -527,6 +540,13 @@ impl Tracker {
                 self.limited = true;
                 continue;
             }
+            if !id.starts_with("reported:") && same_path(&before, &after, path) && !self.untouched_this_turn(path) && !self.left_by_earlier_tool(&before, path) {
+                // A successful native write whose baseline already holds its bytes, on a file
+                // modified this turn: an event that reached PandaCode after the write landed (no
+                // approval wait) or a write of identical bytes. These cannot be told apart, so
+                // the turn is marked partial rather than silently showing no change.
+                self.limited = true;
+            }
             if self.after.known.contains(path) && !same_path(&self.after, &before, path) {
                 // Someone changed this file between this task's tools. A net diff
                 // would incorporate those unowned bytes, so omit the file.
@@ -540,6 +560,28 @@ impl Tracker {
         if after.directory.is_some() {
             self.retained.push(after);
         }
+    }
+    /// This tracker already holds `path`'s baseline from an earlier tool call this turn, and
+    /// `baseline` (this call's) is exactly what that call left: the file was modified this turn
+    /// by this task itself, so an unchanged write is a real no-op, not a lost race.
+    fn left_by_earlier_tool(&self, baseline: &Snapshot, path: &str) -> bool {
+        self.before.known.contains(path) && self.after.known.contains(path) && same_path(&self.after, baseline, path)
+    }
+    /// The file was last modified clearly before this turn's capture window opened, so no
+    /// write in this turn touched it: an unchanged native write is then truly no change. A file
+    /// modified this turn (even with identical bytes) cannot prove its baseline beat the write.
+    ///
+    /// This compares a file system timestamp with the wall clock. Modification times can be
+    /// coarse (2 s on FAT/exFAT, 1 s on some network and older file systems), so a write early
+    /// in this turn can read as up to that much before `since`. A file modified within
+    /// `MTIME_SLACK` of the window's start is therefore never trusted as untouched: in doubt
+    /// the turn is marked partial, never silently clean. A clock stepped backwards can still
+    /// mislead the comparison; that is not detected.
+    fn untouched_this_turn(&self, path: &str) -> bool {
+        let Some(cutoff) = self.since.checked_sub(MTIME_SLACK) else { return false };
+        std::fs::symlink_metadata(self.root.join(path))
+            .and_then(|meta| meta.modified())
+            .is_ok_and(|modified| modified < cutoff)
     }
     pub fn boundary(&mut self) -> Option<Captured> {
         if !self.dirty_since_boundary {

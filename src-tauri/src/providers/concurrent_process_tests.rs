@@ -183,6 +183,8 @@ async fn concurrent_processes_isolate_streams_approvals_stop_and_failure() {
     runs[2].finish().await.unwrap();
     runs[3].finish().await.unwrap();
     for (index, id) in ["alpha", "beta", "gamma", "delta"].into_iter().enumerate() {
+        // Clean runs return before their process exits (`reap`).
+        await_exit(id).await.unwrap();
         let expected = if index < 2 {
             format!("{id} before ")
         } else {

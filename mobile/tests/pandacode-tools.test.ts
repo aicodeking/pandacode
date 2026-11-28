@@ -16,6 +16,13 @@ test('own tools are recognised however the harness names them', () => {
   assert.equal(ownTool('Bash'), undefined);
 });
 
+test('explore reads as what it asked', () => {
+  assert.equal(line(`${A}explore`, { search: ['a', 'b', 'c'], read: ['x.ts:1-9'], outline: ['y.ts'] }), 'Explored 3 searches, 2 files');
+  assert.equal(line(`${A}explore`, { symbols: ['a'], tests_for: ['x.ts'] }, 'running'), 'Exploring 1 symbol, 1 test lookup');
+  assert.equal(line(`${A}explore`, {}), 'Explored the code');
+  assert.equal(line(`${A}explore`, { search: 'handleLogin', read: 'a.ts', outline: ['b.ts'] }), 'Explored 1 search, 2 files');
+});
+
 test('team tools read as sentences, with worker names when the team is known', () => {
   const names = { w1: 'GPT-6' };
   assert.equal(line(`${A}dispatch_workers`, { assignments: [{}, {}, {}] }), 'Dispatched 3 workers');
@@ -59,4 +66,11 @@ test('dispatch assignments and screenshot images', () => {
   const png = 'iVBORw0KGgo' + 'A'.repeat(120);
   assert.equal(imageOf(`{"type":"image","data":"${png}"}`), `data:image/png;base64,${png}`);
   assert.equal(imageOf('[Non-text content omitted]'), undefined);
+});
+
+test('agent-made tools read as sentences', () => {
+  assert.equal(line(`${A}tool_save`, { name: 'run-e2e-subset', script: 'x' }), 'Saved tool run-e2e-subset');
+  assert.equal(line(`${A}tool_run`, { name: 'run-e2e-subset', args: { FILE: 'a' } }, 'running'), 'Running tool run-e2e-subset');
+  assert.equal(line(`${A}tool_run`, { name: 'run-e2e-subset' }), 'Ran tool run-e2e-subset');
+  assert.equal(line(`${A}tool_list`, {}), 'Listed project tools');
 });

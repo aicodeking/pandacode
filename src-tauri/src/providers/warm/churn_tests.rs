@@ -1,0 +1,553 @@
+//! Each pool's churn backoff: evictions, unused expiries (a lead's renewal chain counted once,
+//! nothing with spares off, a launch-time expired spare too) and launch-time misses in a row, each cleared by an adoption or a
+//! lapsed cooldown.
+use super::*;
+use super::spawn::*;
+use super::adopt::{launched_without_key_streak, KEY_CHECK_FAILED};
+use super::stats::{record_lead_miss, CHURN_COOLDOWN, EXPIRY_BACKOFF_STREAK, EXPIRY_COOLDOWN, MAX_EXPIRY_COOLDOWN, MISS_BACKOFF_STREAK};
+use super::test_support::*;
+use std::time::{Instant, SystemTime};
+
+/// Both clocks read once, so a test can move either alone.
+fn clocks() -> (Instant, SystemTime) {
+    (Instant::now(), SystemTime::now())
+}
+
+#[test]
+fn a_pools_churn_backoff_starts_at_its_limit_and_lapses() {
+    let (now, wall) = clocks();
+    let mut churn = PoolChurn::default();
+    churn.evicted(2, now, wall);
+    assert!(!churn.cooling(now, wall), "one eviction is ordinary turnover");
+    churn.evicted(2, now, wall);
+    assert!(churn.cooling(now, wall), "two in a row with no adoption between back off");
+    assert!(churn.cooling(now + CHURN_COOLDOWN / 2, wall + CHURN_COOLDOWN / 2));
+    assert!(!churn.cooling(now + CHURN_COOLDOWN, wall + CHURN_COOLDOWN), "a lapsed backoff probes again");
+    assert_eq!(churn, PoolChurn::default(), "and starts a fresh streak");
+}
+
+#[test]
+fn unused_expiries_in_a_row_back_off_until_the_cooldown_lapses() {
+    let (now, wall) = clocks();
+    let mut churn = PoolChurn::default();
+    for _ in 1..EXPIRY_BACKOFF_STREAK {
+        churn.expired(now, wall);
+        assert!(!churn.cooling(now, wall), "a follow-up that missed the window is ordinary");
+    }
+    churn.expired(now, wall);
+    assert!(churn.cooling(now, wall), "{EXPIRY_BACKOFF_STREAK} unused in a row with no adoption between back off");
+    assert!(churn.cooling(now + CHURN_COOLDOWN, wall + CHURN_COOLDOWN), "for longer than an eviction backoff");
+    assert!(!churn.cooling(now + EXPIRY_COOLDOWN, wall + EXPIRY_COOLDOWN), "a lapsed backoff probes again");
+    assert_eq!(churn, lapsed_expiry_backoff(1), "one unused probe short of the next, doubled backoff");
+    // An eviction backoff never shortens a longer expiry backoff already set.
+    let mut both = PoolChurn::default();
+    for _ in 0..EXPIRY_BACKOFF_STREAK {
+        both.expired(now, wall);
+    }
+    both.evicted(1, now, wall);
+    assert_eq!(both.churn_cooldown_until, now.checked_add(EXPIRY_COOLDOWN));
+    assert_eq!(both.churn_cooldown_until_wall, wall.checked_add(EXPIRY_COOLDOWN));
+}
+
+/// A pool whose `level`th expiry backoff just lapsed: no deadline, no eviction or miss streak, and
+/// the expiry streak one short, so the next unused spare pauses it again.
+fn lapsed_expiry_backoff(level: u32) -> PoolChurn {
+    PoolChurn { consecutive_expiries: EXPIRY_BACKOFF_STREAK - 1, expiry_backoff_level: level, ..PoolChurn::default() }
+}
+
+#[test]
+fn a_miss_or_eviction_pause_cannot_stop_a_lapsed_expiry_backoff_from_doubling() {
+    let (now, wall) = clocks();
+    for miss_pause in [true, false] {
+        let mut churn = PoolChurn::default();
+        for _ in 0..EXPIRY_BACKOFF_STREAK {
+            churn.expired(now, wall);
+        }
+        assert!(churn.paused_by_expiry);
+        let (lapsed, lapsed_wall) = (now + EXPIRY_COOLDOWN, wall + EXPIRY_COOLDOWN);
+        assert!(!churn.cooling(lapsed, lapsed_wall));
+        assert_eq!(churn, lapsed_expiry_backoff(1));
+
+        if miss_pause {
+            for _ in 0..MISS_BACKOFF_STREAK {
+                churn.missed(lapsed, lapsed_wall);
+            }
+        } else {
+            churn.evicted(1, lapsed, lapsed_wall);
+        }
+        assert!(!churn.paused_by_expiry);
+        assert_eq!(churn.paused_secs(lapsed, lapsed_wall), CHURN_COOLDOWN.as_secs());
+
+        let minute = Duration::from_secs(60);
+        let (probe, probe_wall) = (lapsed + minute, lapsed_wall + minute);
+        churn.expired(probe, probe_wall);
+        assert!(churn.paused_by_expiry);
+        assert_eq!(churn.expiry_backoff_level, 2);
+        let doubled = EXPIRY_COOLDOWN * 2;
+        assert_eq!(churn.paused_secs(probe, probe_wall), doubled.as_secs());
+
+        // Another expiry during that expiry pause extends it at the same level.
+        let (later, later_wall) = (probe + minute, probe_wall + minute);
+        churn.expired(later, later_wall);
+        assert_eq!(churn.expiry_backoff_level, 2);
+        assert_eq!(churn.paused_secs(probe, probe_wall), (doubled + minute).as_secs());
+    }
+}
+
+#[test]
+fn expiry_backoffs_double_after_each_lapsed_probe_up_to_the_cap_until_an_adoption() {
+    assert_eq!(MAX_EXPIRY_COOLDOWN, EXPIRY_COOLDOWN * 8, "30 → 60 → 120 → 240 min");
+    let (mut now, mut wall) = clocks();
+    let mut churn = PoolChurn::default();
+    for _ in 0..EXPIRY_BACKOFF_STREAK {
+        churn.expired(now, wall);
+    }
+    // A spare already pooled expiring a minute into the pause extends it, never doubles it.
+    let minute = Duration::from_secs(60);
+    churn.expired(now + minute, wall + minute);
+    assert_eq!((churn.expiry_backoff_level, churn.paused_secs(now, wall)), (1, (EXPIRY_COOLDOWN + minute).as_secs()));
+    (now, wall) = (now + minute, wall + minute);
+    let ladder = [EXPIRY_COOLDOWN, EXPIRY_COOLDOWN * 2, EXPIRY_COOLDOWN * 4, MAX_EXPIRY_COOLDOWN, MAX_EXPIRY_COOLDOWN];
+    for (step, cooldown) in ladder.into_iter().enumerate() {
+        let level = u32::try_from(step).unwrap() + 1;
+        assert_eq!((churn.expiry_backoff_level, churn.paused_secs(now, wall)), (level, cooldown.as_secs()), "backoff {level}");
+        let almost = cooldown - Duration::from_secs(1);
+        assert!(churn.cooling(now + almost, wall + almost), "backoff {level} still pauses");
+        (now, wall) = (now + cooldown, wall + cooldown);
+        assert!(!churn.cooling(now, wall), "backoff {level} lapsed: one probe spare may start");
+        assert_eq!(churn, lapsed_expiry_backoff(level));
+        // That single probe expires unused: the pool pauses again at once, for twice as long.
+        churn.expired(now, wall);
+    }
+    // An adoption resets the ladder: three unused spares again before a 30 min pause.
+    let pool = own_pool();
+    spares(pool).ordinary_churn = churn;
+    let _ = record_adopted(pool, false);
+    let mut locked = spares(pool);
+    assert_eq!(locked.ordinary_churn, PoolChurn::default());
+    for _ in 1..EXPIRY_BACKOFF_STREAK {
+        locked.ordinary_churn.expired(now, wall);
+        assert!(!locked.ordinary_churn.cooling(now, wall), "streaks start over after an adoption");
+    }
+    locked.ordinary_churn.expired(now, wall);
+    assert_eq!((locked.ordinary_churn.expiry_backoff_level, locked.ordinary_churn.paused_secs(now, wall)), (1, EXPIRY_COOLDOWN.as_secs()));
+}
+
+#[tokio::test]
+async fn a_lead_spare_past_its_window_joins_the_expiry_streak_only_when_its_chain_was_done() {
+    // Mid-chain (a renewal still due) says nothing about the chain running out; its last spare does.
+    for (renewal_due, expiries) in [(true, 0), (false, 1)] {
+        let pool = own_pool();
+        let session = format!("warm-miss-chain-{renewal_due}-{}", uuid::Uuid::new_v4());
+        let spare = Spare { renewal_due, ..idle_spare(true, IDLE) };
+        assert!(miss_once(pool, &session, spare, "launch").is_none(), "an expired spare is never adopted");
+        await_exit(&session).await.unwrap();
+        let locked = spares(pool);
+        assert_eq!(locked.lead.missed, 1, "renewal_due={renewal_due}: still counted as not used");
+        let churn = locked.lead_churn;
+        assert_eq!((churn.consecutive_expiries, churn.consecutive_misses), (expiries, 0), "renewal_due={renewal_due}: {churn:?}");
+    }
+}
+
+#[tokio::test]
+async fn unused_expiries_back_off_each_pool_apart_and_an_adoption_clears_it() {
+    let pool = own_pool();
+    // Spares that expire within a few timer slices, and ones that wait out the whole test.
+    let quick = Lifecycle { idle: Duration::from_millis(20), pool, ..stub() };
+    let holding = Lifecycle { idle: Duration::from_secs(3600), pool, ..stub() };
+    let session = format!("warm-expiry-churn-{}", uuid::Uuid::new_v4());
+    let config = RunConfig { session_id: session.clone(), ..crate::providers::tests::config("claude") };
+    let turn = |life: Lifecycle| {
+        launched(&session);
+        start(life, config.clone(), Vec::new(), HashSet::new(), epoch(&session), None, 0)
+    };
+    // Each spare really waits out its window unused, and counts once it settles with spares on.
+    for streak in 1..=EXPIRY_BACKOFF_STREAK {
+        assert!(turn(quick).await.unwrap());
+        assert!(eventually(|| spares(pool).ordinary_churn.consecutive_expiries == streak).await, "expiry {streak}");
+    }
+    {
+        let locked = spares(pool);
+        assert_eq!(locked.ordinary.expired, u64::from(EXPIRY_BACKOFF_STREAK));
+        assert!(locked.ordinary_churn.churn_cooldown_until.is_some());
+        assert_eq!(locked.lead_churn, PoolChurn::default(), "the lead pool keeps its own streak");
+    }
+    assert!(!turn(holding).await.unwrap(), "no spare starts while the pool backs off");
+    assert_eq!(stub_starts(&session), EXPIRY_BACKOFF_STREAK);
+    assert_eq!(spares(pool).ordinary.churn_skipped, 1);
+    // A lead spare still starts in its own pool.
+    let lead_session = format!("warm-expiry-churn-lead-{}", uuid::Uuid::new_v4());
+    let lead_config = RunConfig { session_id: lead_session.clone(), ..crate::providers::tests::config("claude") };
+    launched(&lead_session);
+    assert!(start(holding, lead_config, Vec::new(), HashSet::new(), epoch(&lead_session), lead(Arc::new(|| true)), 0).await.unwrap());
+    // A launch adopting a spare ends the backoff at once.
+    let evicted = admit(&mut spares(pool), session.clone(), idle_spare(false, Duration::ZERO));
+    assert!(evicted.is_empty());
+    let (adopted, note) = take_in(pool, &session, "launch", true);
+    assert!(adopted.is_some() && note.as_deref().is_some_and(|line| line.starts_with("Warm Claude agent adopted.")), "{note:?}");
+    assert_eq!(spares(pool).ordinary_churn, PoolChurn::default());
+    drop(adopted);
+    assert!(turn(holding).await.unwrap(), "an adoption clears the backoff");
+    for id in [&session, &lead_session] {
+        discard_from(pool, id);
+        await_exit(id).await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn round_robin_turns_back_off_and_an_adoption_clears_the_backoff() {
+    let life = Lifecycle { idle: Duration::from_secs(3600), ..stub() };
+    let id = |name: &str| format!("warm-churn-{name}-{}", uuid::Uuid::new_v4());
+    let (a, b, c) = (id("a"), id("b"), id("c"));
+    let turn = |session: &String| {
+        let config = RunConfig { session_id: session.clone(), ..crate::providers::tests::config("claude") };
+        launched(session);
+        start(life, config, Vec::new(), HashSet::new(), epoch(session), None, 0)
+    };
+    // A → B → C → A → B → C: each new spare evicts the next task's, which is never adopted.
+    for session in [&a, &b, &c, &a, &b, &c] {
+        turn(session).await.unwrap();
+    }
+    assert_eq!((stub_starts(&a), stub_starts(&b), stub_starts(&c)), (2, 1, 1), "after two evictions in a row no doomed spare starts");
+    {
+        let locked = spares(life.pool);
+        assert_eq!(locked.ordinary.evicted, 2);
+        assert_eq!(locked.ordinary.churn_skipped, 2);
+        assert!(locked.ordinary_churn.churn_cooldown_until.is_some());
+        assert_eq!(locked.lead_churn, PoolChurn::default(), "the lead pool keeps its own streak");
+    }
+    // C's turn comes and adopts its spare: the backoff ends at once.
+    let (adopted, note) = take_in(life.pool, &c, "stub", true);
+    assert!(adopted.is_some() && note.as_deref().is_some_and(|line| line.starts_with("Warm Claude agent adopted.")), "{note:?}");
+    assert_eq!(spares(life.pool).ordinary_churn, PoolChurn::default());
+    turn(&b).await.unwrap();
+    assert_eq!(stub_starts(&b), 2, "an adoption clears the backoff");
+    drop(adopted);
+    for session in [&a, &b, &c] {
+        discard_from(life.pool, session);
+        await_exit(session).await.unwrap();
+    }
+}
+
+/// Starts a read-only team lead's spare and waits until its whole renewal chain has run out
+/// unadopted (`1 + MAX_RENEWALS` spares, the last one expired for good).
+async fn lead_chain_runs_out(life: Lifecycle, name: &str) -> String {
+    let session = format!("warm-chain-{name}-{}", uuid::Uuid::new_v4());
+    let config = RunConfig { session_id: session.clone(), ..crate::providers::tests::config("claude") };
+    launched(&session); // a prewarm always follows a launch, never launch 0
+    assert!(start(life, config, Vec::new(), HashSet::new(), epoch(&session), lead(Arc::new(|| true)), 0).await.unwrap());
+    assert!(eventually(|| stub_starts(&session) == 1 + MAX_RENEWALS).await, "renewed: {}", stub_starts(&session));
+    assert!(eventually(|| !waiting_in(life.pool, &session)).await, "the last spare expires for good");
+    session
+}
+
+/// Windows long enough that a loaded runner stays well inside each chain's wall-clock bound
+/// (`chain_expired`: three windows from the first start).
+fn chain_life() -> Lifecycle {
+    Lifecycle { idle: Duration::from_millis(800), ..stub() }
+}
+
+#[tokio::test]
+async fn two_read_only_teams_renewing_at_once_never_trip_the_expiry_backoff() {
+    let life = chain_life();
+    let (a, b) = futures_util::future::join(lead_chain_runs_out(life, "a"), lead_chain_runs_out(life, "b")).await;
+    // Each finished chain counts once: two, short of the streak, and nothing mid-chain.
+    assert!(eventually(|| spares(life.pool).lead_churn.consecutive_expiries == 2).await, "{:?}", spares(life.pool).lead_churn);
+    {
+        let locked = spares(life.pool);
+        assert_eq!(locked.lead.churn_skipped, 0, "no renewal was skipped mid-chain");
+        assert_eq!(locked.lead.expired, u64::from(2 * (1 + MAX_RENEWALS)), "every spare still counts as expired");
+        assert_eq!(locked.lead_churn.churn_cooldown_until, None);
+    }
+    for session in [&a, &b] {
+        await_exit(session).await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn a_whole_unadopted_lead_chain_counts_one_expiry_toward_the_backoff() {
+    let life = chain_life();
+    let first = lead_chain_runs_out(life, "first").await;
+    assert!(eventually(|| spares(life.pool).lead_churn.consecutive_expiries == 1).await, "{:?}", spares(life.pool).lead_churn);
+    assert_eq!(spares(life.pool).lead.expired, u64::from(1 + MAX_RENEWALS));
+    assert_eq!(spares(life.pool).lead_churn.churn_cooldown_until, None, "one chain is no streak");
+    // Only `EXPIRY_BACKOFF_STREAK` finished unadopted chains pause the lead pool.
+    let (second, third) = futures_util::future::join(lead_chain_runs_out(life, "second"), lead_chain_runs_out(life, "third")).await;
+    assert!(eventually(|| spares(life.pool).lead_churn.consecutive_expiries == EXPIRY_BACKOFF_STREAK).await, "{:?}", spares(life.pool).lead_churn);
+    {
+        let locked = spares(life.pool);
+        assert!(locked.lead_churn.churn_cooldown_until.is_some());
+        assert_eq!(locked.lead.churn_skipped, 0, "every chain renewed in full");
+        assert_eq!(locked.ordinary_churn, PoolChurn::default(), "the ordinary pool keeps its own streak");
+    }
+    let next = format!("warm-chain-next-{}", uuid::Uuid::new_v4());
+    let config = RunConfig { session_id: next.clone(), ..crate::providers::tests::config("claude") };
+    launched(&next);
+    assert!(!start(life, config, Vec::new(), HashSet::new(), epoch(&next), lead(Arc::new(|| true)), 0).await.unwrap());
+    assert_eq!(stub_starts(&next), 0, "no lead spare starts while the lead pool backs off");
+    assert_eq!(spares(life.pool).lead.churn_skipped, 1);
+    for session in [&first, &second, &third] {
+        await_exit(session).await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn an_expiry_with_spares_off_neither_counts_toward_the_backoff_nor_logs() {
+    let pool = own_pool();
+    // An ordinary spare expiring with the switch off, and a lead's whose check found it off.
+    assert_eq!(settle_expiry(pool, false, false), None);
+    assert!(!chain_ended_unused(false, 4, 4, Expiry::Off));
+    assert_eq!(settle_lead_expiry(pool, false, 4, 4, Expiry::Off), None);
+    assert_eq!(spares(pool).ordinary_churn, PoolChurn::default());
+    assert_eq!(spares(pool).lead_churn, PoolChurn::default());
+    // With spares on, each counts once and logs its line.
+    let line = settle_expiry(pool, false, true);
+    assert!(line.as_deref().is_some_and(|line| line.starts_with("Warm Claude agent expired idle.")), "{line:?}");
+    let line = settle_lead_expiry(pool, false, 4, 4, Expiry::Changed);
+    assert!(line.as_deref().is_some_and(|line| line.starts_with("Team lead's warm Claude agent expired idle (not renewed")), "{line:?}");
+    // A renewal that pooled, a wake that superseded it or a forgotten task: neither.
+    for (renewed, launch, epoch) in [(true, 4, 4), (false, 4, 5), (false, 0, 0)] {
+        assert!(!chain_ended_unused(renewed, launch, epoch, Expiry::Current));
+        assert_eq!(settle_lead_expiry(pool, renewed, launch, epoch, Expiry::Current), None);
+    }
+    assert_eq!(spares(pool).ordinary_churn.consecutive_expiries, 1);
+    assert_eq!(spares(pool).lead_churn.consecutive_expiries, 1);
+    // A real ordinary spare expiring while the switch reads off (a headless host's marker).
+    // Keep the thread-local override active via Drop until the timer task has settled and exited.
+    struct OffGuard(Option<bool>);
+    impl Drop for OffGuard {
+        fn drop(&mut self) {
+            ENABLED_OVERRIDE.with(|value| value.set(self.0));
+        }
+    }
+    let _off = OffGuard(ENABLED_OVERRIDE.with(|value| value.replace(Some(false))));
+    let life = Lifecycle { idle: Duration::from_millis(20), ..stub() };
+    let session = format!("warm-expiry-off-{}", uuid::Uuid::new_v4());
+    let config = RunConfig { session_id: session.clone(), ..crate::providers::tests::config("claude") };
+    launched(&session);
+    assert!(start(life, config, Vec::new(), HashSet::new(), epoch(&session), None, 0).await.unwrap());
+    assert!(eventually(|| spares(life.pool).ordinary.expired == 1).await, "the spare expired");
+    await_exit(&session).await.unwrap();
+    tokio::task::yield_now().await;
+    assert_eq!(spares(life.pool).ordinary_churn, PoolChurn::default(), "spares off: no expiry streak");
+}
+
+#[test]
+fn launch_time_misses_in_a_row_back_off_for_the_churn_cooldown() {
+    let (now, wall) = clocks();
+    let mut churn = PoolChurn::default();
+    for _ in 1..MISS_BACKOFF_STREAK {
+        churn.missed(now, wall);
+        assert!(!churn.cooling(now, wall), "a stale spare now and then is ordinary");
+    }
+    churn.missed(now, wall);
+    assert!(churn.cooling(now, wall), "{MISS_BACKOFF_STREAK} misses in a row with no adoption between back off");
+    assert_eq!(churn.churn_cooldown_until, now.checked_add(CHURN_COOLDOWN));
+    assert!(!churn.cooling(now + CHURN_COOLDOWN, wall + CHURN_COOLDOWN), "a lapsed backoff probes again");
+    assert_eq!(churn, PoolChurn::default(), "and starts fresh streaks");
+    // A miss backoff never shortens a longer expiry backoff already set.
+    let mut both = PoolChurn::default();
+    for _ in 0..EXPIRY_BACKOFF_STREAK {
+        both.expired(now, wall);
+    }
+    for _ in 0..MISS_BACKOFF_STREAK {
+        both.missed(now, wall);
+    }
+    assert_eq!(both.churn_cooldown_until, now.checked_add(EXPIRY_COOLDOWN));
+    assert_eq!(both.churn_cooldown_until_wall, wall.checked_add(EXPIRY_COOLDOWN));
+}
+
+#[tokio::test]
+async fn launch_time_misses_back_off_each_pool_apart_and_an_adoption_clears_them() {
+    let life = Lifecycle { idle: Duration::from_secs(3600), ..stub() };
+    let pool = life.pool;
+    let session = format!("warm-miss-churn-{}", uuid::Uuid::new_v4());
+    let config = RunConfig { session_id: session.clone(), ..crate::providers::tests::config("claude") };
+    let turn = || {
+        launched(&session);
+        start(life, config.clone(), Vec::new(), HashSet::new(), epoch(&session), None, 0)
+    };
+    // Each follow-up finds its spare stale (another task committed between turns: `gitHead`).
+    for streak in 1..=MISS_BACKOFF_STREAK {
+        assert!(turn().await.unwrap(), "spare {streak} starts");
+        let (taken, note) = take_in(pool, &session, "changed", true);
+        assert!(taken.is_none() && note.as_deref().is_some_and(|line| line.starts_with("Warm Claude agent not used")), "{note:?}");
+        assert_eq!(spares(pool).ordinary_churn.consecutive_misses, streak);
+    }
+    {
+        let locked = spares(pool);
+        assert_eq!(locked.ordinary.missed, u64::from(MISS_BACKOFF_STREAK));
+        assert!(locked.ordinary_churn.churn_cooldown_until.is_some());
+        assert_eq!(locked.lead_churn, PoolChurn::default(), "the lead pool keeps its own streak");
+    }
+    assert!(!turn().await.unwrap(), "no spare starts while the pool backs off");
+    assert_eq!(stub_starts(&session), MISS_BACKOFF_STREAK);
+    assert_eq!(spares(pool).ordinary.churn_skipped, 1);
+    // A launch adopting a spare clears every streak and the backoff at once.
+    let evicted = admit(&mut spares(pool), session.clone(), idle_spare(false, Duration::ZERO));
+    assert!(evicted.is_empty());
+    let (adopted, note) = take_in(pool, &session, "launch", true);
+    assert!(adopted.is_some() && note.as_deref().is_some_and(|line| line.starts_with("Warm Claude agent adopted.")), "{note:?}");
+    assert_eq!(spares(pool).ordinary_churn, PoolChurn::default());
+    drop(adopted);
+    assert!(turn().await.unwrap(), "an adoption clears the backoff");
+    discard_from(pool, &session);
+    await_exit(&session).await.unwrap();
+}
+
+#[tokio::test]
+async fn a_lead_wake_whose_spare_already_left_the_pool_joins_no_miss_streak() {
+    let pool = own_pool();
+    // Its removal already settled each of these; the wake only reports it.
+    for why in [Gone::Evicted, Gone::Expired, Gone::Discarded, Gone::Replaced] {
+        let note = record_lead_miss(&mut spares(pool), why);
+        assert!(note.starts_with("Team lead's warm Claude agent not used ("), "{note}");
+    }
+    // The same through a launch that finds the lead's `gone` note.
+    let session = format!("warm-gone-miss-{}", uuid::Uuid::new_v4());
+    spares(pool).gone.insert(session.clone(), Gone::Expired);
+    let LaunchPool::Empty { may_record_cold, lead, gone } = prepare_launch_in(pool, &session, true, true) else { panic!("nothing is pooled") };
+    assert!(finish_empty_launch_with(pool, may_record_cold, lead, gone, || async { true }).await.is_some());
+    let locked = spares(pool);
+    assert_eq!(locked.lead.missed, 5, "each wake is counted as not used");
+    assert_eq!(locked.lead_churn, PoolChurn::default(), "but never twice into a streak");
+}
+
+#[test]
+fn a_backoff_lapses_on_the_wall_clock_while_instant_stands_still() {
+    // A laptop asleep through the pause: `Instant` may not move, the wall clock does.
+    let (now, wall) = clocks();
+    for (cooldown, back_off) in [(CHURN_COOLDOWN, PoolChurn::missed as fn(&mut PoolChurn, Instant, SystemTime)), (EXPIRY_COOLDOWN, PoolChurn::expired)] {
+        let mut churn = PoolChurn::default();
+        for _ in 0..MISS_BACKOFF_STREAK.max(EXPIRY_BACKOFF_STREAK) {
+            back_off(&mut churn, now, wall);
+        }
+        assert!(churn.cooling(now, wall));
+        assert_eq!(churn.paused_secs(now, wall), cooldown.as_secs());
+        let half = cooldown / 2;
+        assert_eq!(churn.paused_secs(now, wall + half), (cooldown - half).as_secs(), "the shorter remainder");
+        assert_eq!(churn.paused_secs(now + Duration::from_millis(1500), wall), cooldown.as_secs() - 1, "rounded up");
+        assert!(!churn.cooling(now, wall + cooldown), "the wall clock says the pause is over");
+        let fresh = if cooldown == EXPIRY_COOLDOWN { lapsed_expiry_backoff(1) } else { PoolChurn::default() };
+        assert_eq!(churn, fresh, "and the streaks start fresh (an expiry backoff is remembered)");
+        assert_eq!(churn.paused_secs(now, wall), 0);
+    }
+    // Streaks with no backoff yet survive a check on either clock.
+    let mut churn = PoolChurn::default();
+    churn.missed(now, wall);
+    assert!(!churn.cooling(now, wall + EXPIRY_COOLDOWN));
+    assert_eq!(churn.consecutive_misses, 1);
+}
+
+/// A spare pooled for `session` under `key`, taken by a launch keyed `launch` (never committed).
+fn miss_once(pool: &'static Pool, session: &str, spare: Spare, launch: &str) -> Option<(Spare, Pending)> {
+    assert!(admit(&mut spares(pool), session.to_owned(), spare).is_empty());
+    let discard_epoch = spares(pool).discard_epoch;
+    take_since(pool, session, launch, true, false, discard_epoch).0
+}
+
+#[tokio::test]
+async fn misses_that_say_nothing_about_staleness_never_join_the_miss_streak() {
+    let pool = own_pool();
+    let session = format!("warm-miss-incidental-{}", uuid::Uuid::new_v4());
+    for _ in 0..MISS_BACKOFF_STREAK {
+        // A usable spare whose launch ended (a Stop, a failed rebind) before adopting it.
+        let taken = miss_once(pool, &session, idle_spare(false, Duration::ZERO), "launch");
+        assert!(taken.is_some());
+        drop(Adopting { pool, session_id: session.clone(), spare: taken });
+        // A key check that failed to run.
+        assert!(admit(&mut spares(pool), session.clone(), idle_spare(false, Duration::ZERO)).is_empty());
+        let discard_epoch = spares(pool).discard_epoch;
+        let note = launched_without_key_streak(pool, &session, KEY_CHECK_FAILED, false, true, false, discard_epoch);
+        assert!(note.is_some_and(|line| line.contains(KEY_CHECK_FAILED)));
+    }
+    await_exit(&session).await.unwrap();
+    let locked = spares(pool);
+    assert_eq!(locked.ordinary.missed, u64::from(2 * MISS_BACKOFF_STREAK), "each still counts as not used");
+    assert_eq!(locked.ordinary_churn, PoolChurn::default(), "but none joins either streak or backs off");
+}
+
+#[tokio::test]
+async fn launch_time_expired_spares_join_the_expiry_streak_not_the_miss_streak() {
+    let pool = own_pool();
+    let session = format!("warm-miss-expired-{}", uuid::Uuid::new_v4());
+    // Alive but past its window on the sleep-proof clock: the 60 s expiry timer (or a sleeping
+    // laptop) left it in the pool, so the launch removes it before any renewal could count it.
+    for streak in 1..=EXPIRY_BACKOFF_STREAK {
+        assert!(miss_once(pool, &session, idle_spare(false, IDLE), "launch").is_none());
+        let churn = spares(pool).ordinary_churn;
+        assert_eq!((churn.consecutive_misses, churn.consecutive_expiries), (0, streak), "{churn:?}");
+    }
+    await_exit(&session).await.unwrap();
+    let mut locked = spares(pool);
+    assert_eq!(locked.ordinary.missed, u64::from(EXPIRY_BACKOFF_STREAK), "each counts as not used");
+    let (now, wall) = clocks();
+    assert!(locked.ordinary_churn.cooling(now, wall), "the expiry streak backs off");
+    let paused = locked.ordinary_churn.paused_secs(now, wall);
+    assert!((EXPIRY_COOLDOWN.as_secs() - 5..=EXPIRY_COOLDOWN.as_secs()).contains(&paused), "the expiry cooldown, not the churn one: {paused}");
+    assert_eq!(locked.lead_churn, PoolChurn::default(), "the lead pool keeps its own streak");
+}
+
+#[tokio::test]
+async fn dead_or_stale_spares_in_a_row_back_off() {
+    for dead in [false, true] {
+        let pool = own_pool();
+        let session = format!("warm-miss-stale-{dead}-{}", uuid::Uuid::new_v4());
+        for streak in 1..=MISS_BACKOFF_STREAK {
+            let mut spare = idle_spare(false, Duration::ZERO);
+            if dead {
+                spare.child.kill().await.unwrap();
+            }
+            assert!(miss_once(pool, &session, spare, if dead { "launch" } else { "changed" }).is_none());
+            assert_eq!(spares(pool).ordinary_churn.consecutive_misses, streak, "dead={dead}");
+        }
+        await_exit(&session).await.unwrap();
+        let mut locked = spares(pool);
+        assert!(locked.ordinary_churn.cooling(Instant::now(), SystemTime::now()), "dead={dead}");
+        assert_eq!(locked.ordinary.missed, u64::from(MISS_BACKOFF_STREAK));
+    }
+}
+
+#[tokio::test]
+async fn a_pooled_spare_past_its_window_is_not_idle_now() {
+    let pool = own_pool();
+    let id = |name: &str| format!("warm-stats-{name}-{}", uuid::Uuid::new_v4());
+    let (fresh, stale, slept) = (id("fresh"), id("stale"), id("slept"));
+    assert!(admit(&mut spares(pool), fresh.clone(), idle_spare(false, Duration::ZERO)).is_empty());
+    assert!(admit(&mut spares(pool), stale.clone(), idle_spare(false, IDLE)).is_empty());
+    // Past its window on the wall clock only (the machine slept), waiting for the timer's next slice.
+    let asleep = Spare { born: Instant::now(), born_wall: SystemTime::now().checked_sub(IDLE).unwrap(), ..idle_spare(true, Duration::ZERO) };
+    assert!(admit(&mut spares(pool), slept.clone(), asleep).is_empty());
+    let stats = serde_json::to_value(WarmStatsSnapshot::of(&spares(pool))).unwrap();
+    assert_eq!((stats["ordinary"]["idleNow"].as_u64(), stats["lead"]["idleNow"].as_u64()), (Some(1), Some(0)), "{stats}");
+    for session in [&fresh, &stale, &slept] {
+        discard_from(pool, session);
+        await_exit(session).await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn warm_spare_stats_report_idle_spares_and_the_pause_live() {
+    let pool = own_pool();
+    let session = format!("warm-stats-live-{}", uuid::Uuid::new_v4());
+    let live = |pool: &'static Pool| serde_json::to_value(WarmStatsSnapshot::of(&spares(pool))).unwrap();
+    assert!(admit(&mut spares(pool), session.clone(), idle_spare(true, Duration::ZERO)).is_empty());
+    {
+        let (now, wall) = clocks();
+        let mut locked = spares(pool);
+        for _ in 0..MISS_BACKOFF_STREAK {
+            locked.ordinary_churn.missed(now, wall);
+        }
+    }
+    let stats = live(pool);
+    assert_eq!((stats["lead"]["idleNow"].as_u64(), stats["ordinary"]["idleNow"].as_u64()), (Some(1), Some(0)));
+    let paused = stats["ordinary"]["pausedSecs"].as_u64().unwrap();
+    assert!((CHURN_COOLDOWN.as_secs() - 5..=CHURN_COOLDOWN.as_secs()).contains(&paused), "{stats}");
+    assert_eq!(stats["lead"]["pausedSecs"], 0, "{stats}");
+    // The wall clock lapsed the pause (the machine slept); the spare is retired.
+    spares(pool).ordinary_churn.churn_cooldown_until_wall = SystemTime::now().checked_sub(Duration::from_secs(1));
+    discard_from(pool, &session);
+    await_exit(&session).await.unwrap();
+    let stats = live(pool);
+    assert_eq!((stats["lead"]["idleNow"].as_u64(), stats["ordinary"]["pausedSecs"].as_u64()), (Some(0), Some(0)), "{stats}");
+}

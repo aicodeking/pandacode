@@ -1,0 +1,307 @@
+//! The call's `glob` filter, written the many ways an agent writes a path.
+use super::{index::Snapshot, named, Ctx};
+use ignore::{
+    gitignore::{Gitignore, GitignoreBuilder, Glob as GitignoreGlob},
+    overrides::{Override, OverrideBuilder},
+    Match,
+};
+use std::{
+    collections::HashSet,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
+
+const WILDCARDS: &[char] = &['*', '?', '[', '{'];
+
+pub(super) struct Globs {
+    root: PathBuf,
+    /// The globs as an override matcher's lines: `decide` reads them as `Override` does.
+    filter: Option<Gitignore>,
+    /// Each glob that is not a `!` exclusion, as given and as normalized.
+    positive: Vec<(String, String)>,
+    pub(super) errors: Vec<String>,
+    pub(super) named_large: Vec<Arc<str>>,
+}
+
+/// `./x`, an absolute path under the root (as given or canonical), `x/` and a bare folder all
+/// mean what they say.
+fn normalize(ctx: &Ctx, raw: &str) -> Result<String, String> {
+    let (negated, body) = raw.strip_prefix('!').map_or((false, raw), |body| (true, body));
+    let relative = if Path::new(body).is_absolute() {
+        Some(ctx.relative_slash(body).ok_or_else(|| format!("{raw}: outside the project"))?)
+    } else {
+        None
+    };
+    let body = relative.as_deref().unwrap_or(body);
+    let body = &without_dot_dot(raw, body.strip_prefix("./").unwrap_or(body))?;
+    let mark = if negated { "!" } else { "" };
+    if let Some(folder) = body.strip_suffix('/') {
+        return Ok(if negated && !ctx.root.join(folder).is_dir() { format!("!{body}") } else { format!("{mark}{folder}/**") });
+    }
+    if !body.contains(WILDCARDS) && ctx.root.join(body).is_dir() {
+        return Ok(format!("{mark}{body}/**"));
+    }
+    Ok(format!("{mark}{body}"))
+}
+
+/// Whether `body` contains a Windows `\` separator (any `\` other than `\,`, which `split_list`
+/// uses to keep an escaped literal comma in one glob).
+fn has_path_backslash(body: &str) -> bool {
+    let bytes = body.as_bytes();
+    bytes.iter().enumerate().any(|(at, &b)| b == b'\\' && bytes.get(at + 1) != Some(&b','))
+}
+
+/// Splits `body` on `/` and Windows `\` separators, keeping `\,` intact as an escaped comma.
+fn split_segments(body: &str) -> impl Iterator<Item = &str> {
+    let bytes = body.as_bytes();
+    let (mut from, mut at, mut done) = (0, 0, false);
+    std::iter::from_fn(move || {
+        if done {
+            return None;
+        }
+        while at < bytes.len() {
+            if bytes[at] == b'/' || (bytes[at] == b'\\' && bytes.get(at + 1) != Some(&b',')) {
+                let part = &body[from..at];
+                at += 1;
+                from = at;
+                return Some(part);
+            }
+            at += 1;
+        }
+        done = true;
+        Some(&body[from..])
+    })
+}
+
+/// `src/../web/**` and `src//../web/**` are `web/**`, `src/.` is `src` and `.` is `**`; a `..`
+/// that would leave the project, or step back over a wildcard, is refused. Windows `\`
+/// separators (including a trailing `\`) are normalized to `/`.
+fn without_dot_dot(raw: &str, body: &str) -> Result<String, String> {
+    let inner = body.strip_suffix('/').unwrap_or(body);
+    if !inner.is_empty() && !has_path_backslash(body) && !inner.split('/').any(|part| matches!(part, "" | "." | "..")) {
+        return Ok(body.to_owned());
+    }
+    let mut parts: Vec<&str> = Vec::new();
+    for part in split_segments(body) {
+        match part {
+            "" | "." => {}
+            ".." => match parts.pop() {
+                Some(folder) if !folder.contains(WILDCARDS) => {}
+                _ => return Err(format!("{raw}: `..` may not leave the project or follow a wildcard")),
+            },
+            part => parts.push(part),
+        }
+    }
+    if parts.is_empty() {
+        return Ok("**".to_owned());
+    }
+    // A trailing `/` or `\` still says the glob is a folder.
+    let folder = if body.ends_with(['/', '\\']) { "/" } else { "" };
+    Ok(parts.join("/") + folder)
+}
+
+/// Globs one call may give once its lists are split: more is an argument error.
+pub(super) const MAX_GLOBS: usize = 40;
+
+/// `"a.ts,src/**,!x/**"` is three globs: agents write lists that way (batch E: 9 of 10 such
+/// calls found no file, and 4 runs fell back to shell search). Commas inside `{a,b}` or `[,]`,
+/// or escaped as `\,`, stay, and so does an item `names_path` says is a real path.
+pub(super) fn split_list(raw: &str, names_path: impl Fn(&str) -> bool) -> Vec<&str> {
+    if raw.contains(',') && names_path(raw.trim()) {
+        return vec![raw.trim()];
+    }
+    let (mut parts, mut from, mut braces, mut class, mut escaped) = (Vec::new(), 0, 0usize, false, false);
+    for (at, c) in raw.char_indices() {
+        if escaped {
+            escaped = false;
+            if c == ',' {
+                continue;
+            }
+        }
+        match c {
+            '\\' => escaped = true,
+            '[' => class = true,
+            ']' => class = false,
+            '{' if !class => braces += 1,
+            '}' if !class => braces = braces.saturating_sub(1),
+            ',' if braces == 0 && !class => {
+                parts.push(&raw[from..at]);
+                from = at + 1;
+            }
+            _ => {}
+        }
+    }
+    parts.push(&raw[from..]);
+    parts.into_iter().map(str::trim).filter(|part| !part.is_empty()).collect()
+}
+
+/// A colon in a relative path may be a drive prefix or a stream. An absolute path's drive
+/// letter is allowed once its project root has been stripped.
+pub(super) fn literal_glob_path<'a>(item: &'a str, relative: Option<&'a str>) -> Option<&'a str> {
+    let relative = relative.unwrap_or(item);
+    (!relative.contains(':')).then_some(relative)
+}
+
+/// Whether `item` (with a comma in it) names a file or folder in the project, so it is one glob.
+fn names_path(ctx: &Ctx, item: &str) -> bool {
+    let Some(relative) = literal_glob_path(item, ctx.relative(item)) else { return false };
+    named::resolve_named(ctx, relative).is_ok_and(|(_, real)| real.starts_with(ctx.root) && real.symlink_metadata().is_ok())
+}
+
+fn one_glob(root: &Path, glob: &str) -> Result<Override, String> {
+    let mut builder = OverrideBuilder::new(root);
+    builder.add(glob).map_err(|error| format!("{glob}: {error}"))?;
+    builder.build().map_err(|error| format!("{glob}: {error}"))
+}
+
+/// A file a glob names exactly, past the size a walk reads.
+fn named_large(ctx: &Ctx, glob: &str, errors: &mut Vec<String>) -> Option<Arc<str>> {
+    if glob.starts_with('!') || glob.contains(WILDCARDS) {
+        return None;
+    }
+    // In scope first, so nothing is said about a file outside the project.
+    let (_, target) = named::resolve_named(ctx, glob).ok()?;
+    let metadata = std::fs::symlink_metadata(target).ok().filter(|metadata| metadata.is_file() && metadata.len() > crate::workspace::MAX_READ_BYTES)?;
+    if metadata.len() > named::MAX_NAMED_BYTES {
+        errors.push(format!("{glob}: larger than {} MiB, so not searched", named::MAX_NAMED_BYTES / (1024 * 1024)));
+        return None;
+    }
+    Some(glob.into())
+}
+
+impl Globs {
+    /// Each glob is compiled once, into one matcher; it is compiled alone again only to check a
+    /// warning that it matches nothing.
+    pub(super) fn new(ctx: &Ctx, raw: &[String]) -> Self {
+        let (mut errors, mut positive, mut named) = (Vec::new(), Vec::new(), Vec::new());
+        let mut builder = GitignoreBuilder::new(ctx.root);
+        builder.allow_unclosed_class(false);
+        let mut valid = 0;
+        for glob in raw.iter().flat_map(|item| split_list(item, |item| names_path(ctx, item))) {
+            let clean = match normalize(ctx, glob) {
+                Ok(clean) => clean,
+                Err(error) => {
+                    errors.push(error);
+                    continue;
+                }
+            };
+            // A line that does not compile is not added.
+            if let Err(error) = builder.add_line(None, &clean) {
+                errors.push(format!("{glob}: {error}"));
+                continue;
+            }
+            valid += 1;
+            if let Some(path) = named_large(ctx, &clean, &mut errors) {
+                if !named.contains(&path) {
+                    named.push(path);
+                }
+            }
+            if !clean.starts_with('!') {
+                positive.push((glob.to_owned(), clean));
+            }
+        }
+        // A filter that fails to build would search everywhere; with none, `all_failed` stops
+        // the search.
+        let filter = (valid > 0).then(|| builder.build()).and_then(|built| built.map_err(|error| errors.push(format!("glob: {error}"))).ok());
+        Self { root: ctx.root.to_owned(), filter, positive, errors, named_large: named }
+    }
+
+    pub(super) fn is_empty(&self) -> bool {
+        self.filter.is_none()
+    }
+
+    /// Globs were given and none of them works: a search must not quietly run everywhere.
+    pub(super) fn all_failed(&self) -> bool {
+        self.filter.is_none() && !self.errors.is_empty()
+    }
+
+    /// Exactly `Override::matched` (the globs are its lines; a later one wins), keeping which
+    /// glob decided.
+    fn decide<'a>(filter: &'a Gitignore, path: &Path, is_dir: bool) -> Match<Option<&'a GitignoreGlob>> {
+        match filter.matched(path, is_dir).invert() {
+            Match::None if filter.num_ignores() > 0 && !is_dir => Match::Ignore(None),
+            other => other.map(Some),
+        }
+    }
+
+    /// Like rg -g: `!dir/` needs its directory tested, and a plain glob decides the file.
+    pub(super) fn allows(&self, path: &str) -> bool {
+        let Some(filter) = &self.filter else { return true };
+        let path = Path::new(path);
+        let excluded_dir = path.ancestors().skip(1).filter(|dir| !dir.as_os_str().is_empty()).any(|dir| Self::decide(filter, dir, true).is_ignore());
+        !excluded_dir && !Self::decide(filter, path, false).is_ignore()
+    }
+
+    pub(super) fn files_in_scope(&self, snapshot: &Snapshot) -> usize {
+        let mut named: HashSet<&str> = self.named_large.iter().map(|path| &**path).filter(|path| self.allows(path)).collect();
+        let walked = snapshot.walk.files.iter().filter(|file| {
+            // A file may have grown past the walk's size limit since the snapshot was taken.
+            named.remove(&*file.path);
+            self.allows(&file.path)
+        }).count();
+        walked + named.len()
+    }
+
+    pub(super) fn warnings(&self, snapshot: &Snapshot) -> Vec<String> {
+        let Some(filter) = &self.filter else { return Vec::new() };
+        let paths = || snapshot.walk.files.iter().map(|file| &*file.path).chain(self.named_large.iter().map(|path| &**path));
+        // A glob that decided some file matches one; one a later glob always overrode is
+        // checked alone.
+        let decided: HashSet<&str> = paths().filter_map(|path| match Self::decide(filter, Path::new(path), false) {
+            Match::Whitelist(Some(glob)) => Some(glob.original()),
+            _ => None,
+        }).collect();
+        let matches_alone = |clean: &str| one_glob(&self.root, clean).is_ok_and(|alone| paths().any(|path| alone.matched(path, false).is_whitelist()));
+        self.positive.iter().filter(|(_, clean)| !decided.contains(clean.as_str()) && !matches_alone(clean)).map(|(glob, _)| format!("{glob} matches no searchable file")).collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn a_comma_list_is_split_outside_braces() {
+        let split = |raw| super::split_list(raw, |_| false);
+        assert_eq!(split("a.ts, src/**,!x/**"), ["a.ts", "src/**", "!x/**"]);
+        assert_eq!(split("src/*.{ts,tsx},docs/**"), ["src/*.{ts,tsx}", "docs/**"]);
+        assert_eq!(split("a{b,c"), ["a{b,c"]);
+        assert_eq!(split(",,"), Vec::<&str>::new());
+        assert_eq!(split(" , "), Vec::<&str>::new());
+        // A class or an escaped comma is one glob; braces inside a class are plain characters.
+        assert_eq!(split("data[,_]*.csv,b"), ["data[,_]*.csv", "b"]);
+        assert_eq!(split("a\\,b.txt,c"), ["a\\,b.txt", "c"]);
+        assert_eq!(split("src\\{a,b}.rs,docs\\*.md"), ["src\\{a,b}.rs", "docs\\*.md"]);
+        assert_eq!(split("src\\[a,b].rs,c.rs"), ["src\\[a,b].rs", "c.rs"]);
+        assert_eq!(split("[{]x,y"), ["[{]x", "y"]);
+        // A real path is never split, whatever it holds.
+        assert_eq!(super::split_list(" a,b.txt ", |item| item == "a,b.txt"), ["a,b.txt"]);
+        assert_eq!(super::split_list("a,b.txt", |_| true), ["a,b.txt"]);
+        assert_eq!(super::split_list("ab.txt", |_| panic!("only items with commas are looked up")), ["ab.txt"]);
+    }
+
+    #[test]
+    fn empty_parts_are_skipped_before_stepping_back() {
+        assert_eq!(super::without_dot_dot("x", "src//../f6/**").unwrap(), "f6/**");
+        assert_eq!(super::without_dot_dot("x", "src/./a/../f6/**").unwrap(), "src/f6/**");
+        assert!(super::without_dot_dot("x", "src//../../f6").is_err());
+        assert_eq!(super::without_dot_dot("x", "src/../web/").unwrap(), "web/");
+        assert_eq!(super::without_dot_dot("x", "src/../").unwrap(), "**");
+        // `.` parts go; nothing left is the whole project.
+        for (body, clean) in [(".", "**"), ("./.", "**"), ("src/.", "src"), ("src/./", "src/"), ("src/./*.rs", "src/*.rs"), ("src", "src"), ("src/", "src/")] {
+            assert_eq!(super::without_dot_dot("x", body).unwrap(), clean, "{body}");
+        }
+        // Windows `\` separators normalize to `/` on both fast and slow paths; `\,` stays escaped.
+        for (body, clean) in [
+            (r"src\a.rs", "src/a.rs"),
+            (r"web\", "web/"),
+            (r"src\**\*.rs", "src/**/*.rs"),
+            (r"src\sub\..\a.rs", "src/a.rs"),
+            (r".\web\", "web/"),
+            (r".\.", "**"),
+            (r"\", "**"),
+            (r"a\,b.txt", r"a\,b.txt"),
+            (r"src\..\a\,b.txt", r"a\,b.txt"),
+        ] {
+            assert_eq!(super::without_dot_dot("x", body).unwrap(), clean, "{body}");
+        }
+    }
+}

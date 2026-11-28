@@ -11,15 +11,16 @@ import type { Project, Provider, ProviderId } from './types';
 import { mountOverlaySettings } from './overlay-settings';
 import { mountVoiceSettings } from './voice-settings';
 import { mountSupportDetails } from './support-settings';
-import { aboutSettingsHtml, mountAboutSettings } from './about-settings';
+import { aboutSettingsHtml, mountAboutSettings, PROJECT_LINKS } from './about-settings';
 import { mountResourceUsage, resourceUsageHtml } from './resource-usage-settings';
 import { mountModelRouting } from './model-routing';
 import { mountAgentTeams, type AgentTeamsOptions } from './agent-teams';
 import { mountCloudSettings, type CloudSettingsHost } from './cloud-settings';
 import { mountSkillsLibrary, type SkillsLibraryHost } from './skills-library';
-import { call, subscribe, webMode } from './bridge';
+import { call, preview, subscribe, webMode } from './bridge';
 import { settleIn, trackSegment } from './motion';
 import { mount as mountCapabilities } from './capabilities-panel';
+import { mountCustomTools } from './custom-tools-settings';
 import { mountRemoteSettings } from './remote-settings';
 import { mountWebServerSettings, type WebServerHost } from './web-server-settings';
 import { mountSchedulesSettings } from './schedules-settings';
@@ -90,12 +91,191 @@ const PLANS = new Set<ProviderId>(['glm', 'mimo', 'alibaba']);
 
 /** A row: title, its control, then the info mark named after it (after the control in Tab order); the help's
  * text stays in the DOM for screen readers. */
-const settingRow = (title: string, control: string, detail = '') =>
-  `<div class="setting-row"><div><strong>${title}</strong>${detail ? `<span class="sr-only">${detail}</span>` : ''}</div>${control}${detail ? infoMark(detail, `About ${title}`) : ''}</div>`;
-const switchRow = (id: string, title: string, detail: string, checked: boolean) =>
-  settingRow(title, `<input type="checkbox" class="settings-switch" id="${id}" aria-label="${title}" ${checked ? 'checked' : ''}>`, detail);
+const settingRow = (title: string, control: string, detail = '', status = false) =>
+  `<div class="setting-row"><div><strong>${title}</strong>${detail ? `<span class="sr-only">${detail}</span>` : ''}${status ? '<small class="setting-status" hidden></small>' : ''}</div>${control}${detail ? infoMark(detail, `About ${title}`) : ''}</div>`;
+/** \`native\` switches start disabled (until their value is read) and keep a status line for errors.
+  * An \`action\` (such as a docs button) sits before the switch in the row's actions group. */
+const switchRow = (id: string, title: string, detail: string, checked: boolean, native = false, action = '') => {
+  const input = `<input type="checkbox" class="settings-switch" id="${id}" aria-label="${title}" ${checked ? 'checked' : ''} ${native ? 'disabled' : ''}>`;
+  return settingRow(title, action ? `<div class="settings-row-actions">${action}${input}</div>` : input, detail, native);
+};
 /** A closed fold; what it holds mounts the first time it opens. */
 const fold = (title: string, body: string) => `<details class="settings-fold"><summary><h3>${title}</h3>${icon('chevron')}</summary>${body}</details>`;
+
+const UNREADABLE = 'Couldn’t read this setting.';
+/** Settings → Agents switches read and saved natively, each as `<name>_enabled` /
+ * `set_<name>_enabled`; the row's id and default hint. */
+const NATIVE_SWITCHES = [
+  { id: 'warm-spares', name: 'warm_spares', title: 'Warm Claude spares', hint: 'Off by default. Keeps up to 4 pooled idle Claude Code processes (~195–255 MiB each) ready to skip ~0.38–0.62 s of signed-in startup. Makes pre-prompt startup requests to Anthropic or your configured Claude endpoint, starts MCP servers and SessionStart hooks early; checks git status, skips low memory, and backs off when unused.' },
+  { id: 'worker-skills', name: 'worker_skills', title: 'Workers can use skills', hint: 'Applies to Claude Code, GLM, MiMo and Alibaba Token Plan team workers; off removes Skill next run.' },
+  { id: 'worker-trim', name: 'worker_trim', title: 'Trim worker tools', hint: 'Fewer tools for team workers; no measured saving yet.' },
+  { id: 'explore-tool', name: 'explore', title: 'Local code explorer (pandacode_explore)', hint: 'Off by default. Next run. Enables Claude Code unless Claude read rules withhold it; opt-in harnesses below don’t parse harness deny rules.' },
+] as const;
+/** The warm spares row's docs button: full limits and trade-offs, opened in the browser. */
+const WARM_SPARES_DOCS = `<button type="button" class="secondary-button" data-action="open-url" data-url="${PROJECT_LINKS.warmSpares}" aria-label="Warm Claude spares limits and trade-offs">Docs${icon('forward')}</button>`;
+/** The explorer's harnesses (`providers::explore_name`): the main switch includes Claude Code, and each
+ * other harness opts in with its own switch, stored natively as an `explore-on-<provider>` marker. */
+const EXPLORE_HARNESSES: { id: ProviderId; name: string }[] = [
+  { id: 'claude', name: 'Claude Code' }, { id: 'glm', name: 'GLM' }, { id: 'mimo', name: 'MiMo' }, { id: 'alibaba', name: 'Alibaba Token Plan' }, { id: 'codex', name: 'Codex' },
+  { id: 'kimi', name: 'Kimi Code' }, { id: 'opencode', name: 'OpenCode' }, { id: 'pi', name: 'Pi' }, { id: 'omp', name: 'Oh My Pi' }, { id: 'grok', name: 'Grok Build' },
+];
+const CLAUDE_EXPLORE_INACTIVE = 'Included when Local code explorer is on.';
+const exploreHarnessRow = ({ id, name }: { id: ProviderId; name: string }) => {
+  const hint = id === 'claude' ? 'Included while the switch above is on.'
+    : 'Off by default: not measured. Takes effect while the switch above is on.';
+  return settingRow(`Explorer · ${name}`, `<input type="checkbox" class="settings-switch" id="explore-${id}" aria-label="Local code explorer for ${name}" disabled>`, hint, true);
+};
+/** Settings → Tools & add-ons → Agent-made tools: opt-in, off by default. */
+const CUSTOM_TOOLS_SWITCH = { id: 'custom-tools-enabled', name: 'custom_tools', title: 'Agent-made tools', hint: 'Agents save and run project scripts. Off by default: no measured gain.' } as const;
+
+/** One warm pool's totals since launch (`warm_spare_stats`, `providers/warm/stats.rs`). */
+type WarmPoolStats = {
+  started: number; adopted: number; missed: number; expired: number; evicted: number;
+  replaced: number; discarded: number; coldWithoutSpare: number; churnSkipped: number;
+  /** Live state: spares idle right now, and seconds left in a churn pause (0 when warming). */
+  idleNow?: number; pausedSecs?: number;
+  /** Starts skipped by the low-memory guard (`warm/memory.rs`). */
+  memorySkipped?: number;
+};
+type WarmStatsSnapshot = { ordinary: WarmPoolStats; lead: WarmPoolStats };
+
+const count = (value: unknown) => (typeof value === 'number' && Number.isFinite(value) && value >= 0 ? Math.floor(value) : 0);
+
+/** This launch's spare adoption: the ordinary pool first, then the lead pool on its own, so a lead
+ * miss is never counted as an ordinary one. Adoption shows against spares started, and unused
+ * expiries, evictions, replacements, discards and starts skipped by churn pauses or low memory are named, so waste
+ * never reads as zero. Live state (spares idle now, time left in a pause) follows adoption; with the
+ * switch off the pause is moot, so its time left is hidden while the historical starts it skipped stay.
+ * Dock and Finder launches keep no stderr. */
+function warmStatsCaption(snapshot: WarmStatsSnapshot, enabled = true): string {
+  const pool = (stats: WarmPoolStats | undefined) => ({
+    started: count(stats?.started), adopted: count(stats?.adopted), missed: count(stats?.missed),
+    expired: count(stats?.expired), evicted: count(stats?.evicted), replaced: count(stats?.replaced),
+    discarded: count(stats?.discarded),
+    cold: count(stats?.coldWithoutSpare), churnSkipped: count(stats?.churnSkipped), memorySkipped: count(stats?.memorySkipped),
+    idleNow: count(stats?.idleNow), pausedSecs: enabled ? count(stats?.pausedSecs) : 0,
+  });
+  const ordinary = pool(snapshot?.ordinary), lead = pool(snapshot?.lead);
+  const empty = (p: ReturnType<typeof pool>) => p.started === 0 && p.cold === 0 && p.idleNow === 0 && p.pausedSecs === 0 && p.churnSkipped === 0 && p.memorySkipped === 0;
+  if (empty(ordinary) && empty(lead)) return 'This launch: no spares started yet.';
+  const formatPaused = (secs: number) => (secs < 60 ? '<1 min' : `${Math.ceil(secs / 60)} min`);
+  const formatPool = (p: ReturnType<typeof pool>, prefix = '') => {
+    const parts = [
+      p.started > 0 ? `${p.adopted}/${p.started} adopted` : '',
+      p.idleNow > 0 ? `${p.idleNow} idle now` : '',
+      p.pausedSecs > 0 ? `paused (${formatPaused(p.pausedSecs)} left)` : '',
+      p.missed > 0 ? `${p.missed} not used` : '',
+      p.expired > 0 ? `${p.expired} expired` : '',
+      p.evicted > 0 ? `${p.evicted} evicted` : '',
+      p.replaced > 0 ? `${p.replaced} replaced` : '',
+      p.discarded > 0 ? `${p.discarded} discarded` : '',
+      p.cold > 0 ? `${p.cold} cold` : '',
+      p.churnSkipped > 0 ? `${p.churnSkipped} starts paused` : '',
+      p.memorySkipped > 0 ? `${p.memorySkipped} skipped (low memory)` : '',
+    ].filter(Boolean);
+    if (!parts.length) return '';
+    return prefix ? `${prefix} ${parts.join(', ')}` : parts.join(', ');
+  };
+  return `This launch: ${[formatPool(ordinary), formatPool(lead, 'lead')].filter(Boolean).join(' · ')}`;
+}
+
+const warmStatsLine = async (enabled: boolean) => warmStatsCaption(await call<WarmStatsSnapshot>('warm_spare_stats'), enabled);
+
+/** How often an open Agents page re-reads the warm spare totals; only the browser preview (not
+ * the desktop app or a remote web tab) accepts `?warm-spares-refresh-ms=N` (N ≥ 50) so a spec
+ * need not wait 30 s. */
+const WARM_STATS_REFRESH_MS = 30_000;
+const warmStatsRefreshMs = () => {
+  if (!preview) return WARM_STATS_REFRESH_MS;
+  const raw = new URLSearchParams(location.search).get('warm-spares-refresh-ms');
+  const value = raw === null ? NaN : Number(raw);
+  return Number.isFinite(value) && value >= 50 ? value : WARM_STATS_REFRESH_MS;
+};
+
+// IDs distinguish harnesses and keep a reopened Settings view behind any unfinished save.
+const nativeSwitchSaves = new Map<string, Promise<void>>();
+
+/** One native switch: disabled until read, so an unreadable value is never shown; read at each
+ * run, so it needs nothing from the window; a refused save puts the switch back and says why.
+ * An optional \`caption\` fills the status line while no error shows, read once the switch's value
+ * is known and after each save (given that value); failing, it shows nothing. With \`refreshMs\`
+ * it is also re-read on that interval and when the window becomes visible, while the page is open.
+ * An optional \`onValue\` runs with the switch's value once read (false if unreadable) and after each save. */
+function mountNativeSwitch(panel: HTMLElement, { id, name, args = {}, locked = false, caption: readCaption, refreshMs, onValue }: { id: string; name: string; hint?: string; args?: Record<string, unknown>; locked?: boolean; caption?: (enabled: boolean) => Promise<string>; refreshMs?: number; onValue?: (enabled: boolean) => void }): () => void {
+  const input = panel.querySelector<HTMLInputElement>(`#${id}`)!;
+  let disposed = false;
+  // The hint sits behind the title's mark; the row's status line shows an error, else the caption.
+  const status = input.closest('.setting-row')!.querySelector<HTMLElement>('.setting-status')!;
+  let caption = '';
+  let error: { message: string; alert: boolean } | null = null;
+  const render = () => {
+    const message = error?.message || caption;
+    status.textContent = message;
+    status.hidden = !message;
+    if (error?.alert) status.setAttribute('role', 'alert'); else status.removeAttribute('role');
+  };
+  const say = (message: string, alert = false) => { error = message ? { message, alert } : null; render(); };
+  // Read once the value is known and again after every save (turning spares off changes the
+  // totals); only the newest read lands, and an error on the line always outranks it.
+  let captionReads = 0;
+  const refreshCaption = () => {
+    if (!readCaption || disposed) return;
+    const read = ++captionReads;
+    void readCaption(input.checked).then(text => { if (!disposed && read === captionReads) { caption = text; render(); } }, (err) => { console.warn('Setting status read failed:', err); });
+  };
+  input.setAttribute('aria-busy', 'true');
+  void (async () => {
+    try {
+      await nativeSwitchSaves.get(id);
+      const on = await call<boolean>(`${name}_enabled`, args);
+      if (!disposed) { input.checked = on === true; input.disabled = locked; refreshCaption(); onValue?.(input.checked); }
+    } catch {
+      if (!disposed) { say(UNREADABLE); onValue?.(false); }
+    } finally {
+      if (!disposed) input.removeAttribute('aria-busy');
+    }
+  })();
+  const change = (event: Event) => {
+    if (event.target !== input || input.disabled || nativeSwitchSaves.has(id)) return;
+    const on = input.checked;
+    const focused = document.activeElement === input;
+    input.disabled = true;
+    input.setAttribute('aria-busy', 'true');
+    say('');
+    const save = call<void>(`set_${name}_enabled`, { ...args, enabled: on }).catch(error => {
+      if (!disposed) { input.checked = !on; say(error instanceof Error ? error.message : String(error), true); }
+    }).finally(() => {
+      nativeSwitchSaves.delete(id);
+      if (disposed) return;
+      refreshCaption();
+      onValue?.(input.checked);
+      input.disabled = locked;
+      input.removeAttribute('aria-busy');
+      if (focused && (document.activeElement === document.body || document.activeElement === input)) input.focus({ preventScroll: true });
+    });
+    nativeSwitchSaves.set(id, save);
+  };
+  panel.addEventListener('change', change);
+  // Live while visible: skipped while the document or this Settings panel is hidden, unread or saving;
+  // visibility and tab-switch observers catch up at once.
+  const refreshLive = () => { if (!document.hidden && !panel.hidden && !input.disabled) refreshCaption(); };
+  const timer = readCaption && refreshMs ? window.setInterval(refreshLive, refreshMs) : 0;
+  let panelObserver: MutationObserver | null = null;
+  if (timer) {
+    document.addEventListener('visibilitychange', refreshLive);
+    panelObserver = new MutationObserver(refreshLive);
+    panelObserver.observe(panel, { attributes: true, attributeFilter: ['hidden'] });
+  }
+  return () => {
+    disposed = true;
+    panel.removeEventListener('change', change);
+    if (timer) {
+      window.clearInterval(timer);
+      document.removeEventListener('visibilitychange', refreshLive);
+      panelObserver?.disconnect();
+    }
+  };
+}
 
 function mountAgentsDockSettings(host: HTMLElement): () => void {
   let disposed = false;
@@ -174,6 +354,8 @@ function sectionHtml(id: SettingsPage, options: SettingsOptions): string {
         <div class="setting-row settings-default-row"><div><strong>Default model</strong></div><button type="button" id="default-model" class="settings-select" data-action="default-model" aria-label="Default model for new tasks" aria-haspopup="dialog" aria-expanded="false"><span>${escape(options.defaultModel)}</span>${icon('down')}</button></div>
         <div class="setting-row"><div><strong>Agent updates</strong></div><button type="button" class="secondary-button" data-action="agent-updates" aria-haspopup="dialog">Check updates</button></div>
         ${switchRow('turn-checks', 'Project checks after turns', 'When a turn ends, runs the project’s own test or check command with your environment (your shell, PATH and credentials); a failure queues one fix.', options.turnChecks)}
+        ${NATIVE_SWITCHES.map(row => switchRow(row.id, row.title, row.hint, false, true, row.id === 'warm-spares' ? WARM_SPARES_DOCS : '')).join('')}
+        ${EXPLORE_HARNESSES.map(exploreHarnessRow).join('')}
       </div>
       <div class="settings-heading settings-agents-heading"><h3>Installed agents</h3><button type="button" class="settings-refresh" aria-label="Refresh agents" title="Refresh agents">${icon('refresh')}</button></div>
       <div class="settings-provider-status" role="status" hidden></div>
@@ -186,7 +368,9 @@ function sectionHtml(id: SettingsPage, options: SettingsOptions): string {
     case 'tools': return `<div class="settings-group">
         <div class="setting-row"><div><strong>Tools & integrations</strong></div><button type="button" class="secondary-button" data-action="agent-integrations">Manage</button></div>
         ${settingRow('Jev', '<button type="button" class="secondary-button" data-action="jev-settings">Set up Jev</button>', 'Optional add-on for browser tests and decision assistance. Your agents work without it.')}
+        ${switchRow(CUSTOM_TOOLS_SWITCH.id, CUSTOM_TOOLS_SWITCH.title, CUSTOM_TOOLS_SWITCH.hint, false, true)}
       </div>
+      <div id="custom-tools-settings"></div>
       ${fold('Capabilities and cache', '<div id="capabilities-settings"></div>')}`;
     case 'schedules': return '<div id="schedules-settings"></div>';
     case 'skills': return '<div id="skill-manager"></div>';
@@ -420,6 +604,8 @@ export function mountSettings(host: HTMLElement, options: SettingsOptions): Sett
     if (id === 'routing' && options.teams) mountRouting();
     if (id === 'teams' && options.teams) mountTeams();
     if (id === 'schedules') cleanups.push(mountSchedulesSettings(panel.querySelector<HTMLElement>('#schedules-settings')!, options.schedules ?? { openThread: () => {} }));
+    if (id === 'tools') cleanups.push(mountNativeSwitch(panel, CUSTOM_TOOLS_SWITCH));
+    if (id === 'tools') cleanups.push(mountCustomTools(panel.querySelector<HTMLElement>('#custom-tools-settings')!, call, subscribe as (name: string, callback: () => void) => Promise<() => void>));
     if (id === 'tools') {
       const slot = panel.querySelector<HTMLElement>('#capabilities-settings')!;
       slot.closest('details')!.addEventListener('toggle', () => cleanups.push(mountCapabilities(slot, call)), { once: true });
@@ -431,6 +617,39 @@ export function mountSettings(host: HTMLElement, options: SettingsOptions): Sett
       cleanups.push(mountSupportDetails(panel.querySelector<HTMLDetailsElement>('.support-details')!));
       cleanups.push(mountAboutSettings(panel.querySelector<HTMLElement>('.settings-about')!));
       cleanups.push(mountResourceUsage(panel.querySelector<HTMLElement>('.settings-resources')!));
+    }
+    if (id === 'agents') {
+      let exploreReady = false;
+      let exploreOn = false;
+      let claudeLoaded = false;
+      let claudeBackendOn = false;
+      const claudeInput = panel.querySelector<HTMLInputElement>('#explore-claude')!;
+      const claudeStatus = claudeInput.closest('.setting-row')!.querySelector<HTMLElement>('.setting-status')!;
+      // Claude Code stays disabled and mirrors the master explorer switch so off defaults don't show a checked row below an unchecked master.
+      const syncClaude = () => {
+        if (disposed || !claudeLoaded) return;
+        claudeInput.checked = exploreOn && claudeBackendOn;
+        const note = exploreReady && !exploreOn ? CLAUDE_EXPLORE_INACTIVE : '';
+        claudeStatus.textContent = note;
+        claudeStatus.hidden = !note;
+        claudeStatus.removeAttribute('role');
+      };
+      cleanups.push(...NATIVE_SWITCHES.map(row => mountNativeSwitch(panel,
+        row.id === 'warm-spares' ? { ...row, caption: warmStatsLine, refreshMs: warmStatsRefreshMs() }
+          : row.id === 'explore-tool' ? { ...row, onValue: enabled => { exploreReady = true; exploreOn = enabled; syncClaude(); } }
+            : row)));
+      claudeInput.setAttribute('aria-busy', 'true');
+      void (async () => {
+        try {
+          const on = await call<boolean>('explore_harness_enabled', { provider: 'claude' });
+          if (!disposed) { claudeLoaded = true; claudeBackendOn = on === true; syncClaude(); }
+        } catch {
+          if (!disposed) { claudeStatus.textContent = UNREADABLE; claudeStatus.hidden = false; claudeStatus.removeAttribute('role'); }
+        } finally {
+          if (!disposed) claudeInput.removeAttribute('aria-busy');
+        }
+      })();
+      cleanups.push(...EXPLORE_HARNESSES.filter(({ id: provider }) => provider !== 'claude').map(({ id: provider }) => mountNativeSwitch(panel, { id: `explore-${provider}`, name: 'explore_harness', hint: '', args: { provider } })));
     }
     if (id === 'agents' && !discovered) void refresh();
     for (const slot of panel.querySelectorAll<HTMLElement>('[data-embed]')) {

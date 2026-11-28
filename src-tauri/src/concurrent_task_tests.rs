@@ -987,6 +987,7 @@ fn settled_team_lead(provider: &str, stage: &str, status: &str) -> (Arc<AppState
             score_nudged: false,
             wrote_at: 0,
             tool_catalog_version: 0,
+            token_saver: Default::default(),
         });
         store.db.execute(
             "INSERT INTO architect_teams(session_id,content) VALUES(?1,?2)",

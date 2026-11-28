@@ -346,6 +346,150 @@ fn live_lists_runtimes_and_compute_units() {
     assert!(usage.ccu_balance.is_none_or(|balance| balance >= 0.0));
 }
 
+#[test]
+fn only_tool_and_mcp_changes_discard_warm_spares() {
+    let options = |pairs: &[(&str, &str)]| pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect::<BTreeMap<_, _>>();
+    let base = options(&[("nativeTools", "true"), ("colabMcp", "false"), ("accelerator", "NONE"), ("highMem", "false")]);
+    let changed = |key: &str, value: &str| {
+        let mut next = base.clone();
+        next.insert(key.into(), value.into());
+        next
+    };
+    assert!(!settings::affects_warm_spares(&base, &base), "no change keeps spares");
+    assert!(!settings::affects_warm_spares(&base, &changed("accelerator", "T4")));
+    assert!(!settings::affects_warm_spares(&base, &changed("highMem", "true")));
+    assert!(!settings::affects_warm_spares(&options(&[]), &base), "saved defaults match missing keys");
+    assert!(settings::affects_warm_spares(&base, &changed("nativeTools", "false")));
+    assert!(settings::affects_warm_spares(&changed("nativeTools", "false"), &base));
+    assert!(settings::affects_warm_spares(&base, &changed("colabMcp", "true")));
+    assert!(settings::affects_warm_spares(&changed("colabMcp", "true"), &base));
+}
+
+/// In-memory Colab options for the injected `update_config_with` / `connect_with` seams.
+struct FakeStore {
+    connected: std::cell::Cell<bool>,
+    options: std::cell::RefCell<BTreeMap<String, String>>,
+    saves: std::cell::Cell<usize>,
+    discards: std::cell::Cell<usize>,
+}
+
+impl FakeStore {
+    fn connected(options: BTreeMap<String, String>) -> Self {
+        FakeStore {
+            connected: std::cell::Cell::new(true),
+            options: std::cell::RefCell::new(options),
+            saves: std::cell::Cell::new(0),
+            discards: std::cell::Cell::new(0),
+        }
+    }
+    fn is_connected(&self) -> bool {
+        self.connected.get()
+    }
+    fn load(&self) -> BTreeMap<String, String> {
+        self.options.borrow().clone()
+    }
+    fn save(&self, next: BTreeMap<String, String>) -> std::result::Result<(), String> {
+        self.saves.set(self.saves.get() + 1);
+        *self.options.borrow_mut() = next;
+        Ok(())
+    }
+    fn discard(&self) {
+        self.discards.set(self.discards.get() + 1);
+    }
+    fn update(&self, changes: Value) -> std::result::Result<(), String> {
+        settings::update_config_with(&changes, || self.is_connected(), || self.load(), |next| self.save(next), || self.discard())
+    }
+}
+
+fn saved_defaults() -> BTreeMap<String, String> {
+    settings::signed_in_options(&BTreeMap::new(), "a@example.com", "oauth2").unwrap()
+}
+
+#[test]
+fn hardware_changes_save_without_discarding_warm_spares() {
+    let store = FakeStore::connected(saved_defaults());
+    store.update(json!({"accelerator": "T4"})).unwrap();
+    store.update(json!({"highMem": true})).unwrap();
+    assert_eq!(store.saves.get(), 2);
+    assert_eq!(store.discards.get(), 0, "the accelerator and High-RAM choice shape no launch");
+    assert_eq!(store.load().get("accelerator").map(String::as_str), Some("T4"));
+    assert_eq!(store.load().get("highMem").map(String::as_str), Some("true"));
+}
+
+#[test]
+fn tool_and_mcp_changes_save_and_discard_warm_spares_once_each() {
+    let store = FakeStore::connected(saved_defaults());
+    store.update(json!({"nativeTools": false})).unwrap();
+    assert_eq!((store.saves.get(), store.discards.get()), (1, 1));
+    store.update(json!({"colabMcp": "true"})).unwrap();
+    assert_eq!((store.saves.get(), store.discards.get()), (2, 2));
+    store.update(json!({"colabMcp": true})).unwrap();
+    assert_eq!((store.saves.get(), store.discards.get()), (3, 2), "an unchanged value keeps spares");
+}
+
+#[test]
+fn a_disconnected_update_is_refused_without_saving_or_discarding() {
+    let store = FakeStore::connected(saved_defaults());
+    store.connected.set(false);
+    let error = store.update(json!({"nativeTools": false})).unwrap_err();
+    assert_eq!(error, "Sign in to Google Colab in Settings → Cloud first.");
+    assert_eq!((store.saves.get(), store.discards.get()), (0, 0));
+}
+
+#[test]
+fn an_adc_connect_discards_warm_spares_exactly_once() {
+    let connect = |options: Value, store: &FakeStore| {
+        let sign_in = || -> std::result::Result<(), String> {
+            settings::persist_with("a@example.com", "adc", || Ok(()), || store.load(), |next| store.save(next))?;
+            store.connected.set(true);
+            Ok(())
+        };
+        settings::connect_with(&options, sign_in, || store.is_connected(), || store.load(), |next| store.save(next), || store.discard())
+    };
+    // Default and hardware-only options: the sign-in alone discards.
+    for options in [json!({"authMode": "adc"}), json!({"authMode": "adc", "accelerator": "T4", "highMem": true})] {
+        let store = FakeStore::connected(BTreeMap::new());
+        store.connected.set(false);
+        connect(options, &store).unwrap();
+        assert_eq!(store.saves.get(), 2, "the sign-in and the options are both saved");
+        assert_eq!(store.discards.get(), 1, "no double discard");
+        assert_eq!(store.load().get("authMode").map(String::as_str), Some("adc"));
+    }
+    // A sign-in that also turns tools off still discards once.
+    let store = FakeStore::connected(BTreeMap::new());
+    store.connected.set(false);
+    connect(json!({"authMode": "adc", "nativeTools": false}), &store).unwrap();
+    assert_eq!((store.saves.get(), store.discards.get()), (2, 1));
+    // A failed ADC sign-in saves and discards nothing.
+    let store = FakeStore::connected(BTreeMap::new());
+    store.connected.set(false);
+    let failed = settings::connect_with(
+        &json!({"authMode": "adc"}),
+        || Err("no gcloud login".into()),
+        || store.is_connected(),
+        || store.load(),
+        |next| store.save(next),
+        || store.discard(),
+    );
+    assert_eq!(failed.unwrap_err(), "no gcloud login");
+    assert_eq!((store.saves.get(), store.discards.get()), (0, 0));
+}
+
+#[test]
+fn a_connect_without_adc_discards_only_on_tool_or_mcp_changes() {
+    let store = FakeStore::connected(saved_defaults());
+    let connect = |options: Value| {
+        settings::connect_with(&options, || unreachable!("no ADC sign-in"), || store.is_connected(), || store.load(), |next| store.save(next), || store.discard())
+    };
+    connect(json!({"accelerator": "T4"})).unwrap();
+    assert_eq!((store.saves.get(), store.discards.get()), (1, 0));
+    connect(json!({"colabMcp": true})).unwrap();
+    assert_eq!((store.saves.get(), store.discards.get()), (2, 1));
+    store.connected.set(false);
+    assert!(connect(json!({})).is_err());
+    assert_eq!((store.saves.get(), store.discards.get()), (2, 1));
+}
+
 fn raw_reply(body: &str) -> Vec<u8> {
     format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).into_bytes()
 }
@@ -581,9 +725,10 @@ fn stalled_error_bodies_hitting_deadline_preserve_status_without_retrying() {
     let client_412 = colab(&base_412, &sessions());
     let client_500 = colab(&base_500, &sessions());
 
-    // Run both concurrently so the MIN_POST_BUDGET deadline expires in ~5.2s total.
+    // Run both concurrently with headroom for the initial GET and client setup under parallel test load
+    // while still hitting the post deadline (~6.5s) well before the mock server's 10s socket timeout.
     let (err_412, err_500) = block(async {
-        let deadline = tokio::time::Instant::now() + RECONCILE_RESERVE + MIN_POST_BUDGET + Duration::from_millis(250);
+        let deadline = tokio::time::Instant::now() + RECONCILE_RESERVE + MIN_POST_BUDGET + Duration::from_millis(1500);
         let (r412, r500) = tokio::join!(
             client_412.assign_until("T4", false, deadline),
             client_500.assign_until("T4", false, deadline),

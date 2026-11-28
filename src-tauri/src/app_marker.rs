@@ -1,0 +1,353 @@
+//! On/off settings saved as the presence of an empty file in app data, read at every run start
+//! so the desktop app and `pandacode serve` share them. Readers pick their own safe value for an
+//! `Err` (the marker could not be checked). Also holds the app handle both entry points set
+//! (`init`), so launch paths without a handle argument can read their switches.
+use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
+use tauri::Manager;
+
+type Result<T> = std::result::Result<T, String>;
+
+static APP: OnceLock<tauri::AppHandle> = OnceLock::new();
+
+/// Called once at startup by the desktop app and `pandacode serve`.
+pub(crate) fn init(app: &tauri::AppHandle) {
+    let _ = APP.set(app.clone());
+}
+
+/// A default-on switch turned off by marker `off_file`: on only while the marker is known to be
+/// absent, so an unreadable or unknown settings folder fails closed.
+pub(crate) fn default_on_in(dir: Result<PathBuf>, off_file: &str) -> bool {
+    exists_in(dir, off_file).is_ok_and(|present| !present)
+}
+
+/// `default_on_in` through the handle `init` saved. Without one, production fails closed and
+/// unit tests (which never call `init`) default on.
+pub(crate) fn default_on_now(off_file: &str) -> bool {
+    match APP.get() {
+        Some(app) => default_on_in(data_dir(app), off_file),
+        None => cfg!(test),
+    }
+}
+
+/// `default_on_now` on a blocking thread, so the async runtime never waits on the marker file.
+/// Callers with a test-only thread-local override check it first: this thread would not see it.
+pub(crate) async fn default_on_off_runtime(off_file: &'static str) -> bool {
+    crate::blocking(move || Ok(default_on_now(off_file))).await.unwrap_or(false)
+}
+
+/// An opt-in switch turned on by marker `on_file`: on only while the marker is known to be
+/// present, so an absent marker or an unreadable or unknown settings folder fails closed.
+pub(crate) fn opt_in_in(dir: Result<PathBuf>, on_file: &str) -> bool {
+    exists_in(dir, on_file).unwrap_or(false)
+}
+
+/// `opt_in_in` through the handle `init` saved. Without one, production fails closed and unit
+/// tests (which never call `init`) default on.
+pub(crate) fn opt_in_now(on_file: &str) -> bool {
+    match APP.get() {
+        Some(app) => opt_in_in(data_dir(app), on_file),
+        None => cfg!(test),
+    }
+}
+
+/// `opt_in_now` on a blocking thread, so the async runtime never waits on the marker file.
+/// Callers with a test-only thread-local override check it first: this thread would not see it.
+pub(crate) async fn opt_in_off_runtime(on_file: &'static str) -> bool {
+    crate::blocking(move || Ok(opt_in_now(on_file))).await.unwrap_or(false)
+}
+
+pub(crate) fn data_dir(app: &tauri::AppHandle) -> Result<PathBuf> {
+    app.path().app_data_dir().map_err(|e| e.to_string())
+}
+
+fn path(app: &tauri::AppHandle, name: &str) -> Result<PathBuf> {
+    Ok(data_dir(app)?.join(name))
+}
+
+pub(crate) fn exists(app: &tauri::AppHandle, name: &str) -> Result<bool> {
+    exists_in(data_dir(app), name)
+}
+
+/// Whether marker `name` is present in `dir`; an unavailable `dir` is an `Err`.
+pub(crate) fn exists_in(dir: Result<PathBuf>, name: &str) -> Result<bool> {
+    exists_at(dir.map(|dir| dir.join(name)))
+}
+
+pub(crate) fn set(app: &tauri::AppHandle, name: &str, present: bool) -> Result<()> {
+    set_at(&path(app, name)?, present)
+}
+
+fn is_hard_linked(path: &Path, meta: &std::fs::Metadata) -> std::io::Result<bool> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let _ = path;
+        Ok(meta.nlink() > 1)
+    }
+    #[cfg(windows)]
+    {
+        use std::{
+            ffi::c_void,
+            mem::MaybeUninit,
+            os::windows::{fs::OpenOptionsExt, io::AsRawHandle},
+        };
+
+        #[repr(C)]
+        struct Filetime {
+            low: u32,
+            high: u32,
+        }
+
+        #[repr(C)]
+        struct ByHandleFileInformation {
+            file_attributes: u32,
+            creation_time: Filetime,
+            last_access_time: Filetime,
+            last_write_time: Filetime,
+            volume_serial_number: u32,
+            file_size_high: u32,
+            file_size_low: u32,
+            number_of_links: u32,
+            file_index_high: u32,
+            file_index_low: u32,
+        }
+
+        #[link(name = "kernel32")]
+        unsafe extern "system" {
+            fn GetFileInformationByHandle(handle: *mut c_void, info: *mut ByHandleFileInformation) -> i32;
+        }
+
+        const FILE_SHARE_READ: u32 = 0x1;
+        const FILE_SHARE_WRITE: u32 = 0x2;
+        const FILE_SHARE_DELETE: u32 = 0x4;
+        const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+
+        let _ = meta;
+        // OpenOptions uses CreateFileW with OPEN_EXISTING, and File drop calls CloseHandle.
+        let file = std::fs::OpenOptions::new()
+            .access_mode(0)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(path)?;
+        let mut info = MaybeUninit::<ByHandleFileInformation>::uninit();
+        // SAFETY: the file owns the handle, and info points to writable storage of the required size.
+        if unsafe { GetFileInformationByHandle(file.as_raw_handle(), info.as_mut_ptr()) } == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        // SAFETY: a successful call initialized the structure.
+        Ok(unsafe { info.assume_init() }.number_of_links > 1)
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = (path, meta);
+        Ok(false)
+    }
+}
+
+fn exists_at(path: Result<PathBuf>) -> Result<bool> {
+    const INVALID_MARKER: &str = "Could not read the setting: marker path is not a regular file";
+    let path = path?;
+    match std::fs::symlink_metadata(&path) {
+        Ok(meta) if meta.is_file() => match is_hard_linked(&path, &meta) {
+            Ok(false) => Ok(true),
+            Ok(true) => Err(INVALID_MARKER.into()),
+            Err(error) => Err(format!("Could not read the setting: {error}")),
+        },
+        Ok(_) => Err(INVALID_MARKER.into()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            // Windows reports ERROR_PATH_NOT_FOUND under a non-directory ancestor.
+            // Walk up to the nearest existing ancestor and fail closed if it is not a directory.
+            for ancestor in path.ancestors().skip(1) {
+                match std::fs::metadata(ancestor) {
+                    Ok(meta) => {
+                        return if meta.is_dir() {
+                            Ok(false)
+                        } else {
+                            Err("Could not read the setting: app data path is not a directory".into())
+                        };
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                    Err(error) => return Err(format!("Could not read the setting: {error}")),
+                }
+            }
+            Ok(false)
+        }
+        Err(error) => Err(format!("Could not read the setting: {error}")),
+    }
+}
+
+fn set_at(path: &Path, present: bool) -> Result<()> {
+    use std::io::ErrorKind;
+
+    const INVALID_MARKER: &str = "Could not save the setting: marker path is not a regular file";
+    let save_error = |error| format!("Could not save the setting: {error}");
+    if present {
+        path.parent().map_or(Ok(()), std::fs::create_dir_all).map_err(save_error)?;
+        match std::fs::OpenOptions::new().write(true).create_new(true).open(path) {
+            Ok(_) => return Ok(()),
+            Err(error) if error.kind() == ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(save_error(error)),
+        }
+    }
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) if meta.is_file() => {
+            if present && is_hard_linked(path, &meta).map_err(save_error)? {
+                return Err(INVALID_MARKER.into());
+            }
+        }
+        Ok(_) => return Err(INVALID_MARKER.into()),
+        Err(error) if !present && error.kind() == ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(save_error(error)),
+    }
+    if present {
+        return Ok(());
+    }
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(save_error(error)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn set_and_exists_round_trip_and_fail_safe() {
+        let dir = std::env::temp_dir().join(format!("app-marker-{}", uuid::Uuid::new_v4()));
+        let marker = dir.join("nested").join("flag");
+        assert_eq!(exists_at(Ok(marker.clone())), Ok(false));
+        set_at(&marker, true).unwrap();
+        assert_eq!(exists_at(Ok(marker.clone())), Ok(true));
+        std::fs::write(&marker, "keep me").unwrap();
+        set_at(&marker, true).unwrap();
+        assert_eq!(std::fs::read_to_string(&marker).unwrap(), "keep me");
+        set_at(&marker, false).unwrap();
+        set_at(&marker, false).unwrap();
+        assert_eq!(exists_at(Ok(marker.clone())), Ok(false));
+        // No app data, or a marker under a file ("not a directory", not "not found"): an error,
+        // never a guess, so each reader chooses its safe default.
+        assert!(exists_at(Err("no app data".into())).is_err());
+        std::fs::write(dir.join("file"), "").unwrap();
+        let unreadable = dir.join("file").join("flag");
+        assert!(exists_at(Ok(unreadable.clone())).is_err());
+        // A missing directory between the file and the marker: the ancestor walk skips it and still
+        // fails closed at the regular file.
+        let deep = dir.join("file").join("missing").join("flag");
+        assert!(exists_at(Ok(deep)).is_err());
+        assert!(set_at(&unreadable, true).unwrap_err().starts_with("Could not save the setting"));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_directory_is_not_a_marker() {
+        let dir = std::env::temp_dir().join(format!("app-marker-dir-{}", uuid::Uuid::new_v4()));
+        let name = "warm-spares-on";
+        let marker = dir.join(name);
+        std::fs::create_dir_all(&marker).unwrap();
+
+        assert_eq!(exists_at(Ok(marker.clone())).unwrap_err(), "Could not read the setting: marker path is not a regular file");
+        assert!(!opt_in_in(Ok(dir.clone()), name));
+        assert!(!default_on_in(Ok(dir.clone()), name));
+        assert!(set_at(&marker, false).is_err());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_is_not_a_marker() {
+        let dir = std::env::temp_dir().join(format!("app-marker-link-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&dir).unwrap();
+        let target = dir.join("target");
+        let link = dir.join("flag");
+        std::fs::write(&target, "keep me").unwrap();
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        assert!(exists_at(Ok(link.clone())).is_err());
+        assert!(set_at(&link, true).is_err());
+        assert!(set_at(&link, false).is_err());
+        assert!(std::fs::symlink_metadata(&link).unwrap().is_symlink());
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "keep me");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn hard_linked_markers_are_rejected_on_read_and_enable() {
+        let dir = std::env::temp_dir().join(format!("app-marker-hard-link-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&dir).unwrap();
+        let target = dir.join("target");
+        let marker = dir.join("flag");
+        std::fs::write(&target, "keep me").unwrap();
+        std::fs::hard_link(&target, &marker).unwrap();
+
+        assert!(exists_at(Ok(marker.clone())).is_err());
+        assert!(!opt_in_in(Ok(dir.clone()), "flag"));
+        assert!(!default_on_in(Ok(dir.clone()), "flag"));
+        assert!(set_at(&marker, true).is_err());
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "keep me");
+        assert!(set_at(&marker, false).is_ok());
+        assert!(!marker.exists());
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "keep me");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_fifo_is_rejected_without_opening_it() {
+        use std::os::unix::ffi::OsStrExt;
+
+        let dir = std::env::temp_dir().join(format!("app-marker-fifo-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&dir).unwrap();
+        let marker = dir.join("flag");
+        let name = std::ffi::CString::new(marker.as_os_str().as_bytes()).unwrap();
+        // SAFETY: name is a valid NUL-terminated path for the duration of the call.
+        assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let checking = std::thread::spawn(move || {
+            tx.send((set_at(&marker, true), set_at(&marker, false))).unwrap();
+        });
+        let result = rx.recv_timeout(std::time::Duration::from_secs(5));
+        std::fs::remove_dir_all(dir).unwrap();
+        let (enable, disable) = result.expect("checking a FIFO must not block");
+        checking.join().unwrap();
+        assert!(enable.is_err());
+        assert!(disable.is_err());
+    }
+
+    #[tokio::test]
+    async fn default_on_switches_are_on_only_while_the_marker_is_known_absent() {
+        let dir = std::env::temp_dir().join(format!("app-marker-on-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(default_on_in(Ok(dir.clone()), "feature-off"), "absent: on");
+        std::fs::write(dir.join("feature-off"), "").unwrap();
+        assert!(!default_on_in(Ok(dir.clone()), "feature-off"), "present: off");
+        let file = dir.join("not-a-folder");
+        std::fs::write(&file, "").unwrap();
+        assert!(!default_on_in(Ok(file), "feature-off"), "an unreadable settings folder fails closed");
+        assert!(!default_on_in(Err("no app data".into()), "feature-off"), "an unknown one too");
+        // Unit tests never call `init`: without a handle, switches default on.
+        assert!(default_on_now("feature-off"));
+        assert!(default_on_off_runtime("feature-off").await);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn opt_in_switches_are_on_only_while_the_marker_is_known_present() {
+        let dir = std::env::temp_dir().join(format!("app-marker-opt-in-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(!opt_in_in(Ok(dir.clone()), "feature-on"), "absent: off");
+        std::fs::write(dir.join("feature-on"), "").unwrap();
+        assert!(opt_in_in(Ok(dir.clone()), "feature-on"), "present: on");
+        let file = dir.join("not-a-folder");
+        std::fs::write(&file, "").unwrap();
+        assert!(!opt_in_in(Ok(file), "feature-on"), "an unreadable settings folder fails closed");
+        assert!(!opt_in_in(Err("no app data".into()), "feature-on"), "an unknown one too");
+        // Unit tests never call `init`: without a handle, switches default on.
+        assert!(opt_in_now("feature-on"));
+        assert!(opt_in_off_runtime("feature-on").await);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+}

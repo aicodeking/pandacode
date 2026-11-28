@@ -6533,7 +6533,9 @@ async function finishResponse(sessionId: string, finishing: FinishingStream): Pr
     // whose bridge absorbs it (handOffCard), so a pinned thread does not move at the swap.
     handoffRect = document.querySelector('#stream-region .turn-card.is-live')?.getBoundingClientRect();
     renderComposer(); renderTranscript();
-    await refreshInspector();
+    // A queued follow-up does not need git/file status: dispatchQueue runs as soon as this returns.
+    // refreshInspector shows its own load errors; run() reports anything else (a render throw).
+    run(refreshInspector());
   } catch (error) {
     if (!current()) return;
     finishing.error = errorText(error); finishing.stream.revision++;
@@ -7548,6 +7550,8 @@ async function showModel(anchor: HTMLElement, target = session()): Promise<void>
       if (isBtwDraft(selected)) { saveBtwDraft(selected, { reasoningEffort }); return; }
       while (provisionalCorrections.has(selected.id)) await provisionalCorrections.get(selected.id)?.catch(() => undefined);
       if (!current() || generation !== state.generation || isRunning(selected.id) || taskBusyConfiguring(selected.id)) throw new Error('Select the task again to change its reasoning effort.');
+      // Re-picking the saved effort changes nothing; skip the IPC.
+      if ((reasoningEffort ?? null) === (savedSelection().reasoningEffort ?? null)) return;
       configuringSessions.add(selected.id);
       try {
         const updated = await call<Session>('set_reasoning_effort', { sessionId: selected.id, reasoningEffort });
@@ -7583,7 +7587,13 @@ async function showModel(anchor: HTMLElement, target = session()): Promise<void>
       if (isBtwDraft(selected)) { saveBtwDraft(selected, { provider: providerId, model, reasoningEffort: null }); return; }
       while (provisionalCorrections.has(selected.id)) await provisionalCorrections.get(selected.id)?.catch(() => undefined);
       if (!current() || generation !== state.generation || isRunning(selected.id) || taskBusyConfiguring(selected.id)) throw new Error('Select the task again to change its model.');
-      const previousProvider = savedSelection().provider;
+      // Re-picking the task's current harness and model skips configure_session: nothing changes on
+      // the task (its warm spare stays untouched) and a managed team worker would be refused by its
+      // architect. The pick is still remembered as the last-used choice below, and team changes
+      // (leaving a named team, refreshing an automatic one) still apply.
+      const saved = savedSelection();
+      const previousProvider = saved.provider;
+      const unchanged = providerId === saved.provider && (model || 'default') === (saved.model || 'default');
       configuringSessions.add(selected.id);
       try {
         // A plain model leaves a named team.
@@ -7597,9 +7607,11 @@ async function showModel(anchor: HTMLElement, target = session()): Promise<void>
           const saved = await call<TeamSnapshot | null>('architect_configure', { sessionId: selected.id, config: await autoTeamConfig(auto), architect: null, profileId: null });
           onArchitect(saved ?? { sessionId: selected.id, removed: true });
         }
-        const updated = await call<Session>('configure_session', { sessionId: selected.id, provider: providerId, model });
+        if (!unchanged) {
+          const updated = await call<Session>('configure_session', { sessionId: selected.id, provider: providerId, model });
+          const index = state.sessions.findIndex(s => s.id === selected.id); if (index >= 0) state.sessions[index] = updated;
+        }
         provisionalTasks.delete(selected.id);
-        const index = state.sessions.findIndex(s => s.id === selected.id); if (index >= 0) state.sessions[index] = updated;
         // Same-harness model choices keep the account and its resumable conversation.
         if (!device && providerId !== previousProvider && namedConnections.tasks[selected.id]) namedConnections = await call('connection_assign', { sessionId: selected.id, connectionId: null });
         if (!device) {
@@ -7836,6 +7848,8 @@ async function showMode(anchor: HTMLElement, target = session()): Promise<void> 
     if (!live || deletedSessions.has(s.id) || !current() || generation !== state.generation || isRunning(s.id) || taskBusyConfiguring(s.id)) throw new Error('Select the task again to change its permissions.');
     const chosen = approvalModes(live.provider, live.mode).find(mode => mode.id === id);
     if (!chosen) throw new Error('Choose an available approval behavior.');
+    // Re-picking the active mode changes nothing; skip the IPC so a warm spare is never disturbed.
+    if (id === live.mode) return;
     configuringSessions.add(s.id);
     try {
       await call('update_session', { sessionId: s.id, mode: id as Mode });

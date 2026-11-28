@@ -9,6 +9,7 @@
 //! `files.read` text pages carry the whole file's `hash`; `files.write` saves only when its
 //! `baseHash` still matches the file on disk, else it answers [`WRITE_CONFLICT`].
 use super::{id_param, path_param, task_root, Access, Ctx, Method, Reply, Run, PAGE_BUDGET};
+use crate::checkout_busy::{checkout_identity, reserve_idle_checkouts, Reservation};
 use crate::{AppState, Result};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -82,6 +83,8 @@ pub(crate) const WRITE_LIMIT: usize = 64 * 1024;
 pub(crate) const WRITE_CONFLICT: &str = "Changed on the computer since you opened it.";
 /// Why a write into a checkout with a running agent is refused.
 const WRITE_RUNNING: &str = "An agent is working in this checkout. Wait for it to finish, then save.";
+const WRITE_TASK_CHANGED: &str = "This task's checkout changed while saving. Try again.";
+const WRITE_FILE_CHANGED: &str = "This file's checkout changed while saving. Try again.";
 /// Why a secret file is refused.
 pub(crate) const SECRET_REFUSED: &str = "This file may hold secrets. Give this phone Full access on the computer to open it.";
 /// Round 22: why a project rooted at `/`, the home folder or one of its ancestors is refused to
@@ -531,31 +534,35 @@ const IMAGE_UNAVAILABLE: &str = "The image is missing or larger than 8 MB";
 /// Why a read is refused when the file changed between the checks and the open.
 const FILE_CHANGED: &str = "This file changed while it was being opened. Try again.";
 
-/// Round 16: opens `path` under `root` once for a remote read and checks the handle, so the
-/// file cannot be swapped (for a symlink, a hard link or another file) between the path checks
-/// and the read. The path resolves once to its canonical target, which must stay inside the
-/// canonical root, out of `.git` and (below Full) off the secret list; that target is opened without following a symlink at its
-/// last component, and the handle must be a regular file with one link whose device and inode
-/// match the target stat'ed beforehand. Returns the canonical target and the open file.
+/// Opens `path` under `root` for a remote read. The canonical target must stay inside the
+/// canonical root, out of `.git` and (below Full) off the secret list. The final component is
+/// opened without following symlinks. The handle must be a regular file with one link and the
+/// same identity as the target checked beforehand. Returns the canonical target and the open file.
 fn open_checked(root: &Path, path: &str, full: bool, not_regular: &str) -> Result<(PathBuf, std::fs::File)> {
     let base = root.canonicalize().map_err(|e| e.to_string())?;
     let target = root.join(path).canonicalize().map_err(|e| e.to_string())?;
     let inside = target.strip_prefix(&base).map_err(|_| "Symlink points outside the project")?;
-    if inside.components().any(|part| part.as_os_str().to_str().is_some_and(|name| name.eq_ignore_ascii_case(".git"))) {
+    if names_git(inside) {
         return Err("That file is not available.".into());
     }
     if !full && (is_secret_path(Path::new(path)) || is_secret_path(&target)) {
         return Err(SECRET_REFUSED.into());
     }
+    let file = open_checked_target(&target, not_regular)?;
+    Ok((target, file))
+}
+
+#[cfg(unix)]
+fn open_checked_target(target: &Path, not_regular: &str) -> Result<std::fs::File> {
     // Before opening: opening a FIFO blocks until a writer appears, and a device never ends.
-    let checked = std::fs::symlink_metadata(&target).map_err(|e| e.to_string())?;
+    let checked = std::fs::symlink_metadata(target).map_err(|e| e.to_string())?;
     if !checked.is_file() {
         return Err(not_regular.into());
     }
     if link_count(&checked) > 1 {
         return Err(HARD_LINK_REFUSED.into());
     }
-    let file = open_no_follow(&target).map_err(|_| FILE_CHANGED.to_owned())?;
+    let file = open_no_follow(target).map_err(|_| FILE_CHANGED.to_owned())?;
     let opened = file.metadata().map_err(|e| e.to_string())?;
     if !opened.is_file() {
         return Err(not_regular.into());
@@ -566,23 +573,84 @@ fn open_checked(root: &Path, path: &str, full: bool, not_regular: &str) -> Resul
     if !same_file(&opened, &checked) {
         return Err(FILE_CHANGED.into());
     }
-    Ok((target, file))
+    Ok(file)
 }
 
-/// Opens without following a symlink at the last component, and without blocking on a FIFO.
+#[cfg(windows)]
+fn open_checked_target(target: &Path, not_regular: &str) -> Result<std::fs::File> {
+    use std::os::windows::fs::OpenOptionsExt;
+    use windows::Win32::Storage::FileSystem::{
+        FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE,
+        FILE_SHARE_READ, FILE_SHARE_WRITE,
+    };
+
+    let checked = std::fs::OpenOptions::new()
+        .access_mode(0)
+        .share_mode((FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE).0)
+        .custom_flags((FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS).0)
+        .open(target)
+        .map_err(|e| e.to_string())?;
+    let checked_info = windows_regular_file_info(&checked).map_err(|_| not_regular.to_owned())?;
+    if checked_info.links > 1 {
+        return Err(HARD_LINK_REFUSED.into());
+    }
+
+    let file = open_no_follow(target).map_err(|_| FILE_CHANGED.to_owned())?;
+    let opened_info = windows_regular_file_info(&file).map_err(|_| FILE_CHANGED.to_owned())?;
+    if opened_info.links > 1 {
+        return Err(HARD_LINK_REFUSED.into());
+    }
+    if (
+        opened_info.volume_serial,
+        opened_info.index_high,
+        opened_info.index_low,
+    ) != (
+        checked_info.volume_serial,
+        checked_info.index_high,
+        checked_info.index_low,
+    ) {
+        return Err(FILE_CHANGED.into());
+    }
+    Ok(file)
+}
+
+/// Opens without following a symlink at the last component or blocking on a Unix FIFO.
 fn open_no_follow(path: &Path) -> std::io::Result<std::fs::File> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
         std::fs::OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK).open(path)
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
     {
-        if std::fs::symlink_metadata(path)?.file_type().is_symlink() {
-            return Err(std::io::ErrorKind::InvalidInput.into());
-        }
-        std::fs::File::open(path)
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows::Win32::Storage::FileSystem::{
+            FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+        };
+
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags((FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS).0)
+            .open(path)?;
+        windows_regular_file_info(&file)?;
+        Ok(file)
     }
+}
+
+#[cfg(windows)]
+fn windows_regular_file_info(
+    file: &std::fs::File,
+) -> std::io::Result<crate::workspace::WindowsFileInfo> {
+    use windows::Win32::Storage::FileSystem::{
+        FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT,
+    };
+
+    let info = crate::workspace::windows_file_info(file)
+        .ok_or_else(|| std::io::Error::other("Could not inspect the opened file"))?;
+    if info.attributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT).0 != 0 {
+        return Err(std::io::ErrorKind::InvalidInput.into());
+    }
+    Ok(info)
 }
 
 #[cfg(unix)]
@@ -590,23 +658,13 @@ fn link_count(meta: &std::fs::Metadata) -> u64 {
     use std::os::unix::fs::MetadataExt;
     meta.nlink()
 }
-#[cfg(not(unix))]
-fn link_count(_meta: &std::fs::Metadata) -> u64 {
-    1
-}
-
 #[cfg(unix)]
 fn same_file(a: &std::fs::Metadata, b: &std::fs::Metadata) -> bool {
     use std::os::unix::fs::MetadataExt;
     a.dev() == b.dev() && a.ino() == b.ino()
 }
-#[cfg(not(unix))]
-fn same_file(_a: &std::fs::Metadata, _b: &std::fs::Metadata) -> bool {
-    true
-}
-
 /// Reads up to `limit` bytes from the handle; None when the file is (or grew) larger.
-fn read_bounded(file: std::fs::File, limit: u64) -> Result<Option<Vec<u8>>> {
+fn read_bounded(file: &std::fs::File, limit: u64) -> Result<Option<Vec<u8>>> {
     use std::io::Read as _;
     let mut bytes = Vec::new();
     file.take(limit + 1).read_to_end(&mut bytes).map_err(|e| e.to_string())?;
@@ -616,6 +674,10 @@ fn read_bounded(file: std::fs::File, limit: u64) -> Result<Option<Vec<u8>>> {
 /// `files.read`'s text, from the checked handle, with `workspace::read_file`'s rules.
 fn read_text_checked(root: &Path, path: &str, full: bool) -> Result<String> {
     let (_, file) = open_checked(root, path, full, TEXT_NOT_REGULAR)?;
+    read_text_handle(&file)
+}
+
+fn read_text_handle(file: &std::fs::File) -> Result<String> {
     if file.metadata().map_err(|e| e.to_string())?.len() > TEXT_LIMIT {
         return Err(TEXT_TOO_LARGE.into());
     }
@@ -639,7 +701,7 @@ fn image_data_url_checked(root: &Path, path: &str, full: bool) -> Result<String>
     if file.metadata().map_err(|e| e.to_string())?.len() > IMAGE_LIMIT {
         return Err(IMAGE_UNAVAILABLE.into());
     }
-    let bytes = read_bounded(file, IMAGE_LIMIT)?.ok_or(IMAGE_UNAVAILABLE)?;
+    let bytes = read_bounded(&file, IMAGE_LIMIT)?.ok_or(IMAGE_UNAVAILABLE)?;
     Ok(format!("data:{mime};base64,{}", base64::engine::general_purpose::STANDARD.encode(bytes)))
 }
 
@@ -732,15 +794,7 @@ impl Run for Write {
             // Saving can plant hooks (`.claude/settings.json`, `.husky/*`) that run later as the
             // user, so it needs the host's Full access like a shell does.
             super::terminal::require_full_access_to(ctx.full_access, super::terminal::EDIT_FILES)?;
-            let (_, root) = resolve(&ctx.state(), &self.target).await?;
-            refuse_running_in(&ctx, &root).await?;
-            let full = device_has_full(&ctx);
-            let Write { path, text, base_hash, .. } = *self;
-            let reply = crate::blocking(move || {
-                allow_secret(&root, &path, full)?;
-                write_text(&root, &path, &text, &base_hash)
-            })
-            .await?;
+            let reply = self.save(&ctx.state(), device_has_full(&ctx)).await?;
             use tauri::Emitter as _;
             let _ = ctx.app.emit("sessions-changed", ());
             Ok(reply)
@@ -748,43 +802,137 @@ impl Run for Write {
     }
 }
 
-/// Refuses while an agent runs in `root`: a task's worktree, or a main checkout a task works in.
-async fn refuse_running_in(ctx: &Ctx<'_>, root: &Path) -> Result<()> {
-    if running_in(ctx, root).await? {
-        return Err(WRITE_RUNNING.into());
+impl Write {
+    async fn save(self, state: &AppState, full: bool) -> Result<Value> {
+        let (root, file_checkout, reservation) =
+            reserve_current_target_checkout(state, &self.target, &self.path, |checkouts| {
+                reserve_idle_checkouts(state, checkouts, WRITE_RUNNING)
+            })
+            .await?;
+        let Self { path, text, base_hash, .. } = self;
+        crate::blocking(move || {
+            let _reservation = reservation;
+            write_text(&root, &path, &text, &base_hash, full, &file_checkout)
+        })
+        .await
     }
-    Ok(())
 }
 
-/// Whether an agent runs in `root`, literally or canonically (`git.discard` asks too).
-pub(super) async fn running_in(ctx: &Ctx<'_>, root: &Path) -> Result<bool> {
-    let state = ctx.state();
-    let running: Vec<String> = crate::run_requests::lock_agents(&state.agents).map_err(|e| e.to_string())?.keys().cloned().collect();
-    let mut others = Vec::with_capacity(running.len());
-    for session_id in running {
-        if let Ok(other) = task_root(&state, &session_id).await {
-            others.push(other);
+#[derive(PartialEq, Eq)]
+struct WriteCheckouts {
+    root: PathBuf,
+    file: PathBuf,
+}
+
+/// A save requires an existing file. Containment is checked before probing its Git checkout.
+fn canonical_write_file(root: &Path, path: &str) -> Result<PathBuf> {
+    const UNAVAILABLE: &str = "That file is not available.";
+    let base = root.canonicalize().map_err(|_| UNAVAILABLE)?;
+    let file = root.join(path).canonicalize().map_err(|_| UNAVAILABLE)?;
+    let relative = file.strip_prefix(&base).map_err(|_| UNAVAILABLE)?;
+    if relative.as_os_str().is_empty() || names_git(relative) {
+        return Err(UNAVAILABLE.into());
+    }
+    Ok(file)
+}
+
+fn file_checkout_identity(file: &Path) -> Result<PathBuf> {
+    file.parent()
+        .map(checkout_identity)
+        .ok_or_else(|| "That file is not available.".into())
+}
+
+async fn write_checkouts(root: &Path, path: &str) -> Result<WriteCheckouts> {
+    let (root, path) = (root.to_path_buf(), path.to_owned());
+    crate::blocking(move || {
+        let file = canonical_write_file(&root, &path)?;
+        Ok(WriteCheckouts {
+            root: checkout_identity(&root),
+            file: file_checkout_identity(&file)?,
+        })
+    })
+    .await
+}
+
+/// Worktree creation can move an unstarted task, and a file can resolve inside a nested checkout.
+/// Reserve the whole set together, then validate both the task root and the file's checkout.
+async fn reserve_current_target_checkout<F>(
+    state: &AppState,
+    target: &Target,
+    path: &str,
+    mut reserve: impl FnMut(Vec<PathBuf>) -> F,
+) -> Result<(PathBuf, PathBuf, Reservation)>
+where
+    F: std::future::Future<Output = Result<Reservation>>,
+{
+    let mut changed = WRITE_TASK_CHANGED;
+    for _ in 0..4 {
+        let (_, root) = resolve(state, target).await?;
+        let checkouts = write_checkouts(&root, path).await?;
+        let mut roots = vec![checkouts.root.clone()];
+        if checkouts.file != checkouts.root {
+            roots.push(checkouts.file.clone());
         }
+        for checkout in &roots {
+            if running_in_state(state, checkout).await? {
+                return Err(WRITE_RUNNING.into());
+            }
+        }
+        let reservation = reserve(roots).await?;
+        let (_, current_root) = resolve(state, target).await?;
+        changed = if current_root != root {
+            WRITE_TASK_CHANGED
+        } else {
+            let current_checkouts = write_checkouts(&root, path)
+                .await
+                .map_err(|_| WRITE_FILE_CHANGED)?;
+            if current_checkouts == checkouts {
+                return Ok((root, checkouts.file, reservation));
+            }
+            WRITE_FILE_CHANGED
+        };
+        drop(reservation);
     }
-    // Canonicalizing touches the file system (a slow or network volume can stall), so off the runtime.
-    let root = root.to_path_buf();
-    crate::blocking(move || Ok(any_same_checkout(&root, &others))).await
+    Err(changed.into())
 }
 
-/// Whether any of `others` is `root`, literally or once both are canonical.
-fn any_same_checkout(root: &Path, others: &[PathBuf]) -> bool {
-    let canonical = std::cell::OnceCell::new();
-    others.iter().any(|other| other == root || other.canonicalize().ok().is_some_and(|a| canonical.get_or_init(|| root.canonicalize().ok()).as_ref() == Some(&a)))
+pub(super) async fn running_in_state(state: &AppState, root: &Path) -> Result<bool> {
+    running_in_state_excluding(state, root, None).await
+}
+
+/// `running_in_state` that ignores `exclude_session`'s own run and pending exit: the one shared
+/// matcher in `checkout_busy` (agents snapshotted before pending exits, canonicalizing off the
+/// runtime, and respecting active checkout reservations).
+pub(super) async fn running_in_state_excluding(state: &AppState, root: &Path, exclude_session: Option<&str>) -> Result<bool> {
+    let root = root.to_path_buf();
+    crate::checkout_busy::any_checkout_busy_or_reserved_excluding(state, std::slice::from_ref(&root), exclude_session).await
 }
 
 /// Saves `text` over an existing text file under `root` when it still hashes to `base_hash`.
 /// Writes go one at a time, through a temporary sibling renamed over the file (keeping its mode).
-fn write_text(root: &Path, path: &str, text: &str, base_hash: &str) -> Result<Value> {
+fn write_text(
+    root: &Path,
+    path: &str,
+    text: &str,
+    base_hash: &str,
+    full: bool,
+    reserved_checkout: &Path,
+) -> Result<Value> {
     static WRITES: StdMutex<()> = StdMutex::new(());
     let _one = WRITES.lock().map_err(|e| e.to_string())?;
-    outside_git(root, path)?;
-    refuse_hard_link(root, path)?;
-    let current = crate::workspace::read_file(root, path.to_owned()).map_err(|error| match unreadable(path, &error) {
+    let checked_file = || -> Result<PathBuf> {
+        let file = canonical_write_file(root, path).map_err(|_| WRITE_FILE_CHANGED)?;
+        if file_checkout_identity(&file)? != reserved_checkout {
+            return Err(WRITE_FILE_CHANGED.into());
+        }
+        Ok(file)
+    };
+    let file = checked_file()?;
+    if !full && (is_secret_path(Path::new(path)) || is_secret_path(&file)) {
+        return Err(SECRET_REFUSED.into());
+    }
+    let handle = open_checked_target(&file, TEXT_NOT_REGULAR)?;
+    let current = read_text_handle(&handle).map_err(|error| match unreadable(path, &error) {
         Some(_) if error.starts_with("File exceeds") => "This file is too large to edit on the phone.".to_owned(),
         Some(_) => "Only text files can be edited on the phone.".to_owned(),
         None => error,
@@ -797,19 +945,28 @@ fn write_text(root: &Path, path: &str, text: &str, base_hash: &str) -> Result<Va
         }
         return Err(WRITE_CONFLICT.into());
     }
-    let base = root.canonicalize().map_err(|e| e.to_string())?;
-    let file = root.join(path).canonicalize().map_err(|e| e.to_string())?;
-    if !file.starts_with(&base) || into_git(root, path) {
-        return Err("That file is not available.".into());
-    }
+    let permissions = handle.metadata().map_err(|e| e.to_string())?.permissions();
+    drop(handle);
     let name = file.file_name().and_then(|n| n.to_str()).ok_or("That file is not available.")?;
     let temp = file.with_file_name(format!(".{name}.pandacode-{}.tmp", uuid::Uuid::new_v4().simple()));
-    let permissions = std::fs::metadata(&file).map_err(|e| e.to_string())?.permissions();
-    let saved = std::fs::write(&temp, text).and_then(|()| std::fs::set_permissions(&temp, permissions)).and_then(|()| std::fs::rename(&temp, &file));
-    if let Err(error) = saved {
-        let _ = std::fs::remove_file(&temp);
-        return Err(format!("Couldn't save {path}: {error}"));
+    if checked_file()? != file {
+        return Err(WRITE_FILE_CHANGED.into());
     }
+    let save_error = |error| format!("Couldn't save {path}: {error}");
+    let saved = (|| {
+        std::fs::write(&temp, text)
+            .and_then(|()| std::fs::set_permissions(&temp, permissions))
+            .map_err(save_error)?;
+        // Recheck the requested path after staging the replacement, before publishing it.
+        if checked_file()? != file {
+            return Err(WRITE_FILE_CHANGED.into());
+        }
+        std::fs::rename(&temp, &file).map_err(save_error)
+    })();
+    if saved.is_err() {
+        let _ = std::fs::remove_file(&temp);
+    }
+    saved?;
     Ok(json!({"path": path, "hash": content_hash(text), "total": text.len()}))
 }
 
@@ -837,7 +994,11 @@ fn hash_param(params: &Value) -> Result<String> {
 /// `path_param`'s textual `.git` check cannot see. Unresolvable paths are left to the readers.
 fn into_git(root: &Path, path: &str) -> bool {
     let (Ok(root), Ok(resolved)) = (root.canonicalize(), root.join(path).canonicalize()) else { return false };
-    resolved.strip_prefix(&root).is_ok_and(|inside| inside.components().any(|part| part.as_os_str().to_str().is_some_and(|name| name.eq_ignore_ascii_case(".git"))))
+    resolved.strip_prefix(&root).is_ok_and(names_git)
+}
+
+fn names_git(path: &Path) -> bool {
+    path.components().any(|part| part.as_os_str().to_str().is_some_and(|name| name.eq_ignore_ascii_case(".git")))
 }
 
 /// Refuses a path that resolves into `.git` (as `path_param` refuses one that names it).
@@ -903,14 +1064,11 @@ mod tests {
         std::fs::create_dir(&root).unwrap();
         let elsewhere = dir.join("other");
         std::fs::create_dir(&elsewhere).unwrap();
-        assert!(any_same_checkout(&root, std::slice::from_ref(&root)));
-        assert!(any_same_checkout(&root, &[elsewhere.clone(), root.join(".")]), "the same folder, spelled differently");
-        assert!(!any_same_checkout(&root, &[elsewhere, dir.join("missing")]));
-        assert!(!any_same_checkout(&root, &[]));
+        assert!(crate::checkout_busy::any_same_checkout(&root, std::slice::from_ref(&root)));
+        assert!(crate::checkout_busy::any_same_checkout(&root, &[elsewhere.clone(), root.join(".")]), "the same folder, spelled differently");
+        assert!(!crate::checkout_busy::any_same_checkout(&root, &[elsewhere, dir.join("missing")]));
+        assert!(!crate::checkout_busy::any_same_checkout(&root, &[]));
         std::fs::remove_dir_all(&dir).unwrap();
-        let source = include_str!("files.rs");
-        let body = &source[source.find("async fn refuse_running_in").unwrap()..];
-        assert!(body.find("crate::blocking(").unwrap() < body.find("any_same_checkout(&root").unwrap(), "canonicalizing runs off the async runtime");
     }
 
     fn parse(name: &str, params: Value) -> Result<Box<dyn Run>> {
@@ -1041,12 +1199,12 @@ mod tests {
             std::os::unix::fs::symlink(&data, &link).unwrap();
             assert!(touches_app_data(&link, data_ref), "a symlink to it");
         }
-        let source = include_str!("files.rs");
+        let source = include_str!("files.rs").replace("\r\n", "\n");
         let allow = &source[source.find("pub(crate) fn allow_root(").unwrap()..];
         assert!(allow[..allow.find("\n}\n").unwrap()].contains("touches_app_data(root, crate::secret_store::dir())"));
         std::fs::remove_dir_all(&dir).unwrap();
         // Every phone read path checks the root before reading.
-        let source = include_str!("files.rs");
+        let source = include_str!("files.rs").replace("\r\n", "\n");
         for method in ["impl Run for List", "impl Run for Read", "impl Run for Search", "impl Run for Grep", "pub(crate) fn checked_image_data_url("] {
             let body = &source[source.find(method).unwrap()..];
             let body = &body[..body.find("\n}\n").unwrap()];
@@ -1055,7 +1213,7 @@ mod tests {
         let host = include_str!("../host.rs");
         let diff = &host[host.find("Call::Diff { session_id, path, staged } =>").unwrap()..];
         assert!(diff[..diff.find("Call::BotsList").unwrap()].contains("allow_root(&root, full)?"), "task.diff");
-        let git = include_str!("git.rs");
+        let git = include_str!("git.rs").replace("\r\n", "\n");
         let turn = &git[git.find("impl Run for TurnDiff").unwrap()..];
         assert!(turn[..turn.find("\n}\n").unwrap()].contains("allow_root(root, full)?"), "turn.diff");
     }
@@ -1126,11 +1284,11 @@ mod tests {
     #[test]
     fn files_write_needs_full_access_for_remote_tasks() {
         // A Full-scope phone with the host switch off must not plant hooks that run as the user.
-        let source = include_str!("files.rs");
+        let source = include_str!("files.rs").replace("\r\n", "\n");
         let body = &source[source.find("impl Run for Write").unwrap()..];
         let body = &body[..body.find("\n}\n").unwrap()];
         let gate = body.find("require_full_access_to(ctx.full_access, super::terminal::EDIT_FILES)?").expect("files.write checks Full access");
-        assert!(gate < body.find("write_text").unwrap(), "checked before writing");
+        assert!(gate < body.find("self.save(").unwrap(), "checked before writing");
         assert_eq!(super::super::terminal::require_full_access_to(false, super::super::terminal::EDIT_FILES).unwrap_err(), "Turn on Full access for remote tasks on this computer to edit files.");
     }
 
@@ -1152,7 +1310,6 @@ mod tests {
 
     /// Round 12: a hard link to a file outside the project (say `~/.ssh/id_rsa`) carries no
     /// secret name and no symlink, so remote reads and writes refuse any linked file.
-    #[cfg(unix)]
     #[test]
     fn hard_linked_files_are_refused_for_reads_and_writes() {
         let dir = std::env::temp_dir().join(format!("pandacode-files-hardlink-{}", uuid::Uuid::new_v4().simple()));
@@ -1161,20 +1318,38 @@ mod tests {
         std::fs::create_dir_all(&outside).unwrap();
         std::fs::write(outside.join("id_rsa"), "PRIVATE KEY").unwrap();
         std::fs::hard_link(outside.join("id_rsa"), dir.join("notes.txt")).unwrap();
+        std::fs::hard_link(outside.join("id_rsa"), dir.join("notes.png")).unwrap();
         std::fs::write(dir.join("plain.txt"), "hello").unwrap();
+        #[cfg(unix)]
         std::os::unix::fs::symlink(dir.join("notes.txt"), dir.join("via-link.txt")).unwrap();
         // The readers compare canonical paths (macOS temp dirs sit behind /var -> /private/var).
         let dir = dir.canonicalize().unwrap();
         assert_eq!(refuse_hard_link(&dir, "notes.txt").unwrap_err(), HARD_LINK_REFUSED);
+        #[cfg(unix)]
         assert_eq!(refuse_hard_link(&dir, "via-link.txt").unwrap_err(), HARD_LINK_REFUSED, "a symlink to a linked file too");
         assert!(refuse_hard_link(&dir, "plain.txt").is_ok());
         assert!(refuse_hard_link(&dir, "missing.txt").is_ok(), "left to the reader's error");
         assert!(refuse_hard_link(&dir, ".").is_ok(), "folders have many links; only files are refused");
+        assert!(crate::workspace::hard_linked(&dir.join("notes.txt")));
+        assert!(!crate::workspace::hard_linked(&dir.join("plain.txt")));
+        assert_eq!(
+            read_text_checked(&dir, "notes.txt", true).unwrap_err(),
+            HARD_LINK_REFUSED
+        );
+        assert_eq!(
+            image_data_url_checked(&dir, "notes.png", true).unwrap_err(),
+            HARD_LINK_REFUSED
+        );
+        assert_eq!(read_text_checked(&dir, "plain.txt", true).unwrap(), "hello");
+        assert_eq!(
+            read_text_checked(&dir, ".", true).unwrap_err(),
+            TEXT_NOT_REGULAR
+        );
         let hash = content_hash("PRIVATE KEY");
-        assert_eq!(write_text(&dir, "notes.txt", "changed", &hash).unwrap_err(), HARD_LINK_REFUSED);
+        assert_eq!(write_test_text(&dir, "notes.txt", "changed", &hash).unwrap_err(), HARD_LINK_REFUSED);
         assert_eq!(std::fs::read_to_string(outside.join("id_rsa")).unwrap(), "PRIVATE KEY", "nothing written");
-        write_text(&dir, "plain.txt", "changed", &content_hash("hello")).unwrap();
-        let source = include_str!("files.rs");
+        write_test_text(&dir, "plain.txt", "PRIVATE sample", &content_hash("hello")).unwrap();
+        let source = include_str!("files.rs").replace("\r\n", "\n");
         for method in ["impl Run for Read", "fn checked_image_data_url"] {
             let body = &source[source.find(method).unwrap()..];
             let body = &body[..body.find("\n}\n").unwrap()];
@@ -1183,7 +1358,8 @@ mod tests {
         }
         // files.grep: a hard link named notes.txt pointing outside the project is never returned.
         let found = crate::workspace::search_text_for_phone(&dir, "PRIVATE", true, false, false).unwrap();
-        assert!(found.files.iter().all(|file| file.path != "notes.txt" && file.path != "via-link.txt"), "{:?}", found.files.iter().map(|f| &f.path).collect::<Vec<_>>());
+        let paths: Vec<_> = found.files.iter().map(|file| file.path.as_str()).collect();
+        assert_eq!(paths, ["plain.txt"]);
         let grep = &source[source.find("impl Run for Grep").unwrap()..];
         assert!(grep[..grep.find("\n}\n").unwrap()].contains("search_text_for_phone("), "files.grep searches as a phone");
         let _ = std::fs::remove_dir_all(dir);
@@ -1360,32 +1536,39 @@ mod tests {
         let page = read_page(&root, "src/a.txt".into(), 0, false).unwrap();
         let base = page["hash"].as_str().unwrap().to_owned();
         assert_eq!(base, content_hash("one\n"));
-        let saved = write_text(&root, "src/a.txt", "two\n", &base).unwrap();
+        let saved = write_test_text(&root, "src/a.txt", "two\n", &base).unwrap();
         assert_eq!(std::fs::read_to_string(root.join("src/a.txt")).unwrap(), "two\n");
         assert_eq!(saved["hash"], content_hash("two\n"));
-        assert_eq!(write_text(&root, "src/a.txt", "three\n", &base).unwrap_err(), WRITE_CONFLICT, "a stale base is a conflict");
+        assert_eq!(write_test_text(&root, "src/a.txt", "three\n", &base).unwrap_err(), WRITE_CONFLICT, "a stale base is a conflict");
         // Round 7: the same save retried after its reply was lost succeeds instead of conflicting.
-        let retried = write_text(&root, "src/a.txt", "two\n", &base).unwrap();
+        let retried = write_test_text(&root, "src/a.txt", "two\n", &base).unwrap();
         assert_eq!(retried, saved, "a retry answers as the save that landed");
         assert_eq!(std::fs::read_to_string(root.join("src/a.txt")).unwrap(), "two\n");
-        assert!(write_text(&root, "bin.dat", "x", &content_hash("")).unwrap_err().contains("text"));
-        assert!(write_text(&root, "big.txt", "x", &content_hash("")).unwrap_err().contains("large"));
-        assert!(write_text(&root, "missing.txt", "x", &content_hash("")).is_err(), "only existing files");
+        assert!(write_test_text(&root, "bin.dat", "x", &content_hash("")).unwrap_err().contains("text"));
+        assert!(write_test_text(&root, "big.txt", "x", &content_hash("")).unwrap_err().contains("large"));
+        assert!(write_test_text(&root, "missing.txt", "x", &content_hash("")).is_err(), "only existing files");
         assert!(!std::fs::read_dir(root.join("src")).unwrap().any(|e| e.unwrap().file_name().to_string_lossy().ends_with(".tmp")));
         #[cfg(unix)]
         {
             std::os::unix::fs::symlink(root.join(".git/config"), root.join("config.txt")).unwrap();
-            assert!(write_text(&root, "config.txt", "x", &content_hash("[core]")).is_err(), "a link into .git");
+            assert!(write_test_text(&root, "config.txt", "x", &content_hash("[core]")).is_err(), "a link into .git");
             let outside = std::env::temp_dir().join(format!("pandacode-write-outside-{}", uuid::Uuid::new_v4().simple()));
             std::fs::write(&outside, "keep").unwrap();
             std::os::unix::fs::symlink(&outside, root.join("escape.txt")).unwrap();
-            assert!(write_text(&root, "escape.txt", "x", &content_hash("keep")).is_err(), "a link out of the root");
+            assert_eq!(write_test_text(&root, "escape.txt", "x", &content_hash("keep")).unwrap_err(), "That file is not available.");
             assert_eq!(std::fs::read_to_string(&outside).unwrap(), "keep");
+            std::fs::remove_file(&outside).unwrap();
+            assert_eq!(write_test_text(&root, "escape.txt", "x", &content_hash("keep")).unwrap_err(), "That file is not available.");
             std::fs::write(root.join(".env"), "TOKEN=x").unwrap();
             assert_eq!(allow_secret(&root, ".env", false).unwrap_err(), SECRET_REFUSED);
-            let _ = std::fs::remove_file(outside);
         }
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    fn write_test_text(root: &Path, path: &str, text: &str, base_hash: &str) -> Result<Value> {
+        let file = canonical_write_file(root, path)?;
+        let checkout = file_checkout_identity(&file)?;
+        write_text(root, path, text, base_hash, true, &checkout)
     }
 
     #[test]
@@ -1446,14 +1629,14 @@ mod tests {
         let helper = "pub(crate) fn checked_image_data_url(";
         let needle = ["image", "_data_url("].concat();
         for file in files {
-            let source = std::fs::read_to_string(&file).unwrap();
+            let source = std::fs::read_to_string(&file).unwrap().replace("\r\n", "\n");
             let source = source.split("#[cfg(test)]\nmod tests").next().unwrap();
             for (at, _) in source.match_indices(&needle) {
                 let allowed = source[..at].ends_with("checked_") || source[..at].rfind(helper).is_some_and(|start| !source[start..at].contains("\n}\n"));
                 assert!(allowed, "{}: image_data_url must go through checked_image_data_url", file.display());
             }
         }
-        let host = include_str!("../host.rs");
+        let host = include_str!("../host.rs").replace("\r\n", "\n");
         let arm = &host[host.find("Call::WorkspaceImage { session_id, path, variant, offset } =>").unwrap()..];
         assert!(arm[..arm.find("\n        }\n").unwrap()].contains("checked_image_data_url(&root, &path, full)"), "task.workspaceImage uses the helper");
     }
@@ -1514,5 +1697,325 @@ mod tests {
         assert!(open_no_follow(&root.join("escape.txt")).is_err(), "the final component is never followed");
         let _ = std::fs::remove_dir_all(dir);
         let _ = std::fs::remove_dir_all(outside);
+    }
+
+    fn test_state(store: crate::storage::Store) -> AppState {
+        AppState {
+            store: std::sync::Arc::new(std::sync::Mutex::new(store)),
+            agents: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+            terminals: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+            shutdown: std::sync::atomic::AtomicU8::new(0),
+        }
+    }
+
+    #[tokio::test]
+    async fn pending_exit_marks_shared_checkout_busy_for_sibling_session() {
+        let dir = std::env::temp_dir().join(format!("pandacode-files-pending-{}", uuid::Uuid::new_v4().simple()));
+        let root = dir.join("repo");
+        let elsewhere = dir.join("other");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        let store = crate::storage::Store::open(Path::new(":memory:")).unwrap();
+        let project = store.add_project(&root).unwrap();
+        let first = store.create_session(&project.id, "claude", "default", "full").unwrap();
+        let sibling = store.create_session(&project.id, "claude", "default", "full").unwrap();
+        let state = test_state(store);
+        let sibling_root = task_root(&state, &sibling.id).await.unwrap();
+
+        assert!(!running_in_state(&state, &sibling_root).await.unwrap());
+        let hold = crate::providers::hold_exit_for_test(&first.id);
+        assert!(running_in_state(&state, &sibling_root).await.unwrap(), "sibling session checkout must report busy while an exit is pending");
+        assert!(!running_in_state(&state, &elsewhere).await.unwrap(), "unrelated checkout must remain free");
+        drop(hold);
+        crate::providers::await_exit(&first.id).await.unwrap();
+        assert!(!running_in_state(&state, &sibling_root).await.unwrap(), "checkout must be free once the pending exit finishes");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn pending_exit_with_cwd_marks_checkout_busy_without_persisted_task() {
+        let dir = std::env::temp_dir().join(format!("pandacode-files-cwd-{}", uuid::Uuid::new_v4().simple()));
+        let root = dir.join("repo");
+        let elsewhere = dir.join("other");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        let store = crate::storage::Store::open(Path::new(":memory:")).unwrap();
+        let state = test_state(store);
+        let ephemeral = format!("ephemeral-exit-{}", uuid::Uuid::new_v4().simple());
+
+        assert!(!running_in_state(&state, &root).await.unwrap());
+        let hold = crate::providers::hold_exit_in_cwd_for_test(&ephemeral, root.clone());
+        assert!(running_in_state(&state, &root).await.unwrap(), "recorded cwd must mark checkout busy even without a persisted task");
+        assert!(running_in_state(&state, &root.join(".")).await.unwrap(), "canonical path spelling must also match");
+        assert!(!running_in_state(&state, &elsewhere).await.unwrap(), "unrelated checkout must stay free");
+        drop(hold);
+        crate::providers::await_exit(&ephemeral).await.unwrap();
+        assert!(!running_in_state(&state, &root).await.unwrap(), "checkout must clear once the pending exit ends");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// The phone's refusal goes through the one shared matcher: a running agent in the checkout
+    /// (any spelling) counts unless excluded, and a nested worktree's exit holds only that worktree.
+    #[tokio::test]
+    async fn running_in_state_excluding_uses_the_shared_checkout_matcher() {
+        let dir = std::env::temp_dir().join(format!("pandacode-files-shared-{}", uuid::Uuid::new_v4().simple()));
+        let main = dir.join("main");
+        let nested = main.join(".claude").join("worktrees").join("x");
+        let admin = main.join(".git").join("worktrees").join("x");
+        std::fs::create_dir_all(&admin).unwrap();
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(admin.join("commondir"), "../..\n").unwrap();
+        std::fs::write(nested.join(".git"), "gitdir: ../../../.git/worktrees/x\n").unwrap();
+        let store = crate::storage::Store::open(Path::new(":memory:")).unwrap();
+        let project = store.add_project(&main).unwrap();
+        let session = store.create_session(&project.id, "claude", "default", "full").unwrap();
+        let state = test_state(store);
+
+        let (input, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let stopped = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        state.agents.lock().unwrap().insert(session.id.clone(), crate::RunningAgent::new(input, stopped));
+        assert!(running_in_state_excluding(&state, &main, None).await.unwrap(), "an agent running in the checkout");
+        assert!(running_in_state_excluding(&state, &main.join("."), None).await.unwrap(), "the same checkout, spelled differently");
+        assert!(!running_in_state_excluding(&state, &main, Some(&session.id)).await.unwrap(), "the excluded session's own run");
+        assert!(!running_in_state_excluding(&state, &nested, None).await.unwrap(), "the main checkout is not inside its nested worktree");
+        state.agents.lock().unwrap().remove(&session.id);
+
+        let ephemeral = format!("ephemeral-nested-{}", uuid::Uuid::new_v4().simple());
+        let hold = crate::providers::hold_exit_in_cwd_for_test(&ephemeral, nested.join("src"));
+        assert!(running_in_state_excluding(&state, &nested, None).await.unwrap(), "an exit inside the nested worktree holds it");
+        assert!(!running_in_state_excluding(&state, &main, None).await.unwrap(), "but not the main checkout around it");
+        assert!(!running_in_state_excluding(&state, &nested, Some(&ephemeral)).await.unwrap());
+        drop(hold);
+        crate::providers::await_exit(&ephemeral).await.unwrap();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn running_in_state_excluding_skips_excluded_session_but_catches_others() {
+        let dir = std::env::temp_dir().join(format!("pandacode-files-excl-{}", uuid::Uuid::new_v4().simple()));
+        let root = dir.join("repo");
+        std::fs::create_dir_all(&root).unwrap();
+        let store = crate::storage::Store::open(Path::new(":memory:")).unwrap();
+        let project = store.add_project(&root).unwrap();
+        let first = store.create_session(&project.id, "claude", "default", "full").unwrap();
+        let sibling = store.create_session(&project.id, "claude", "default", "full").unwrap();
+        let state = test_state(store);
+
+        let hold_first = crate::providers::hold_exit_for_test(&first.id);
+        assert!(running_in_state(&state, &root).await.unwrap());
+        assert!(!running_in_state_excluding(&state, &root, Some(&first.id)).await.unwrap(), "excluded session's own pending exit is ignored");
+        assert!(running_in_state_excluding(&state, &root, Some(&sibling.id)).await.unwrap(), "other session's pending exit still marks busy");
+
+        let hold_sibling = crate::providers::hold_exit_for_test(&sibling.id);
+        assert!(running_in_state_excluding(&state, &root, Some(&first.id)).await.unwrap(), "sibling pending exit still marks busy when first is excluded");
+        drop(hold_sibling);
+        crate::providers::await_exit(&sibling.id).await.unwrap();
+        drop(hold_first);
+        crate::providers::await_exit(&first.id).await.unwrap();
+        assert!(!running_in_state_excluding(&state, &root, Some(&first.id)).await.unwrap());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn write_nested_checkout_refuses_its_agent_or_reservation_and_saves_when_idle() {
+        use crate::checkout_busy::checkout_reserved;
+
+        let checkout = crate::checkout_busy::test_support::Checkout::new();
+        let path = ".claude/worktrees/x/notes.txt";
+        let file = checkout.root.join(path);
+        std::fs::write(&file, "before").unwrap();
+        let store = crate::storage::Store::open(Path::new(":memory:")).unwrap();
+        let project = store.add_project(&checkout.root).unwrap();
+        let task = store.create_session(&project.id, "claude", "default", "full").unwrap();
+        let nested_task = store.create_worktree_session_on(&task, &checkout.nested, Some("next")).unwrap();
+        let state = test_state(store);
+        let save = || Write {
+            target: Target::Task(task.id.clone()),
+            path: path.into(),
+            text: "after".into(),
+            base_hash: content_hash("before"),
+        }.save(&state, true);
+
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        state.agents.lock().unwrap().insert(nested_task.id.clone(), crate::RunningAgent::new(tx, Default::default()));
+        assert!(!running_in_state(&state, &checkout.root).await.unwrap());
+        assert_eq!(save().await.unwrap_err(), WRITE_RUNNING);
+        state.agents.lock().unwrap().remove(&nested_task.id);
+
+        let occupied = reserve_idle_checkouts(&state, vec![checkout.nested.clone()], "busy").await.unwrap();
+        assert_eq!(save().await.unwrap_err(), WRITE_RUNNING);
+        assert!(!checkout_reserved(&state.agents, &checkout.root), "no partial reservation");
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "before");
+        drop(occupied);
+
+        assert_eq!(save().await.unwrap()["hash"], content_hash("after"));
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "after");
+        assert!(!checkout_reserved(&state.agents, &checkout.root));
+        assert!(!checkout_reserved(&state.agents, &checkout.nested));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn write_revalidates_a_file_link_moved_to_another_checkout() {
+        use crate::checkout_busy::checkout_reserved;
+        use std::os::unix::fs::symlink;
+
+        let checkout = crate::checkout_busy::test_support::Checkout::new();
+        let main_file = checkout.root.join("main.txt");
+        let nested_file = checkout.nested.join("nested.txt");
+        let link = checkout.root.join("note.txt");
+        for file in [&main_file, &nested_file] {
+            std::fs::write(file, "before").unwrap();
+        }
+        symlink(&main_file, &link).unwrap();
+        let store = crate::storage::Store::open(Path::new(":memory:")).unwrap();
+        let project = store.add_project(&checkout.root).unwrap();
+        let state = test_state(store);
+        let target = Target::Project(project.id);
+        let mut attempts = 0;
+        let (root, file_checkout, reservation) = reserve_current_target_checkout(&state, &target, "note.txt", |checkouts| {
+            attempts += 1;
+            if attempts == 1 {
+                assert_eq!(checkouts.len(), 1);
+                std::fs::remove_file(&link).unwrap();
+                symlink(&nested_file, &link).unwrap();
+            } else {
+                assert_eq!(checkouts.len(), 2);
+                assert!(!checkout_reserved(&state.agents, &checkout.root));
+            }
+            reserve_idle_checkouts(&state, checkouts, WRITE_RUNNING)
+        }).await.unwrap();
+
+        assert_eq!(attempts, 2);
+        assert!(checkout_reserved(&state.agents, &checkout.root));
+        assert!(checkout_reserved(&state.agents, &checkout.nested));
+        std::fs::remove_file(&link).unwrap();
+        symlink(&main_file, &link).unwrap();
+        let refused = write_text(&root, "note.txt", "after", &content_hash("before"), true, &file_checkout).unwrap_err();
+        assert_eq!(refused, "This file's checkout changed while saving. Try again.");
+        assert_eq!(std::fs::read_to_string(&main_file).unwrap(), "before");
+        assert_eq!(std::fs::read_to_string(&nested_file).unwrap(), "before");
+        drop(reservation);
+    }
+
+    #[tokio::test]
+    async fn write_reservation_follows_a_task_moved_to_a_worktree() {
+        let checkout = crate::checkout_busy::test_support::Checkout::new();
+        let store = crate::storage::Store::open(Path::new(":memory:")).unwrap();
+        let project = store.add_project(&checkout.root).unwrap();
+        let task = store.create_session(&project.id, "claude", "default", "full").unwrap();
+        let state = test_state(store);
+        let main = checkout.root.canonicalize().unwrap();
+        let worktree = checkout.nested.canonicalize().unwrap();
+        for root in [&main, &worktree] {
+            std::fs::write(root.join("notes.txt"), "before").unwrap();
+        }
+        let mut attempts = 0;
+
+        let (root, file_checkout, reservation) = reserve_current_target_checkout(&state, &Target::Task(task.id.clone()), "notes.txt", |roots| {
+            attempts += 1;
+            if attempts == 1 {
+                assert_eq!(roots.as_slice(), std::slice::from_ref(&main));
+                state.store.lock().unwrap().attach_worktree(&task.id, &worktree, "pandacode/x").unwrap();
+            } else {
+                assert_eq!(roots.as_slice(), std::slice::from_ref(&worktree));
+                assert!(!crate::checkout_busy::checkout_reserved(&state.agents, &main));
+            }
+            reserve_idle_checkouts(&state, roots, WRITE_RUNNING)
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(attempts, 2);
+        assert_eq!(root, worktree);
+        assert_eq!(file_checkout, worktree);
+        assert!(crate::checkout_busy::checkout_reserved(&state.agents, &worktree));
+        drop(reservation);
+        assert!(!crate::checkout_busy::checkout_reserved(&state.agents, &worktree));
+    }
+
+    #[tokio::test]
+    async fn write_reservation_releases_every_checkout_when_the_task_keeps_moving() {
+        let checkout = crate::checkout_busy::test_support::Checkout::new();
+        let store = crate::storage::Store::open(Path::new(":memory:")).unwrap();
+        let project = store.add_project(&checkout.root).unwrap();
+        let task = store.create_session(&project.id, "claude", "default", "full").unwrap();
+        let state = test_state(store);
+        let main = checkout.root.canonicalize().unwrap();
+        let worktree = checkout.nested.canonicalize().unwrap();
+        for root in [&main, &worktree] {
+            std::fs::write(root.join("notes.txt"), "before").unwrap();
+        }
+        let worktree_path = worktree.to_string_lossy();
+        let mut attempts = 0;
+
+        let result = reserve_current_target_checkout(&state, &Target::Task(task.id.clone()), "notes.txt", |roots| {
+            attempts += 1;
+            let next = if roots[0] == main { Some(worktree_path.as_ref()) } else { None };
+            state.store.lock().unwrap().db.execute(
+                "UPDATE sessions SET worktree_path=?2 WHERE id=?1",
+                rusqlite::params![task.id, next],
+            ).unwrap();
+            reserve_idle_checkouts(&state, roots, WRITE_RUNNING)
+        })
+        .await;
+
+        assert_eq!(attempts, 4);
+        assert_eq!(result.err().as_deref(), Some("This task's checkout changed while saving. Try again."));
+        assert!(!crate::checkout_busy::checkout_reserved(&state.agents, &main));
+        assert!(!crate::checkout_busy::checkout_reserved(&state.agents, &worktree));
+    }
+
+    #[tokio::test]
+    async fn checkout_reservation_blocks_files_write_and_write_reservation_blocks_checkout_reserved() {
+        let checkout = crate::checkout_busy::test_support::Checkout::new();
+        let store = crate::storage::Store::open(Path::new(":memory:")).unwrap();
+        let state = test_state(store);
+
+        let desktop_res = crate::checkout_busy::reserve_idle_checkouts(
+            &state,
+            vec![checkout.pkg_a.clone()],
+            "busy",
+        )
+        .await
+        .unwrap();
+        assert!(running_in_state(&state, &checkout.pkg_a).await.unwrap());
+        assert!(running_in_state(&state, &checkout.pkg_b).await.unwrap(), "sibling subfolder shares the Git checkout");
+        assert!(running_in_state(&state, &checkout.root).await.unwrap());
+        assert!(!running_in_state(&state, &checkout.nested).await.unwrap(), "nested linked worktree is independent");
+        assert_eq!(
+            crate::checkout_busy::reserve_idle_checkouts(&state, vec![checkout.pkg_b.clone()], WRITE_RUNNING)
+                .await
+                .err()
+                .as_deref(),
+            Some(WRITE_RUNNING),
+        );
+        drop(desktop_res);
+
+        assert!(!running_in_state(&state, &checkout.pkg_a).await.unwrap());
+        let write_res = crate::checkout_busy::reserve_idle_checkouts(
+            &state,
+            vec![checkout.pkg_a.clone()],
+            WRITE_RUNNING,
+        )
+        .await
+        .unwrap();
+        assert!(crate::checkout_busy::checkout_reserved(&state.agents, &checkout.pkg_a));
+        assert!(crate::checkout_busy::checkout_reserved(&state.agents, &checkout.pkg_b));
+        assert!(crate::checkout_busy::checkout_reserved(&state.agents, &checkout.root));
+        assert!(!crate::checkout_busy::checkout_reserved(&state.agents, &checkout.nested));
+        drop(write_res);
+        assert!(!crate::checkout_busy::checkout_reserved(&state.agents, &checkout.pkg_a));
+
+        // Write::save revalidates the checkout and moves the reservation into `blocking`.
+        let source = include_str!("files.rs").replace("\r\n", "\n");
+        let body = &source[source.find("impl Write {").unwrap()..];
+        let body = &body[..body.find("\n}\n").unwrap()];
+        let revalidate = body.find("reserve_current_target_checkout(").unwrap();
+        let reserve = body.find("reserve_idle_checkouts(").unwrap();
+        let blocking = body.find("crate::blocking(move ||").unwrap();
+        let hold = body[blocking..].find("let _reservation = reservation;").unwrap();
+        let write = body[blocking..].find("write_text(").unwrap();
+        assert!(revalidate < reserve && reserve < blocking && hold < write);
     }
 }

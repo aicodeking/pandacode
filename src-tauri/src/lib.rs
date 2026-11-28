@@ -16,6 +16,8 @@ mod memory;
 #[cfg(target_os = "macos")]
 mod app_menu;
 mod app_updates;
+mod app_marker;
+mod app_instructions;
 mod appearance;
 mod architect;
 mod bots;
@@ -23,6 +25,10 @@ mod chats;
 mod browser;
 mod child_env;
 mod checks;
+mod checkout_busy;
+mod claude_roots;
+mod git_config;
+mod path_match;
 mod code_search;
 mod connections;
 mod crash_guard;
@@ -30,7 +36,9 @@ mod command_operations;
 mod context_recovery;
 mod conversation_fork;
 mod conversation_import;
+mod custom_tools;
 mod design;
+mod explore;
 mod progress;
 mod file_preview;
 mod run_script;
@@ -71,6 +79,7 @@ mod panda_router;
 mod provider_settings;
 mod remote;
 mod providers;
+mod session_state;
 mod session_titles;
 mod slash_commands;
 mod recipes;
@@ -106,6 +115,14 @@ pub use headless::handle_version;
 pub use crash_guard::handle as handle_crash_guard;
 pub use voice::local::handle_speech_worker;
 
+#[cfg(test)]
+use app_instructions::app_instructions;
+use app_instructions::{custom_tools_offered, instruct_launch, plan_tools_note, HostPlan, LaunchText};
+#[cfg(test)]
+use app_instructions::Role;
+pub(crate) use checkout_busy::{
+    guard_idle, quiesce_worktree, refuse_worktree_merge_busy, refuse_worktree_remove_busy,
+};
 use providers::{AgentEvent, RunConfig, RunInput};
 use serde::Serialize;
 use std::{
@@ -376,6 +393,9 @@ fn remove_pending_request(
 #[path = "lib_tests/pending_requests.rs"]
 mod pending_request_tests;
 
+mod launch_host;
+use launch_host::{launch_role, run_host, screenshot_paths, start_spare, HostInputs, RunSink};
+mod lead_spare;
 #[cfg(test)]
 mod concurrent_task_tests;
 
@@ -524,300 +544,7 @@ mod read_scan_tests {
 }
 
 #[cfg(test)]
-mod task_agent_tests {
-    use super::*;
-
-    #[test]
-    fn a_listing_reads_a_teams_status_alone_and_survives_a_corrupt_row() {
-        let store = Store::open(std::path::Path::new(":memory:")).unwrap();
-        let project = store.add_project(&std::env::temp_dir()).unwrap();
-        let task = store.create_session(&project.id, "codex", "default", "ask").unwrap();
-        let listed = |content: &str| {
-            store.db.execute("INSERT INTO architect_teams(session_id,content) VALUES(?1,?2) ON CONFLICT(session_id) DO UPDATE SET content=excluded.content", rusqlite::params![task.id, content]).unwrap();
-            reconcile_inactive_task(&store, &HashMap::new(), store.session(&task.id).unwrap()).status
-        };
-        // Nothing but the status: a full parse of this row would fail.
-        assert_eq!(listed(r#"{"status":"waiting"}"#), "waiting");
-        assert_eq!(listed(r#"{"status":"paused"}"#), "idle");
-        assert_eq!(listed("not json"), "idle");
-    }
-
-    #[test]
-    fn a_listing_reads_every_working_team_once_with_the_same_answer_as_each_task() {
-        let store = Store::open(std::path::Path::new(":memory:")).unwrap();
-        let project = store.add_project(&std::env::temp_dir()).unwrap();
-        let contents = [Some(r#"{"status":"running"}"#), Some(r#"{"status":"waiting"}"#), Some(r#"{"status":"paused"}"#), Some("not json"), None];
-        let tasks = contents.map(|content| {
-            let task = store.create_session(&project.id, "codex", "default", "ask").unwrap();
-            if let Some(content) = content {
-                store.db.execute("INSERT INTO architect_teams(session_id,content) VALUES(?1,?2)", rusqlite::params![task.id, content]).unwrap();
-            }
-            task.id
-        });
-        let leads = architect::active_team_session_ids(&store).unwrap();
-        assert_eq!(leads, tasks[..2].iter().cloned().collect::<HashSet<_>>());
-        for id in &tasks {
-            let one = reconcile_inactive_task(&store, &HashMap::new(), store.session(id).unwrap());
-            let batched = reconcile_inactive_task_with_active(&store, &HashMap::new(), Some(&leads), store.session(id).unwrap());
-            assert_eq!((one.status, one.task_stage), (batched.status, batched.task_stage));
-        }
-    }
-
-    #[test]
-    fn account_switch_notes_preserve_the_marker_and_body_in_message_pages() {
-        let store = Store::open(std::path::Path::new(":memory:")).unwrap();
-        let project = store.add_project(&std::env::temp_dir()).unwrap();
-        let task = store.create_session(&project.id, "claude", "sonnet", "ask").unwrap();
-        let assistant = Mutex::new("Checking the project.".to_string());
-        let body = "Account switched\nThe default Claude account reached its usage limit, so this task continues on “Backup”.";
-        let mut switch = event(&task.id, "note", body);
-        switch.data = Some(serde_json::json!({"accountPool": {"connectionId": "b"}}));
-        save_agent_activity(&store, &assistant, &mut switch, None).unwrap();
-        let mut ordinary = event(&task.id, "note", "Waiting for a background task.");
-        save_agent_activity(&store, &assistant, &mut ordinary, None).unwrap();
-        let page = store.message_page(&task.id, None).unwrap();
-        let rows: Vec<_> = page.messages.iter().map(|message| (message.role.as_str(), message.content.as_str())).collect();
-        assert_eq!(rows, [
-            ("assistant", "Checking the project."),
-            ("system", body),
-            ("system", "Waiting for a background task."),
-        ]);
-        assert!(!page.has_older);
-        assert!(assistant.lock().unwrap().is_empty());
-        assert_eq!(switch.kind, "note");
-        assert_eq!(switch.text, body);
-        assert_eq!(switch.data.unwrap()["accountPool"]["connectionId"], "b");
-    }
-
-    #[test]
-    fn dismiss_error_event_carries_its_saved_row_id() {
-        let store = Store::open(std::path::Path::new(":memory:")).unwrap();
-        let project = store.add_project(&std::env::temp_dir()).unwrap();
-        let task = store.create_session(&project.id, "claude", "sonnet", "ask").unwrap();
-        let assistant = Mutex::new(String::new());
-        let mut first = event(&task.id, "error", "boom");
-        save_agent_activity(&store, &assistant, &mut first, None).unwrap();
-        let mut repeat = event(&task.id, "error", "boom");
-        repeat.data = Some(serde_json::json!({"code": 7}));
-        save_agent_activity(&store, &assistant, &mut repeat, None).unwrap();
-        let mut odd = event(&task.id, "error", "boom");
-        odd.data = Some(serde_json::json!("opaque"));
-        save_agent_activity(&store, &assistant, &mut odd, None).unwrap();
-        let ids: Vec<i64> = store.message_page(&task.id, None).unwrap().messages.iter().map(|m| m.id).collect();
-        assert_eq!(ids.len(), 3);
-        assert_eq!(first.data.unwrap()["messageId"], ids[0]);
-        let repeat = repeat.data.unwrap();
-        assert_eq!((repeat["messageId"].as_i64(), repeat["code"].as_i64()), (Some(ids[1]), Some(7)));
-        assert_eq!(odd.data, Some(serde_json::json!("opaque")));
-        // Only error events get an id; a failed write leaves the event without one.
-        let mut note = event(&task.id, "note", "fine");
-        save_agent_activity(&store, &assistant, &mut note, None).unwrap();
-        assert!(note.data.is_none());
-        store.db.execute_batch("CREATE TRIGGER reject_error BEFORE INSERT ON messages WHEN NEW.role='error' BEGIN SELECT RAISE(ABORT,'nope'); END;").unwrap();
-        let mut unsaved = event(&task.id, "error", "boom");
-        assert!(save_agent_activity(&store, &assistant, &mut unsaved, None).is_err());
-        assert!(unsaved.data.is_none());
-    }
-
-    #[test]
-    fn assistant_boundaries_preserve_separate_commentary_and_final_rows_without_tools() {
-        let store = Store::open(std::path::Path::new(":memory:")).unwrap();
-        let project = store.add_project(&std::env::temp_dir()).unwrap();
-        let task = store
-            .create_session(&project.id, "codex", "default", "ask")
-            .unwrap();
-        store.begin_task_turn(&task.id, "Build a game").unwrap();
-        let assistant = Mutex::new(String::new());
-        let mut boundary = event(&task.id, "message_start", "");
-        boundary.data = Some(serde_json::json!({"messageId": "commentary", "phase": "commentary"}));
-        save_agent_activity(&store, &assistant, &mut boundary, None).unwrap();
-        assistant.lock().unwrap().push_str("I’ll build it ");
-        assistant.lock().unwrap().push_str("with a timer.");
-        // Deltas stay in memory until a real message boundary; the first
-        // response is durable before the final response begins streaming.
-        assert_eq!(store.messages(&task.id, None).unwrap().len(), 1);
-        boundary.data = Some(serde_json::json!({"messageId": "final", "phase": "final_answer"}));
-        save_agent_activity(&store, &assistant, &mut boundary, None).unwrap();
-        assert_eq!(
-            store.messages(&task.id, None).unwrap()[1].content,
-            "I’ll build it with a timer."
-        );
-        assistant.lock().unwrap().push_str("The game is ready.");
-        flush_assistant(&store, &task.id, &assistant).unwrap();
-        flush_assistant(&store, &task.id, &assistant).unwrap();
-        let messages = store.messages(&task.id, None).unwrap();
-        assert_eq!(
-            messages
-                .iter()
-                .map(|message| message.role.as_str())
-                .collect::<Vec<_>>(),
-            ["user", "assistant", "assistant"]
-        );
-        assert_eq!(messages[2].content, "The game is ready.");
-        assert!(messages[1].id < messages[2].id);
-    }
-
-    #[test]
-    fn boundaries_after_tools_do_not_add_empty_or_duplicate_assistant_rows() {
-        let store = Store::open(std::path::Path::new(":memory:")).unwrap();
-        let project = store.add_project(&std::env::temp_dir()).unwrap();
-        let task = store
-            .create_session(&project.id, "claude", "sonnet", "ask")
-            .unwrap();
-        let assistant = Mutex::new("Checking the project.".to_string());
-        let mut tool = event(&task.id, "tool", "Read");
-        tool.tool = Some(providers::ToolActivity {
-            id: "run:read".into(),
-            name: "Read".into(),
-            status: "completed".into(),
-            input: "README.md".into(),
-            output: "Project details".into(),
-            write_paths: None,
-        });
-        save_agent_activity(&store, &assistant, &mut tool, None).unwrap();
-        let mut boundary = event(&task.id, "message_start", "");
-        save_agent_activity(&store, &assistant, &mut boundary, None).unwrap();
-        save_agent_activity(&store, &assistant, &mut boundary, None).unwrap();
-        assistant
-            .lock()
-            .unwrap()
-            .push_str("This is a game project.");
-        flush_assistant(&store, &task.id, &assistant).unwrap();
-        let messages = store.messages(&task.id, None).unwrap();
-        assert_eq!(
-            messages
-                .iter()
-                .map(|message| message.role.as_str())
-                .collect::<Vec<_>>(),
-            ["assistant", "tool", "assistant"]
-        );
-        assert_eq!(messages[0].content, "Checking the project.");
-        assert_eq!(messages[2].content, "This is a game project.");
-    }
-
-    #[test]
-    fn failed_boundary_write_keeps_response_buffer_until_a_successful_retry() {
-        let store = Store::open(std::path::Path::new(":memory:")).unwrap();
-        let project = store.add_project(&std::env::temp_dir()).unwrap();
-        let task = store
-            .create_session(&project.id, "codex", "default", "ask")
-            .unwrap();
-        let assistant = Mutex::new("Preserve this response.".to_string());
-        store.db.execute_batch("CREATE TRIGGER reject_response BEFORE INSERT ON messages WHEN NEW.role='assistant' BEGIN SELECT RAISE(ABORT,'injected storage failure'); END;").unwrap();
-        let mut boundary = event(&task.id, "message_start", "");
-        assert!(save_agent_activity(&store, &assistant, &mut boundary, None).is_err());
-        assert_eq!(*assistant.lock().unwrap(), "Preserve this response.");
-        assert!(store.messages(&task.id, None).unwrap().is_empty());
-        store
-            .db
-            .execute_batch("DROP TRIGGER reject_response;")
-            .unwrap();
-        save_agent_activity(&store, &assistant, &mut boundary, None).unwrap();
-        assert!(assistant.lock().unwrap().is_empty());
-        flush_assistant(&store, &task.id, &assistant).unwrap();
-        assert_eq!(store.messages(&task.id, None).unwrap().len(), 1);
-    }
-
-    #[test]
-    fn late_tool_updates_do_not_split_an_assistant_response_that_is_still_streaming() {
-        let store = Store::open(std::path::Path::new(":memory:")).unwrap();
-        let project = store.add_project(&std::env::temp_dir()).unwrap();
-        let task = store
-            .create_session(&project.id, "codex", "default", "ask")
-            .unwrap();
-        let assistant = Mutex::new("I’ll inspect the files.".to_string());
-        let mut tool = event(&task.id, "tool", "Read");
-        tool.tool = Some(providers::ToolActivity {
-            id: "run:read".into(),
-            name: "Read".into(),
-            status: "running".into(),
-            input: "README.md".into(),
-            output: String::new(),
-            write_paths: None,
-        });
-        save_agent_activity(&store, &assistant, &mut tool, None).unwrap();
-        let mut boundary = event(&task.id, "message_start", "");
-        save_agent_activity(&store, &assistant, &mut boundary, None).unwrap();
-        assistant.lock().unwrap().push_str("The project has ");
-        tool.tool.as_mut().unwrap().output = "Partial file content".into();
-        save_agent_activity(&store, &assistant, &mut tool, None).unwrap();
-        assistant.lock().unwrap().push_str("a simple structure ");
-        tool.tool.as_mut().unwrap().status = "completed".into();
-        tool.tool.as_mut().unwrap().output = "Complete file content".into();
-        save_agent_activity(&store, &assistant, &mut tool, None).unwrap();
-        assert_eq!(store.messages(&task.id, None).unwrap().len(), 2);
-        assistant.lock().unwrap().push_str("and is ready to build.");
-        flush_assistant(&store, &task.id, &assistant).unwrap();
-        let messages = store.messages(&task.id, None).unwrap();
-        assert_eq!(
-            messages
-                .iter()
-                .map(|message| message.role.as_str())
-                .collect::<Vec<_>>(),
-            ["assistant", "tool", "assistant"]
-        );
-        assert_eq!(
-            messages[2].content,
-            "The project has a simple structure and is ready to build."
-        );
-        assert!(messages[1].content.contains("Complete file content"));
-    }
-
-    #[test]
-    fn stop_is_recorded_even_when_provider_returns_success_or_has_closed_its_input() {
-        let (input, mut receiver) = unbounded_channel();
-        let stopped = Arc::new(AtomicBool::new(false));
-        let agent = RunningAgent::new(input, stopped.clone());
-        agent
-            .send(RunInput::Approval {
-                request_id: "test".into(),
-                approved: true,
-            })
-            .unwrap();
-        assert!(!stopped.load(Ordering::SeqCst));
-        assert!(receiver.try_recv().is_ok());
-        agent.send(RunInput::Stop).unwrap();
-        assert!(stopped.load(Ordering::SeqCst));
-        stopped.store(false, Ordering::SeqCst);
-        drop(receiver);
-        assert!(agent.send(RunInput::Stop).is_err());
-        assert!(stopped.load(Ordering::SeqCst));
-    }
-
-    #[test]
-    fn stale_running_status_recovers_after_completion_write_failure_without_hiding_live_runs() {
-        let store = Store::open(std::path::Path::new(":memory:")).unwrap();
-        let project = store.add_project(&std::env::temp_dir()).unwrap();
-        let task = store
-            .create_session(&project.id, "claude", "sonnet", "ask")
-            .unwrap();
-        store.begin_task_turn(&task.id, "Build a game").unwrap();
-        let (input, _receiver) = unbounded_channel();
-        let mut agents = HashMap::new();
-        agents.insert(
-            task.id.clone(),
-            RunningAgent::new(input, Arc::new(AtomicBool::new(false))),
-        );
-        let live = reconcile_inactive_task(&store, &agents, store.session(&task.id).unwrap());
-        assert_eq!(live.status, "running");
-        store.db.execute_batch("CREATE TRIGGER reject_completion BEFORE UPDATE ON sessions BEGIN SELECT RAISE(ABORT,'injected storage failure'); END;").unwrap();
-        assert!(store.finish_task_turn(&task.id, true, false).is_err());
-        agents.clear();
-        let visible = reconcile_inactive_task(&store, &agents, store.session(&task.id).unwrap());
-        assert_eq!(visible.status, "interrupted");
-        assert_eq!(visible.task_stage, "in_progress");
-        assert_eq!(store.session(&task.id).unwrap().status, "running");
-        store
-            .db
-            .execute_batch("DROP TRIGGER reject_completion;")
-            .unwrap();
-        let recovered = reconcile_inactive_task(&store, &agents, store.session(&task.id).unwrap());
-        assert_eq!(recovered.status, "interrupted");
-        assert_eq!(store.session(&task.id).unwrap().status, "interrupted");
-        store.begin_task_turn(&task.id, "Retry").unwrap();
-        assert_eq!(store.session(&task.id).unwrap().status, "running");
-    }
-}
+mod task_agent_tests;
 struct AppState {
     store: Arc<Mutex<Store>>,
     agents: Agents,
@@ -835,73 +562,9 @@ impl AppState {
         storage::resolve_workspace_root(project_path, worktree)
     }
 }
-
-/// Fixed instructions for every task turn: sidebar titles, the run script, change tracking.
-/// Projectless chats have nothing to run, so they skip the run script. Managed team workers
-/// report to their lead, not the user: no titles (they never get a title run), run script,
-/// rich questions or generative UI.
-fn app_instructions(chat: bool, worker: bool) -> String {
-    if worker {
-        return [turn_changes::instruction(), TURN_ENDS].concat();
-    }
-    let run = if chat { "" } else { run_script::INSTRUCTIONS };
-    [session_titles::GUIDANCE, run, turn_changes::instruction(), TURN_ENDS, RICH_QUESTIONS, GENERATIVE_UI, VISUAL_PROGRESS].concat()
-}
-
 /// The largest prompt, steer or task description PandaCode accepts: large enough for long
 /// objectives and assignments, small enough that one message can't exhaust a harness pipe.
 pub(crate) const MESSAGE_LIMIT: usize = 16 * 1024 * 1024;
-/// PandaCode closes the harness when a turn ends, so background waits never come back.
-/// Claude Code's background agents are the exception: the run stays open until they hand back.
-const TURN_ENDS: &str = "\n\nYour turn ends when you reply, and PandaCode then closes this session's process: background commands, monitors and harness wakeups started in this turn never report back (pandacode_schedule_wakeup, when listed, does: it wakes this thread later). Background Agent subagents in Claude Code are different: they do report back, because the run stays open until they finish. On any other harness, a subagent still running when you reply is stopped and its report is lost: wait for every subagent you started (Codex: its wait tool) before you reply. Wait for long-running commands in the foreground (or poll them) before you reply.";
-
-/// Questions to the user render rich Markdown in PandaCode; agents only use it if told.
-const RICH_QUESTIONS: &str = "\n\nQuestions you ask through the request_user_input tool, where available, render Markdown in PandaCode: use links, images by workspace path (![alt](relative/path.png)), ```chart blocks with JSON {\"type\":\"bar\"|\"line\"|\"pie\",\"title\",\"labels\":[…],\"series\":[{\"name\",\"values\":[…]}]}, ```svg drawings, or static ```html views when a visual helps the user decide. Remote images show as links; scripts never run.";
-
-/// Replies may carry generative UI blocks that PandaCode draws in the thread.
-const GENERATIVE_UI: &str = "\n\nGenerative UI: when a visual beats prose, a reply may include a ```ui block holding JSON {\"type\":…}; ```chart, ```svg and ```html work too. Types (fields): callout(tone info|success|warning|danger|note,title,body), card(title,body,footer,actions,children), stats(items[{label,value,delta,hint,spark[]}]), table(title,columns[],rows[[…]]), chart(chart bar|line|pie|area|sparkline,title,labels,series[{name,values}]), progress(label,value,max), plan|steps|timeline(title,summary,items[{title,detail,status done|active|pending|error|skipped,time}],actions), checklist(items[{text,done}]), tabs|accordion(items[{label,body,children}]), tree(paths[] or items[{name,status,children}]), diff(file,diff), code(file,language,code), terminal(command,output,exitCode), compare(items[{title,pros,cons,verdict}]), gallery(images[{path,caption}]), actions(buttons[{label,prompt,tone}]), chips|followups(options[{label,prompt}]), or inline :codex-followup[Label]{prompt=\"…\"}, form(title,fields[{name,label,type text|textarea|number|select|checkbox,options}],submit,prompt with {name}), stack|grid(columns,children), custom(html,css,state; data-ui-toggle=\"#id\", data-ui-tab/data-ui-panel, data-ui-set=\"k=v\", data-ui-bind=\"k\", data-ui-prompt). Bodies are Markdown. Buttons and forms only put a prompt in the user's composer; nothing runs, and remote URLs are not loaded. ```mermaid shows as labelled source. For a page that needs scripts, write an HTML file and open it with pandacode_preview_file.";
-
-/// Agents building a GUI post one annotated screenshot per iteration to the progress timeline.
-const VISUAL_PROGRESS: &str = "\n\nVisual progress: only when your work has a graphical interface you can actually capture (a web page, desktop or mobile app, simulator, VM screen or design artboard), after each meaningful visual iteration save a screenshot of only that app's own window or page (a headless browser screenshot, a simulator or VM screenshot tool, or `screencapture -l<windowid>` on macOS; never the whole screen or other windows) under .pandacode/progress-shots/, call pandacode_progress_snapshot with a short title, an optional note and a few annotations pointing at what changed, then delete the file, since the image is copied. Before a UI exists you may post an svg idea sketch instead. Post at most one per iteration, and skip this entirely for CLIs, libraries, backend or docs work, or when no such screenshot can be taken.";
-
-/// Harnesses without a system prompt hear the app instructions again every few turns.
-const INSTRUCTION_REMINDER_EVERY: i64 = 8;
-fn reminder_turn(turns: i64) -> bool {
-    turns > 0 && turns % INSTRUCTION_REMINDER_EVERY == 1
-}
-
-#[cfg(test)]
-mod instruction_tests {
-    use super::*;
-
-    #[test]
-    fn harnesses_without_a_system_prompt_are_reminded_every_eighth_turn() {
-        let reminded: Vec<i64> = (1..=20).filter(|turn| reminder_turn(*turn)).collect();
-        assert_eq!(reminded, [1, 9, 17]);
-        assert!(!reminder_turn(0));
-        let text = app_instructions(false, false);
-        for part in ["Sidebar titles:", "Run and preview workflow:", "File change tracking:", "Questions you ask through the request_user_input tool", "Your turn ends when you reply", "Generative UI:", "Visual progress:"] {
-            assert!(text.contains(part), "{part}");
-        }
-        assert!(text.contains("wait for every subagent you started"), "a harness whose turn end closes its subagents waits for them");
-        let chat = app_instructions(true, false);
-        assert!(!chat.contains("Run and preview workflow:") && chat.contains("Sidebar titles:") && chat.contains("Visual progress:"));
-    }
-
-    #[test]
-    fn team_workers_get_only_change_tracking_and_turn_end() {
-        let lead = app_instructions(false, false);
-        let worker = app_instructions(false, true);
-        assert_eq!(lead, [session_titles::GUIDANCE, run_script::INSTRUCTIONS, turn_changes::instruction(), TURN_ENDS, RICH_QUESTIONS, GENERATIVE_UI, VISUAL_PROGRESS].concat());
-        assert_eq!(worker, [turn_changes::instruction(), TURN_ENDS].concat());
-        assert!(worker.contains("File change tracking:") && worker.contains("Your turn ends when you reply"));
-        for gone in ["Sidebar titles:", "Run and preview workflow:", "Generative UI:", "request_user_input"] {
-            assert!(!worker.contains(gone), "{gone}");
-        }
-        eprintln!("app instructions: lead {} B, worker {} B", lead.len(), worker.len());
-    }
-}
-
 async fn blocking<T: Send + 'static>(f: impl FnOnce() -> Result<T> + Send + 'static) -> Result<T> {
     tauri::async_runtime::spawn_blocking(f)
         .await
@@ -950,6 +613,7 @@ async fn delete_session_with_attachment_cleanup(
     window: tauri::WebviewWindow,
     session_id: String,
 ) -> Result<task_deletion::DeletedSessions> {
+    // `task_deletion` forgets the tasks' per-conversation state for every deletion path.
     let deleted = task_deletion::delete_session(app.clone(), window, session_id).await?;
     for sid in &deleted.deleted_session_ids {
         cloud::colab::activity::forget_session(sid);
@@ -993,10 +657,37 @@ async fn add_project(state: State<'_, AppState>, path: String) -> Result<Project
     skill_manager::projects_changed();
     project
 }
-#[tauri::command]
-async fn remove_project(state: State<'_, AppState>, project_id: String) -> Result<()> {
-    let agents = lock_agents(&state.agents).map_err(|e| e.to_string())?;
-    let store = state.store.lock().map_err(|e| e.to_string())?;
+fn check_project_teams(store: &Store, project_id: &str) -> Result<()> {
+    // Check the saved snapshots directly, even if tracker rows are missing.
+    let team_checks = "SELECT EXISTS(
+         SELECT 1 FROM architect_teams t JOIN sessions s ON s.id=t.session_id
+         WHERE s.project_id=?1
+           AND CASE WHEN json_valid(t.content, 2) THEN json_extract(t.content,'$.status') END IN ('running','waiting')
+     ), EXISTS(
+         SELECT 1 FROM architect_teams t JOIN sessions s ON s.id=t.session_id
+         WHERE s.project_id=?1 AND NOT json_valid(t.content, 2)
+     )";
+    let (active_team, malformed_team): (bool, bool) = store
+        .db
+        .prepare_cached(team_checks)
+        .and_then(|mut query| query.query_row([project_id], |row| Ok((row.get(0)?, row.get(1)?))))
+        .map_err(|error| error.to_string())?;
+    if active_team {
+        return Err("Stop this project's architect teams first.".into());
+    }
+    if malformed_team {
+        return Err(
+            "Cannot remove this project: a saved architect team snapshot is malformed JSON.".into(),
+        );
+    }
+    Ok(())
+}
+
+fn project_removal_sessions(
+    agents: &HashMap<String, RunningAgent>,
+    store: &Store,
+    project_id: &str,
+) -> Result<Vec<String>> {
     {
         use rusqlite::OptionalExtension;
         // Only each running task's project is needed, never its full row.
@@ -1005,53 +696,82 @@ async fn remove_project(state: State<'_, AppState>, project_id: String) -> Resul
             .prepare_cached("SELECT project_id FROM sessions WHERE id=?1")
             .map_err(|e| e.to_string())?;
         for session_id in agents.keys() {
-            let owner: String = project_of
-                .query_row([session_id], |r| r.get(0))
+            if project_of
+                .query_row([session_id], |r| r.get::<_, String>(0))
                 .optional()
                 .map_err(|e| e.to_string())?
-                .ok_or_else(|| String::from(storage::SESSION_NOT_FOUND))?;
-            if owner == project_id {
+                .is_some_and(|owner| owner == project_id)
+            {
                 return Err("Stop this project's agents first.".into());
             }
         }
     }
-    // Read before the project (and its threads) go, so their Colab runtime claims can be freed.
-    let session_ids = project_session_ids(&store, &project_id)?;
-    let removed = remove_project_with_team_check(&store, &project_id);
-    drop(store);
+    check_project_teams(store, project_id)?;
+    let mut query = store
+        .db
+        .prepare_cached("SELECT id FROM sessions WHERE project_id=?1 ORDER BY id")
+        .map_err(|e| e.to_string())?;
+    let rows = query
+        .query_map([project_id], |row| row.get::<_, String>(0))
+        .map_err(|e| e.to_string())?;
+    rows.collect::<rusqlite::Result<Vec<String>>>()
+        .map_err(|e| e.to_string())
+}
+
+async fn remove_project_in_state(state: &AppState, project_id: &str) -> Result<()> {
+    let (session_ids, project_path) = {
+        let agents = lock_agents(&state.agents).map_err(|e| e.to_string())?;
+        let store = state.store.lock().map_err(|e| e.to_string())?;
+        let ids = project_removal_sessions(&agents, &store, project_id)?;
+        let path = store.project(project_id).ok().map(|project| PathBuf::from(project.path));
+        (ids, path)
+    };
+    // Quiesce every project session before removing its rows so warm spares and pending exits
+    // do not leak or hold Windows `cwd` handles.
+    let results = futures_util::future::join_all(
+        session_ids.iter().map(|sid| providers::quiesce(sid)),
+    )
+    .await;
+    if let Some(error) = results.into_iter().find_map(Result::err) {
+        return Err(error);
+    }
+    if let Some(path) = project_path {
+        providers::end_lingering_in(&path).await;
+        providers::quiesce_spares_in(&path).await?;
+    }
+    let (removed, final_ids) = {
+        let agents = lock_agents(&state.agents).map_err(|e| e.to_string())?;
+        let store = state.store.lock().map_err(|e| e.to_string())?;
+        let mut final_ids = project_removal_sessions(&agents, &store, project_id)?;
+        let removed = remove_project_with_team_check(&store, project_id);
+        if removed.is_ok() {
+            for sid in session_ids {
+                if !final_ids.contains(&sid) {
+                    final_ids.push(sid);
+                }
+            }
+            app_instructions::forget(&final_ids);
+            architect::coordination::forget(&final_ids);
+            custom_tools::forget(&final_ids);
+        }
+        (removed, final_ids)
+    };
     if removed.is_ok() {
-        cloud::colab::activity::forget_sessions(&session_ids);
+        // Outside the store lock: frees the removed threads' Colab runtime claims (a file lock).
+        cloud::colab::activity::forget_sessions(&final_ids);
     }
     skill_manager::projects_changed();
     removed
 }
-fn project_session_ids(store: &storage::Store, project_id: &str) -> Result<Vec<String>> {
-    let mut stmt = store.db.prepare("SELECT id FROM sessions WHERE project_id=?1").map_err(|e| e.to_string())?;
-    let ids = stmt.query_map([project_id], |r| r.get(0)).map_err(|e| e.to_string())?;
-    ids.collect::<rusqlite::Result<Vec<String>>>().map_err(|e| e.to_string())
+
+#[tauri::command]
+async fn remove_project(state: State<'_, AppState>, project_id: String) -> Result<()> {
+    remove_project_in_state(&state, &project_id).await
 }
 
 pub(crate) fn remove_project_with_team_check(store: &Store, project_id: &str) -> Result<()> {
     store.in_transaction_immediate(|| {
-        // Check the saved snapshots before cascading deletion, even if tracker rows are missing.
-        let team_checks = "SELECT EXISTS(
-             SELECT 1 FROM architect_teams t JOIN sessions s ON s.id=t.session_id
-             WHERE s.project_id=?1
-               AND CASE WHEN json_valid(t.content, 2) THEN json_extract(t.content,'$.status') END IN ('running','waiting')
-         ), EXISTS(
-             SELECT 1 FROM architect_teams t JOIN sessions s ON s.id=t.session_id
-             WHERE s.project_id=?1 AND NOT json_valid(t.content, 2)
-         )";
-        let (active_team, malformed_team): (bool, bool) = store.db
-            .prepare_cached(team_checks)
-            .and_then(|mut query| query.query_row([project_id], |row| Ok((row.get(0)?, row.get(1)?))))
-            .map_err(|error| error.to_string())?;
-        if active_team {
-            return Err("Stop this project's architect teams first.".into());
-        }
-        if malformed_team {
-            return Err("Cannot remove this project: a saved architect team snapshot is malformed JSON.".into());
-        }
+        check_project_teams(store, project_id)?;
         store.remove_project(project_id)
     })
 }
@@ -1416,12 +1136,57 @@ async fn configure_session(
     if agents.contains_key(&session_id) {
         return Err("Stop the agent before changing its project, provider, or model.".into());
     }
-    state.store.lock().map_err(|e| e.to_string())?.configure(
+    // Invalidate while turn admission (`agents`) is held so a new turn's epoch cannot be clobbered.
+    let session = configure_session_with(
+        &state.store,
         &session_id,
         &provider,
         &model,
         project_id.as_deref(),
+        providers::invalidate_warm_agent,
+    );
+    drop(agents);
+    session
+}
+/// Applies a task's provider, model and project, then discards its warm spare only when
+/// the launch settings changed: a lead's spare keeps the config it launched with, so it
+/// would renew on the old provider/model. Re-picking the current choice keeps the spare.
+/// The store lock is released before `invalidate_warm` runs.
+fn configure_session_with(
+    store: &Mutex<Store>,
+    session_id: &str,
+    provider: &str,
+    model: &str,
+    project_id: Option<&str>,
+    invalidate_warm: impl FnOnce(&str),
+) -> Result<Session> {
+    update_session_preserving_warm(
+        store,
+        session_id,
+        |store| store.configure(session_id, provider, model, project_id),
+        invalidate_warm,
     )
+}
+/// Runs `update` on the task's row under the store lock, then, with the lock released,
+/// discards its warm spare only when `session_launch_changed` says the launch settings
+/// moved. Callers hold turn admission (`agents`) so a new turn's epoch cannot be clobbered.
+fn update_session_preserving_warm(
+    store: &Mutex<Store>,
+    session_id: &str,
+    update: impl FnOnce(&Store) -> Result<Session>,
+    invalidate_warm: impl FnOnce(&str),
+) -> Result<Session> {
+    let (session, reconfigured) = {
+        let store = store.lock().map_err(|e| e.to_string())?;
+        let before = store.session(session_id)?;
+        let session = update(&store)?;
+        let reconfigured = session_launch_changed(&before, &session);
+        (session, reconfigured)
+    };
+    if reconfigured {
+        invalidate_warm(session_id);
+    }
+    Ok(session)
 }
 #[tauri::command]
 async fn set_reasoning_effort(
@@ -1437,11 +1202,139 @@ async fn set_reasoning_effort(
     if agents.contains_key(&session_id) {
         return Err("Stop the agent before changing its reasoning effort.".into());
     }
-    state
-        .store
-        .lock()
-        .map_err(|e| e.to_string())?
-        .set_reasoning_effort(&session_id, reasoning_effort.as_deref())
+    // Like a model change: a lead's spare launched at the old effort could renew until its next wake.
+    let session = update_session_preserving_warm(
+        &state.store,
+        &session_id,
+        |store| store.set_reasoning_effort(&session_id, reasoning_effort.as_deref()),
+        providers::invalidate_warm_agent,
+    );
+    drop(agents);
+    session
+}
+/// Whether a settings change alters how the task's agent launches, so a warm spare
+/// started with the old settings must be discarded. Re-picking the current mode, model
+/// or effort keeps the spare.
+fn session_launch_changed(before: &Session, after: &Session) -> bool {
+    before.provider != after.provider
+        || before.model != after.model
+        || before.mode != after.mode
+        || before.reasoning_effort != after.reasoning_effort
+        || before.project_id != after.project_id
+}
+#[cfg(test)]
+mod session_launch_tests {
+    use super::*;
+
+    /// Removes the scratch directory even when an assertion panics.
+    struct TempDir(std::path::PathBuf);
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn only_launch_shaping_changes_invalidate_a_warm_spare() {
+        let dir = std::env::temp_dir().join(format!("pandacode-launch-change-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // Declared before `store`, so the store closes before the directory is removed.
+        let _dir = TempDir(dir.clone());
+        let store = Store::open(&dir.join("pandacode.db")).unwrap();
+        let project = store.add_project(&std::env::temp_dir()).unwrap();
+        let before = store.create_session(&project.id, "claude", "sonnet", "ask").unwrap();
+
+        let cosmetic = Session { title: "Renamed".into(), archived: !before.archived, ..before.clone() };
+        assert!(!session_launch_changed(&before, &before));
+        assert!(!session_launch_changed(&before, &cosmetic));
+
+        let model = Session { model: "opus".into(), ..before.clone() };
+        let mode = Session { mode: "auto".into(), ..before.clone() };
+        let other_effort = if before.reasoning_effort.as_deref() == Some("high") { "low" } else { "high" };
+        let effort = Session { reasoning_effort: Some(other_effort.into()), ..before.clone() };
+        assert!(session_launch_changed(&before, &model));
+        assert!(session_launch_changed(&before, &mode));
+        assert!(session_launch_changed(&before, &effort));
+        assert!(session_launch_changed(&effort, &before));
+
+        let provider = Session { provider: "codex".into(), ..before.clone() };
+        let project = Session { project_id: format!("{}-other", before.project_id), ..before.clone() };
+        assert!(session_launch_changed(&before, &provider));
+        assert!(session_launch_changed(&before, &project));
+    }
+
+    #[test]
+    fn configure_session_with_preserves_warm_spare_on_noop_and_invalidates_on_change() {
+        let dir = std::env::temp_dir().join(format!("pandacode-configure-session-{}", uuid::Uuid::new_v4()));
+        let other_dir = dir.join("other");
+        std::fs::create_dir_all(&other_dir).unwrap();
+        // Declared before `store`, so the store closes before the directory is removed.
+        let _dir = TempDir(dir.clone());
+        let store = Store::open(&dir.join("pandacode.db")).unwrap();
+        let project = store.add_project(&dir).unwrap();
+        let other = store.add_project(&other_dir).unwrap();
+        let sid = store.create_session(&project.id, "claude", "sonnet", "ask").unwrap().id;
+        let store = Mutex::new(store);
+        let configure = |provider: &str, model: &str, project_id: Option<&str>| {
+            let mut invalidated = Vec::new();
+            let session = configure_session_with(&store, &sid, provider, model, project_id, |id| invalidated.push(id.to_string())).unwrap();
+            (session, invalidated)
+        };
+
+        // A new project moves a task only before it has a conversation, so check it first.
+        let (session, invalidated) = configure("claude", "sonnet", Some(&other.id));
+        assert_eq!(session.project_id, other.id);
+        assert_eq!(invalidated, [sid.as_str()]);
+
+        store.lock().unwrap().resume(&sid, "resume-1").unwrap();
+        let (session, invalidated) = configure("claude", "sonnet", None);
+        assert!(invalidated.is_empty(), "re-picking the current choice keeps the warm spare");
+        assert_eq!(session.resume_id.as_deref(), Some("resume-1"));
+
+        let (session, invalidated) = configure("claude", "opus", None);
+        assert_eq!(session.model, "opus");
+        assert_eq!(invalidated, [sid.as_str()]);
+
+        let (session, invalidated) = configure("codex", "opus", None);
+        assert_eq!(session.provider, "codex");
+        assert_eq!(invalidated, [sid.as_str()]);
+    }
+
+    #[test]
+    fn reasoning_effort_update_preserves_warm_spare_on_noop_and_invalidates_on_change() {
+        let dir = std::env::temp_dir().join(format!("pandacode-effort-warm-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // Declared before `store`, so the store closes before the directory is removed.
+        let _dir = TempDir(dir.clone());
+        let store = Store::open(&dir.join("pandacode.db")).unwrap();
+        let project = store.add_project(&dir).unwrap();
+        let created = store.create_session(&project.id, "claude", "sonnet", "ask").unwrap();
+        let sid = created.id.clone();
+        let store = Mutex::new(store);
+        let set_effort = |effort: Option<&str>| {
+            let mut invalidated = Vec::new();
+            let session = update_session_preserving_warm(
+                &store,
+                &sid,
+                |store| store.set_reasoning_effort(&sid, effort),
+                |id| invalidated.push(id.to_string()),
+            )
+            .unwrap();
+            (session, invalidated)
+        };
+
+        let (session, invalidated) = set_effort(created.reasoning_effort.as_deref());
+        assert!(invalidated.is_empty(), "re-picking the current effort keeps the warm spare");
+        assert_eq!(session.reasoning_effort, created.reasoning_effort);
+
+        let other = if created.reasoning_effort.as_deref() == Some("high") { "low" } else { "high" };
+        let (session, invalidated) = set_effort(Some(other));
+        assert_eq!(session.reasoning_effort.as_deref(), Some(other));
+        assert_eq!(invalidated, [sid.as_str()]);
+
+        let (_, invalidated) = set_effort(Some(other));
+        assert!(invalidated.is_empty(), "repeating the new effort keeps the warm spare");
+    }
 }
 #[tauri::command]
 async fn update_session(
@@ -1475,11 +1368,20 @@ async fn update_session(
         return Err("Stop the agent before changing its model or permissions.".into());
     }
     let restored = archived == Some(false);
-    state
-        .store
-        .lock()
-        .map_err(|e| e.to_string())?
-        .update(&session_id, title, archived, model, mode)?;
+    let launch_settings = model.is_some() || mode.is_some();
+    let reconfigured = {
+        let store = state.store.lock().map_err(|e| e.to_string())?;
+        let before = if launch_settings { Some(store.session(&session_id)?) } else { None };
+        store.update(&session_id, title, archived, model, mode)?;
+        match before {
+            Some(before) => session_launch_changed(&before, &store.session(&session_id)?),
+            None => false,
+        }
+    };
+    // A lead's spare launched with the old model/mode could renew until its next wake.
+    if reconfigured {
+        providers::invalidate_warm_agent(&session_id);
+    }
     drop(agents);
     if restored {
         remote::orchestrate::retry(&app, &session_id);
@@ -1801,6 +1703,18 @@ fn save_agent_activity(
         _ => Ok(()),
     }
 }
+/// Saves a tool row through the path a run's events take.
+#[cfg(test)]
+pub(crate) fn save_tool_row(db: &Store, sid: &str, id: &str, name: &str, output: &str) {
+    let tool = providers::ToolActivity { id: id.into(), name: name.into(), status: "completed".into(), input: String::new(), output: output.into(), write_paths: None };
+    let mut activity = AgentEvent { tool: Some(tool), ..event(sid, "tool", "") };
+    save_agent_activity(db, &Mutex::new(String::new()), &mut activity, None).unwrap();
+}
+/// Saves the row a harness's reported compaction becomes.
+#[cfg(test)]
+pub(crate) fn save_compaction(db: &Store, sid: &str, id: &str) {
+    save_tool_row(db, sid, id, providers::COMPACT_CONTEXT_TOOL, providers::COMPACTED_OUTPUT);
+}
 fn recipes_dir(app: &tauri::AppHandle, state: &State<'_, AppState>, project_id: &str, scope: &str) -> Result<PathBuf> {
     if scope == "global" {
         return Ok(app.path().app_data_dir().map_err(|e| e.to_string())?.join("recipes"));
@@ -2059,7 +1973,6 @@ async fn start_task(
     launch_task(app, state, session_id, None, None).await
 }
 
-#[derive(Default)]
 struct RunAdmission<'a> {
     expected_project: Option<&'a str>,
     command: Option<PreparedCommand>,
@@ -2069,11 +1982,25 @@ struct RunAdmission<'a> {
     cloud_attach: bool,
     /// An app-origin turn PandaCode itself starts (`launch_app_turn`).
     kind: Option<architect::internal_turns::CoordinationKind>,
+    /// Settings → Agents → Workers can use skills (`architect::worker_skills_on`).
+    worker_skills: bool,
+    /// Settings → Agents → Trim worker tools (`architect::worker_trim_on`, off by default).
+    worker_trim: bool,
+}
+
+impl Default for RunAdmission<'_> {
+    fn default() -> Self {
+        Self { expected_project: None, command: None, goal: None, team: None, cloud_attach: false, kind: None, worker_skills: true, worker_trim: false }
+    }
 }
 
 struct PreparedRun {
     config: RunConfig,
     restore_stage: Option<String>,
+    /// The message is a slash command the harness runs itself (`app_instructions::bare_command`).
+    native_command: bool,
+    /// The message is `/compact`: its turn starts no post-turn warm spare (`lead_spare::starts_spare`).
+    compacts: bool,
     turn_message_id: i64,
     turn_started: std::time::Instant,
     context_handoff: Option<i64>,
@@ -2183,9 +2110,12 @@ fn prepare_task_run_in_project(
         return Err("Message and attached context must be under 16 MiB.".into());
     }
     let cwd = store.workspace_root(&session.project_id, Some(&session_id))?;
+    if checkout_busy::checkout_reserved(&state.agents, &cwd) {
+        return Err("A worktree operation is in progress for this checkout. Try again once it finishes.".into());
+    }
     // Discovery awaits outside the locks. Recheck the exact command and checkout
     // when claiming the task so changing its harness/project cannot run stale metadata.
-    let (prompt, skill, maintenance) = match admission.command {
+    let (prompt, skill, maintenance, compacts, native_command) = match admission.command {
         Some(command) => {
             if command.provider != session.provider
                 || command.cwd != cwd
@@ -2199,10 +2129,16 @@ fn prepare_task_run_in_project(
                         .into(),
                 );
             }
+            // Skills are rewritten to `$name …` mentions; anything else stays `/name …`,
+            // which the harness parses itself.
+            let native = command.resolution.skill.is_none();
+            let compacts = command.resolution.compacts();
             (
                 command.resolution.prompt,
                 command.resolution.skill,
                 command.resolution.maintenance,
+                compacts,
+                native,
             )
         }
         None if admission.goal.is_none()
@@ -2212,7 +2148,7 @@ fn prepare_task_run_in_project(
         {
             return Err("The task command changed. Try again to load its commands.".into());
         }
-        None => (text.clone(), None, false),
+        None => (text.clone(), None, false, false, false),
     };
     let needs_context = context_recovery::pending(&store, &session)?;
     let goal_control = matches!(
@@ -2279,7 +2215,8 @@ fn prepare_task_run_in_project(
         }
         error
     };
-    let prompt = architect::prompt(&store, &session_id, &prompt, admission.team.as_ref()).map_err(restore)?;
+    let prompt = architect::prompt_with_skills(&store, &session_id, &prompt, admission.team.as_ref(), admission.worker_skills).map_err(restore)?;
+    let worker = architect::worker_trim(&store, &session_id, admission.team.as_ref(), admission.worker_skills, admission.worker_trim).map_err(restore)?;
     let config = RunConfig {
         session_id: session_id.clone(),
         provider: session.provider,
@@ -2294,6 +2231,8 @@ fn prepare_task_run_in_project(
         skill,
         goal: admission.goal,
         codex_settings: session.codex_settings,
+        worker,
+        disallowed_tools: None,
         no_fresh_resume_fallback: false,
     };
     // Read before `mark_started`, and restored like it, so a failure leaves no started mark.
@@ -2313,6 +2252,8 @@ fn prepare_task_run_in_project(
     Ok(PreparedRun {
         config,
         restore_stage: maintenance.then_some(session.task_stage),
+        native_command,
+        compacts,
         turn_message_id,
         turn_started,
         context_handoff,
@@ -2357,6 +2298,8 @@ fn prepare_cloud_attach(
         skill: None,
         goal: None,
         codex_settings: session.codex_settings,
+        worker: None,
+        disallowed_tools: None,
         no_fresh_resume_fallback: false,
     };
     let mut agent = RunningAgent::new(tx, stopped);
@@ -2365,6 +2308,8 @@ fn prepare_cloud_attach(
     let prepared = PreparedRun {
         config,
         restore_stage: None,
+        native_command: false,
+        compacts: false,
         turn_message_id: cloud.turn_message,
         turn_started: std::time::Instant::now(),
         context_handoff: None,
@@ -2587,30 +2532,20 @@ async fn launch_operation_admitted(
         .app_cache_dir()
         .map_err(|e| e.to_string())?
         .join("browser-captures");
-    let images = image_ids
-        .into_iter()
-        .map(|id| {
-            let parsed = uuid::Uuid::parse_str(&id)
-                .map_err(|_| "Invalid screenshot attachment.".to_string())?;
-            if parsed.to_string() != id {
-                return Err("Invalid screenshot attachment.".to_string());
-            }
-            let path = capture_dir.join(format!("{id}.png"));
-            let metadata = std::fs::symlink_metadata(&path)
-                .map_err(|_| "Screenshot is unavailable. Capture it again.".to_string())?;
-            if !metadata.file_type().is_file() || metadata.len() > 5 * 1024 * 1024 {
-                return Err("Invalid screenshot attachment.".to_string());
-            }
-            Ok(path)
-        })
-        .collect::<Result<Vec<_>>>()?;
+    let images = screenshot_paths(&capture_dir, image_ids)?;
     let (tx, rx) = unbounded_channel();
     // The run's own input, for a team worker request that must stop this run and no other.
     let own_input = tx.downgrade();
     let stopped = Arc::new(AtomicBool::new(false));
+    let (worker_skills, worker_trim) = {
+        let app = app.clone();
+        blocking(move || Ok((architect::worker_skills_on(&app), architect::worker_trim_on(&app)))).await?
+    };
     let PreparedRun {
         mut config,
         restore_stage,
+        native_command,
+        compacts,
         turn_message_id,
         turn_started,
         context_handoff,
@@ -2636,6 +2571,8 @@ async fn launch_operation_admitted(
             team: team_admission,
             cloud_attach,
             kind,
+            worker_skills,
+            worker_trim,
         },
     )?;
     if !cloud_attach && turn_message_id > 0 && (!attachment_ids.is_empty() || attachment_text.contains("(moodboard ID: ")) {
@@ -2678,35 +2615,71 @@ async fn launch_operation_admitted(
     if let Some(title) = &title_run {
         config.prompt.push_str(&title.instruction());
     }
-    if restore_stage.is_none() {
-        let instructions = app_instructions(chats::is_chat_folder(&config.cwd), team_worker);
-        if providers::takes_system_instructions(&config.provider) {
-            // Cached with the system prompt: paid once, then read at a tenth of the price.
-            config.instructions = instructions;
-        } else {
-            // In the message: on a new conversation, then as a periodic reminder.
-            let turns = store.lock().ok().and_then(|db| db.user_turns(&session_id).ok()).unwrap_or(1);
-            if config.resume_id.is_none() || reminder_turn(turns) {
-                config.prompt.push_str(&instructions);
+    // Keep the harness and model for the run's health metrics after config is consumed.
+    let ran = (config.provider.clone(), config.model.clone());
+    let changes_root = config.cwd.clone();
+    let goal_control = matches!(
+        config.goal.as_ref(),
+        Some(goal_state::GoalRequest::Get | goal_state::GoalRequest::Pause | goal_state::GoalRequest::Clear)
+    );
+    let (managed_worker, role) = launch_role(team.as_ref(), &session_id, config.worker);
+    let launch = {
+        let (app, session_id, store) = (app.clone(), session_id.clone(), store.clone());
+        let is_team = team.is_some();
+        let maintenance = restore_stage.is_some();
+        blocking(move || {
+            // The launch and host share this history, including the deny set that keys warm spares.
+            let history = app_instructions::History::of(&session_id, &config.provider, config.resume_id.as_deref());
+            if providers::claude_family(&config.provider) {
+                config.disallowed_tools = Some(providers::claude_disallowed_tools(config.worker, &history));
             }
-        }
-    }
+            // The catalog changes the message note, never the cached tool specs. Managed workers
+            // report to their lead and are never offered agent-made tools.
+            let custom_offered = custom_tools_offered(cloud, managed_worker) && custom_tools::ipc::enabled_for(&app);
+            let catalog = if custom_offered {
+                // An unexpected failure reading the optional catalog still lets the turn run.
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| custom_tools::catalog(&app, &session_id)))
+                    .unwrap_or_else(|_| {
+                        eprintln!("PandaCode: reading agent-made tools failed");
+                        None
+                    })
+            } else {
+                None
+            };
+            // A native slash command goes to the harness bare. Record a note only if a regular
+            // turn was reckoned against the catalog and then ended cleanly.
+            let mut note_mark = None;
+            let bare = app_instructions::bare_command(maintenance, native_command);
+            if let Some(catalog) = catalog.as_ref().filter(|_| custom_offered && !bare) {
+                // In Plan mode, the caveat rides the message so the cached instructions stay stable.
+                if let Some(note) = plan_tools_note(&config.mode) {
+                    config.prompt.push_str(note);
+                } else {
+                    note_mark = Some(catalog.note_mark());
+                    if let Some(note) = custom_tools::message_note(catalog, &session_id, config.resume_id.is_none()) {
+                        config.prompt.push_str(&note);
+                    }
+                }
+            }
+            let explore_on = explore::enabled_for_run(&app, &session_id, &config.provider, &config.cwd);
+            let explore = explore::run_name(cloud, explore_on, &config.provider);
+            let explore_offered = explore::run_name(cloud, true, &config.provider).is_some();
+            let host_plan = HostPlan::of(&config, is_team, role, cloud, explore_offered, explore_on).custom_tools(custom_offered);
+            // Without a catalog (a mirror or no app data), the instructions have no tools to mention.
+            let tools_said = custom_offered && catalog.is_some();
+            let instructed = instruct_launch(&store, &mut config, LaunchText { role, explore, offered: tools_said, maintenance: bare });
+            Ok((config, history, catalog, host_plan, instructed, note_mark))
+        })
+    };
     tauri::async_runtime::spawn(async move {
-        let changes_root = config.cwd.clone();
+        let launch = launch.await;
         let changes_cache = app
             .path()
             .app_cache_dir()
             .unwrap_or_else(|_| std::env::temp_dir().join("pandacode"))
             .join("turn-captures");
         // Goal inspection/pause/clear are control operations, not model turns.
-        let tracker = if matches!(
-            config.goal.as_ref(),
-            Some(
-                goal_state::GoalRequest::Get
-                    | goal_state::GoalRequest::Pause
-                    | goal_state::GoalRequest::Clear
-            )
-        ) {
+        let tracker = if goal_control || launch.is_err() {
             None
         } else {
             tauri::async_runtime::spawn_blocking(move || {
@@ -2716,17 +2689,7 @@ async fn launch_operation_admitted(
             .ok()
             .map(|tracker| Arc::new(Mutex::new(tracker)))
         };
-        let tracker_sink = tracker.clone();
         let persistence_error = Arc::new(Mutex::new(None::<String>));
-        let errors_sink = persistence_error.clone();
-        let assistant_sink = assistant.clone();
-        let store_sink = store.clone();
-        let app_sink = app.clone();
-        let subagents_sink = subagents.clone();
-        let goal_reply_sink = goal_reply.clone();
-        let goal_agents_sink = agents.clone();
-        let native_turn_sink = Mutex::new(String::new());
-        let team_sink = team.clone();
         // The run's own ID for its end, after the sink takes `run_id`.
         let settle_id = run_id.clone();
         // Whatever ends this task before the run settles forgets what was kept for the run.
@@ -2741,230 +2704,80 @@ async fn launch_operation_admitted(
             requests: pending_requests.clone(),
         };
         let coalescer = Arc::new(Mutex::new(providers::Coalescer::default()));
-        let coalescer_sink = coalescer.clone();
         let newly_limited = Arc::new(AtomicBool::new(false));
-        let limited_sink = newly_limited.clone();
-        let sink: providers::Sink = Arc::new(move |mut e: AgentEvent| {
-            if cloud && app_sink.state::<AppState>().shutdown.load(Ordering::SeqCst) != 0 {
-                return;
-            }
-            last_event.store(storage::now(), Ordering::SeqCst);
-            if e.kind == "done" || e.kind == providers::HEARTBEAT {
-                return;
-            }
-            if e.kind == storage::model_audit::REPORTED_MODEL_EVENT {
-                if store_sink.lock().is_ok_and(|db| db.record_reported_model(turn_message_id, &e.text).is_err()) {
-                    eprintln!("Could not save the reported model for this turn.");
-                }
-                return;
-            }
-            if e.kind == "limited" {
-                limited_sink.store(true, Ordering::SeqCst);
-            }
-            let usage = if e.kind == "usage" {
-                let Some(usage) = e.data.as_ref().and_then(ContextUsage::from_value) else {
-                    return;
-                };
-                // Forward only bounded, recognized metadata, never the raw
-                // provider response or cumulative billing totals.
-                e.data = serde_json::to_value(&usage).ok();
-                Some(usage)
-            } else {
-                None
-            };
-            if e.kind == "turn_start" {
-                if let Some(tracker) = &tracker_sink {
-                    blocking_snapshot(|| {
-                        if let Ok(mut tracker) = tracker.lock() {
-                            tracker.started();
-                        }
-                    });
-                }
-                if let Some(turn) = e.data.as_ref().and_then(|data| data["turnId"].as_str()) {
-                    *native_turn_sink
-                        .lock()
-                        .unwrap_or_else(|poison| poison.into_inner()) = turn.into();
-                }
-            }
-            if let Some(tool) = &mut e.tool {
-                let turn = native_turn_sink
-                    .lock()
-                    .unwrap_or_else(|poison| poison.into_inner());
-                tool.id = run_tool_id(&run_id, &turn, &tool.id);
-            }
-            if let Some(tracker) = tracker_sink.as_ref().filter(|_| e.tool.is_some() || e.kind == "subagent") {
-                blocking_snapshot(|| {
-                    if let Ok(mut tracker) = tracker.lock() {
-                        tracker.observe(&e);
-                    }
-                });
-            }
-            if e.kind == providers::ACCOUNT_SWITCHED {
-                // Any run: the old account's requests can no longer be answered, so their cards go.
-                let cancelled = settle_account_switch(&store_sink, &own_run, &e.session_id);
-                if !cancelled.is_empty() {
-                    for event in cancelled {
-                        emit_coalesced(&app_sink, &coalescer_sink, event);
-                    }
-                    tray::refresh(&app_sink);
-                }
-                return;
-            }
-            if e.kind == providers::UNANSWERED_APPROVAL {
-                worker_approvals::stop_unanswered(team_worker, &own_run, &e);
-                return;
-            }
-            if e.kind == "text" {
-                if let Ok(mut text) = assistant_sink.lock() {
-                    text.push_str(&e.text);
-                    bounded_tail(&mut text, 512 * 1024);
-                }
-            } else {
-                let saved = if e.kind == "subagent" {
-                    subagents_sink
-                        .lock()
-                        .map_err(|error| error.to_string())
-                        .and_then(|mut children| children.record(&store_sink, &run_id, &mut e))
-                } else if matches!(
-                    e.kind.as_str(),
-                    "approval" | "approval_cancelled" | "input_request" | "input_cancelled"
-                ) {
-                    // Locks `agents`: this sink is never called with that lock held (see its doc).
-                    let saved = record_request_event(&store_sink, &own_run, team_worker, &goal_agents_sink, &mut e);
-                    if saved.is_ok() && e.kind == "approval" {
-                        if let Some(request_id) = &e.request_id {
-                            let lasting_only = e.data.as_ref().is_some_and(|data| data[providers::LASTING_ONLY] == true);
-                            bots::approval_requested(&app_sink, &e.session_id, request_id, &e.text, lasting_only);
-                        }
-                        tray::refresh(&app_sink);
-                    }
-                    saved
-                } else {
-                    store_sink
-                        .lock()
-                        .map_err(|error| error.to_string())
-                        .and_then(|db| {
-                            save_agent_activity(&db, &assistant_sink, &mut e, usage.as_ref())
-                        })
-                };
-                if let Err(error) = saved {
-                    if let Ok(mut slot) = errors_sink.lock() {
-                        *slot = Some(error);
-                    }
-                    if matches!(e.kind.as_str(), "goal" | "goal_input") {
-                        if let Ok(registry) = lock_agents(&goal_agents_sink) {
-                            if let Some(agent) = registry.get(&e.session_id) {
-                                let _ = agent.send(RunInput::Stop);
-                            }
-                        }
-                    }
-                }
-            }
-            if e.kind == "goal_ready" {
-                let result = errors_sink
-                    .lock()
-                    .map_err(|_| "Goal persistence is unavailable.".to_string())
-                    .and_then(|error| {
-                        if let Some(error) = error.as_ref() {
-                            Err(error.clone())
-                        } else {
-                            e.data
-                                .clone()
-                                .filter(|v| !v.is_null())
-                                .map(serde_json::from_value)
-                                .transpose()
-                                .map_err(|_| "Invalid goal metadata.".to_string())
-                        }
-                    });
-                if let Ok(mut slot) = goal_reply_sink.lock() {
-                    if let Some(reply) = slot.take() {
-                        let _ = reply.send(result);
-                    }
-                }
-            }
-            if matches!(
-                e.kind.as_str(),
-                "approval" | "approval_cancelled" | "input_request" | "input_cancelled"
-            ) {
-                architect::activity(&app_sink, &e.session_id, team_sink.as_ref());
-            }
-            // Cloned only for the turn boundary below.
-            let completed = (e.kind == "turn_complete").then(|| e.session_id.clone());
-            emit_coalesced(&app_sink, &coalescer_sink, e);
-            if let Some(changes_sid) = completed {
-                if let Some(tracker) = &tracker_sink {
-                    let capture = blocking_snapshot(|| {
-                        tracker
-                            .lock()
-                            .ok()
-                            .and_then(|mut tracker| {
-                                let last_write = tracker.last_write();
-                                tracker.boundary().map(|capture| (capture, last_write))
-                            })
-                    });
-                    if let Some((capture, last_write)) = capture {
-                        persist_turn_changes(&app_sink, &store_sink, &changes_sid, capture, last_write);
-                    }
-                }
-            }
-        });
-        let host = if let Some(admission) = team.as_ref() {
-            architect::host(app.clone(), session_id.clone(), stopped.clone(), admission)
-                .map(|host| {
-                    // Workers keep their scoped team tools; only the lead may manage other tasks.
-                    if admission.parent == session_id {
-                        agent_tools::with_app_host(host, agent_tools::host(app.clone(), session_id.clone(), stopped.clone()))
-                    } else {
-                        host
-                    }
-                })
-        } else {
-            Some(agent_tools::host(app.clone(), session_id.clone(), stopped.clone()))
-        };
-        let team_tools_missing = team.is_some() && host.is_none();
-        let host = agent_tools::with_jev(host, app.clone(), session_id.clone(), stopped.clone());
-        let host = bots::tools::with_bot(host, app.clone(), session_id.clone(), stopped.clone());
-        let host = schedules::tools::with_schedules(host, app.clone(), session_id.clone(), stopped.clone());
-        let host = simulator::tools::with_simulator_for(host, app.clone(), session_id.clone(), stopped.clone());
-        let host = vm::tools::with_vm(host, app.clone(), session_id.clone(), stopped.clone());
-        // A cloud agent already runs on its machine; Colab tools are for local agents.
-        let host = if cloud { host } else { cloud::colab_tools::with_colab(host, app.clone(), session_id.clone(), stopped.clone()) };
-        let host = remote::orchestrate::with_machines(host, app.clone(), session_id.clone(), stopped.clone(), team.is_some());
-        let host = design::with_design(host, app.clone(), session_id.clone(), stopped.clone());
-        // A cloud agent's checkout is on its machine, where screenshots cannot be read.
-        let host = if cloud { host } else { progress::with_progress(host, app.clone(), session_id.clone(), stopped.clone()) };
-        let host = cloud::deploy::with_deploy(host, app.clone(), session_id.clone(), stopped.clone());
-        let host = Some(agent_tools::with_preview(host, app.clone(), session_id.clone(), stopped.clone()));
-        let host = Some(turn_changes::with_host(host, tracker.clone(), stopped.clone()));
-        let host = Some(session_titles::with_host(title_run.as_ref(), host, stopped.clone()));
-        // What the next turn's warm agent needs: this launch and the tools it listed.
-        // Team workers rarely get a follow-up, and their warm agents would push out the
-        // architect's, whose review turn starts as soon as they settle.
-        let managed_worker = team.as_ref().is_some_and(|admission| admission.parent != session_id);
-        let warm_next = (providers::warms(&config) && !managed_worker && !cloud).then(|| {
-            let tools = host.as_ref().map(|host| (host.tools.clone(), host.approval_tools.clone())).unwrap_or_default();
-            (config.clone(), tools)
-        });
-        // The harness and model this run used, for model health.
-        let ran = (config.provider.clone(), config.model.clone());
+        let sink = RunSink {
+            app: app.clone(), cloud, last_event, tracker: tracker.clone(), run_id, assistant: assistant.clone(), subagents: subagents.clone(), store: store.clone(),
+            newly_limited: newly_limited.clone(), turn_message_id,
+            own_run, team_worker, errors: persistence_error.clone(), agents: agents.clone(), goal_reply: goal_reply.clone(), team: team.clone(), coalescer: coalescer.clone(),
+        }
+        .sink();
         let reached_harness = Arc::new(AtomicBool::new(false));
         // Set by the run's own loop when it takes a stop (`providers::stop_taken`).
         let loop_took_stop = Arc::new(AtomicBool::new(false));
-        let result = if stopped.load(Ordering::SeqCst) {
-            Ok(())
-        } else if team_tools_missing {
-            Err(
-                "Team tools could not be initialized. No unrestricted tool fallback was used."
-                    .into(),
-            )
-        } else {
-            if !cloud_attach && store.lock().is_ok_and(|db| {
-                db.record_requested_model(turn_message_id, &config.provider, &config.model, config.reasoning_effort.as_deref()).is_err()
-            }) {
-                eprintln!("Could not save the requested model for this turn.");
+        let mut launch_notes = None;
+        let mut warm_next = None;
+        // Preparation can fail after admission, so settle it through the usual run cleanup.
+        let result = async {
+            let (config, history, catalog, host_plan, instructed, note_mark) = launch?;
+            launch_notes = Some((instructed, note_mark));
+            let custom_definitions = if let Some(catalog) = catalog.as_ref() {
+                catalog.definitions()
+            } else if custom_tools::offered(cloud)
+                && history.may_hold_any(&[custom_tools::TOOL_LIST, custom_tools::TOOL_SAVE, custom_tools::TOOL_RUN])
+            {
+                custom_tools::definitions()
+            } else {
+                Vec::new()
+            };
+            let custom = catalog.map(|catalog| {
+                let author = custom_tools::Author { session_id: session_id.clone(), harness: config.provider.clone(), model: config.model.clone() };
+                let (app, stopped, mode) = (app.clone(), stopped.clone(), config.mode.clone());
+                move |host| custom_tools::with_custom_tools(host, catalog, app, author, stopped, &mode)
+            });
+            let inputs = HostInputs { app: &app, session_id: &session_id, stopped: &stopped, team: team.as_ref(), custom_definitions: &custom_definitions };
+            let app_instructions::RunHost { host, refused, missing: team_tools_missing } = run_host(&host_plan, &inputs, &history, custom, tracker.clone(), title_run.as_ref());
+            // What the next turn's warm agent needs: this launch and the tools it listed.
+            // Team workers rarely get a follow-up, and their warm agents would push out the
+            // architect's, whose review turn starts as soon as they settle. The off switch (a file
+            // read) is checked once, by `launch_host::start_spare`, not here on the async runtime.
+            warm_next = lead_spare::starts_spare(&config, managed_worker, cloud, compacts).then(|| {
+                let tools = host.as_ref().map(|host| (host.tools.clone(), host.approval_tools.clone())).unwrap_or_default();
+                (config.clone(), tools)
+            });
+            if stopped.load(Ordering::SeqCst) {
+                Ok(())
+            } else if team_tools_missing {
+                Err(
+                    "Team tools could not be initialized. No unrestricted tool fallback was used."
+                        .into(),
+                )
+            } else {
+                // The harness can persist tool references as soon as it starts.
+                let listed = app_instructions::catalog_listing(config.resume_id.as_deref(), host.as_ref(), &providers::claude_kept_natives(config.worker, &history));
+                let remembered = {
+                    let session_id = session_id.clone();
+                    blocking(move || app_instructions::remember_catalog_listed(&session_id, listed))
+                };
+                match remembered.await {
+                    Ok(()) if stopped.load(Ordering::SeqCst) => Ok(()),
+                    Ok(()) => {
+                        if !cloud_attach && store.lock().is_ok_and(|db| {
+                            db.record_requested_model(turn_message_id, &config.provider, &config.model, config.reasoning_effort.as_deref()).is_err()
+                        }) {
+                            eprintln!("Could not save the requested model for this turn.");
+                        }
+                        providers::run_with_tools_reporting(config, sink, rx, providers::RunTools { host, refused }, reached_harness.clone(), loop_took_stop.clone()).await
+                    }
+                    Err(error) => {
+                        eprintln!("PandaCode: could not record the tool listing of {session_id}: {error}");
+                        Err("Could not save the conversation's tool listing before starting the run. Try again.".into())
+                    }
+                }
             }
-            providers::run_with_tools_reporting(config, sink, rx, host, reached_harness.clone(), loop_took_stop.clone()).await
-        };
+        }
+        .await;
+        // Approval snapshots and the tools' place live only as long as the run.
+        custom_tools::run_ended(&session_id);
         flush_coalesced(&app, &coalescer);
         if cloud && app.state::<AppState>().shutdown.load(Ordering::SeqCst) != 0 {
             // The remote run continues; the next launch re-attaches to it.
@@ -3044,6 +2857,18 @@ async fn launch_operation_admitted(
         // request must not write into the next run while the team remains active.
         stopped.store(true, Ordering::SeqCst);
         let mut successful = result.is_ok() && !was_stopped;
+        // Failed or stopped runs record no instructions or tool notes as delivered.
+        if let Some((instructed, note_mark)) = launch_notes.filter(|_| result.is_ok() && !was_stopped) {
+            if let Some(role) = instructed.role {
+                app_instructions::instructed_as(&session_id, role);
+                if let Some(compaction) = instructed.compaction {
+                    app_instructions::compaction_answered(&session_id, compaction);
+                }
+            }
+            if let Some(mark) = note_mark {
+                mark.accepted(&session_id);
+            }
+        }
         // Only the harness's own outcome counts for model health (Settings → Model routing): a stop
         // says nothing, and PandaCode's own failures before the harness (validation, attachments,
         // connections, team tools) are not the model's.
@@ -3252,33 +3077,8 @@ async fn launch_operation_admitted(
         }
         drop(registry);
         // Start the next turn's agent now, so a follow-up skips the CLI's own startup.
-        if let (true, Some((mut next, (tools, approvals)))) = (successful && !was_stopped, warm_next) {
-            // A turn that ended without any reply (seen after background commands) may have
-            // left the session in a state a spare would inherit: start the next one fresh.
-            let replied = store.lock().ok().and_then(|db| db.db.prepare_cached(
-                "SELECT EXISTS(SELECT 1 FROM messages WHERE session_id=?1 AND role='assistant' AND id>(SELECT COALESCE(MAX(id),0) FROM messages WHERE session_id=?1 AND role IN ('user','coordination')))",
-            ).and_then(|mut query| query.query_row(
-                [&session_id],
-                |row| row.get::<_, bool>(0),
-            )).ok()).unwrap_or(false);
-            // A lead whose workers are still unsettled is woken only after they settle, often
-            // past the spare's idle limit: skip the spare (the wake starts cold, ~1.4 s).
-            let lead = team.as_ref().is_some_and(|admission| admission.parent == session_id);
-            let waiting_on_workers = lead && store.lock().ok().and_then(|db| architect::load(&db, &session_id).ok().flatten()).is_some_and(|snapshot| {
-                snapshot.workers.iter().any(|worker| !worker.abandoned && architect::unsettled(&worker.status))
-            });
-            let task = store.lock().ok().filter(|_| replied && !waiting_on_workers).and_then(|db| db.session(&session_id).ok());
-            if let Some(task) = task {
-                next.resume_id = task.resume_id;
-                next.model = task.model;
-                next.mode = task.mode;
-                next.reasoning_effort = task.reasoning_effort;
-                next.prompt.clear();
-                next.images.clear();
-                tauri::async_runtime::spawn(async move {
-                    let _ = providers::prewarm_agent(next, tools, approvals, launch).await;
-                });
-            }
+        if let (true, Some(next)) = (successful && !was_stopped, warm_next) {
+            start_spare(&app, &store, &session_id, team.as_ref(), launch, next);
         }
     });
     Ok(())
@@ -3305,6 +3105,7 @@ async fn stop_session(
         architect::load(&store, &session_id)?.is_some()
     };
     if is_team && !runs_team_maintenance(&state, &session_id)? {
+        // `architect_control` drops the lead's idle spare (its Pause and Stop do too).
         architect::architect_control(app, state, session_id, "stop".into()).await?;
         return Ok(());
     }
@@ -3688,7 +3489,7 @@ async fn git_stage(
 ) -> Result<()> {
     stage_files(&state, &project_id, session_id.as_deref(), paths, staged, workspace::Trust::Desktop).await
 }
-/// `git_stage`, and the phone's `git.stage` with its [`workspace::Trust`].
+/// Stages or unstages files for desktop Git with an explicit [`workspace::Trust`].
 pub(crate) async fn stage_files(state: &AppState, project_id: &str, session_id: Option<&str>, paths: Vec<String>, staged: bool, trust: workspace::Trust) -> Result<()> {
     let root = state.root(project_id, session_id)?;
     blocking(move || workspace::git_stage(&root, paths, staged, trust)).await
@@ -3776,29 +3577,118 @@ async fn attach_worktree(
     base: Option<String>,
     existing: Option<bool>,
 ) -> Result<Session> {
-    if lock_agents(&state.agents).map_err(|e| e.to_string())?.contains_key(&session_id) {
-        return Err("Stop the agent before moving this task into a worktree.".into());
+    attach_worktree_in_state(&state, &session_id, branch, base, existing.unwrap_or(false)).await
+}
+
+async fn attach_worktree_in_state(
+    state: &AppState,
+    session_id: &str,
+    branch: String,
+    base: Option<String>,
+    existing: bool,
+) -> Result<Session> {
+    attach_worktree_in_state_with(
+        state,
+        session_id,
+        branch,
+        base,
+        existing,
+        workspace::create_worktree_with,
+        Store::attach_worktree,
+    )
+    .await
+}
+
+fn attachable_checkout(store: &Store, session_id: &str) -> Result<PathBuf> {
+    if !store.worktree_attachable(session_id)? {
+        return Err("This conversation already started. Create a new task in a worktree instead.".into());
     }
+    let task = store.session(session_id)?;
+    store.workspace_root(&task.project_id, Some(session_id))
+}
+
+async fn attach_worktree_in_state_with(
+    state: &AppState,
+    session_id: &str,
+    branch: String,
+    base: Option<String>,
+    existing: bool,
+    create: impl FnOnce(&std::path::Path, &str, Option<&str>, bool) -> Result<workspace::Worktree> + Send + 'static,
+    attach: impl FnOnce(&Store, &str, &std::path::Path, &str) -> Result<Session> + Send + 'static,
+) -> Result<Session> {
+    const CHANGED: &str = "This task's checkout changed while preparing the worktree. Try again.";
+    let sid = session_id.to_owned();
+    let (root, reservation) = reserve_current_desktop_checkout(
+        state,
+        move |store| attachable_checkout(store, &sid),
+        "Wait for the active operation in this folder to finish before moving this task into a worktree.",
+        CHANGED,
+    )
+    .await?;
     let store = state.store.clone();
+    let session_id = session_id.to_owned();
     blocking(move || {
-        let (source, root) = {
+        // The source must stay reserved until the task points to the new worktree.
+        let _reservation = reservation;
+        let worktree = create(&root, &branch, base.as_deref(), existing)?;
+        let attached = (|| {
             let store = store.lock().map_err(|e| e.to_string())?;
-            if !store.worktree_attachable(&session_id)? {
-                return Err("This conversation already started. Create a new task in a worktree instead.".into());
+            if attachable_checkout(&store, &session_id)? != root {
+                return Err(CHANGED.into());
             }
-            let source = store.session(&session_id)?;
-            let root = store.workspace_root(&source.project_id, Some(&session_id))?;
-            (source, root)
-        };
-        let worktree = workspace::create_worktree_with(&root, &branch, base.as_deref(), existing.unwrap_or(false))?;
-        let store = store.lock().map_err(|e| e.to_string())?;
-        let attached = store.attach_worktree(&source.id, &worktree.path, &worktree.branch).map_err(|error| {
+            attach(&store, &session_id, &worktree.path, &worktree.branch)
+        })()
+        .map_err(|error| {
             format!("Worktree created at {}, but the task could not be updated: {error}", worktree.path.display())
         });
         skill_manager::projects_changed();
         attached
     })
     .await
+}
+
+/// Resolve again after reserving because a task may have moved since the first lookup.
+async fn reserve_current_desktop_checkout(
+    state: &AppState,
+    resolve: impl Fn(&Store) -> Result<PathBuf> + Clone + Send + 'static,
+    busy: &'static str,
+    changed: &'static str,
+) -> Result<(PathBuf, checkout_busy::Reservation)> {
+    let read_root = || {
+        let store = state.store.clone();
+        let resolve = resolve.clone();
+        blocking(move || {
+            let store = store.lock().map_err(|e| e.to_string())?;
+            resolve(&store)
+        })
+    };
+    for _ in 0..4 {
+        let root = read_root().await?;
+        if checkout_busy::active_agent_or_reserved_in_state(state, &root).await? {
+            return Err(busy.into());
+        }
+        let wait = async {
+            providers::await_exits_in_checkout_patiently(&root).await?;
+            loop {
+                let sibling_ids = checkout_busy::pending_exit_sessions_in_state(state, &root).await?;
+                if sibling_ids.is_empty() {
+                    return Ok::<(), String>(());
+                }
+                for id in sibling_ids {
+                    providers::await_exit_patiently(&id).await?;
+                }
+            }
+        };
+        tokio::time::timeout(providers::EXIT_HARD_CAP, wait)
+            .await
+            .map_err(|_| "The previous run of this conversation is still shutting down. Try again.".to_string())??;
+        let reservation = checkout_busy::reserve_idle_checkouts(state, vec![root.clone()], busy).await?;
+        if read_root().await? == root {
+            return Ok((root, reservation));
+        }
+        drop(reservation);
+    }
+    Err(changed.into())
 }
 
 /// The main checkout and this task's worktree, or an error when it has none.
@@ -3830,18 +3720,37 @@ pub(crate) async fn task_worktree_status(state: &AppState, session_id: String, t
 
 #[tauri::command]
 async fn merge_worktree(state: State<'_, AppState>, session_id: String) -> Result<workspace::WorktreeMerge> {
-    if lock_agents(&state.agents).map_err(|e| e.to_string())?.contains_key(&session_id) {
-        return Err("Wait for the agent to finish before merging its worktree.".into());
-    }
-    let store = state.store.clone();
-    blocking(move || merge_task_worktree(&store, &session_id, workspace::Trust::Desktop)).await
+    merge_task_worktree(&state, session_id, workspace::Trust::Desktop).await
 }
 
 /// Merges a local task's worktree into its project's checkout (`merge_worktree`, and the
-/// phone's `worktree.merge` with its [`workspace::Trust`]). Blocking.
-pub(crate) fn merge_task_worktree(store: &Arc<Mutex<Store>>, session_id: &str, trust: workspace::Trust) -> Result<workspace::WorktreeMerge> {
-    let (main, path, _) = worktree_paths(store, session_id)?;
-    workspace::merge_worktree(&main, &path, trust)
+/// phone's `worktree.merge` with its [`workspace::Trust`]), once its CLI has exited.
+pub(crate) async fn merge_task_worktree(state: &AppState, session_id: String, trust: workspace::Trust) -> Result<workspace::WorktreeMerge> {
+    const BUSY: &str = "Wait for the agent to finish before merging its worktree.";
+    refuse_worktree_merge_busy(state, &session_id).await?;
+    // A clean Claude-family run leaves the agents map at `result`, before its CLI has exited and
+    // while it may still write to this checkout.
+    guard_idle(
+        || checkout_busy::session_holds_checkout(state, &session_id).unwrap_or(true),
+        providers::await_exit(&session_id),
+        BUSY,
+    )
+    .await?;
+    let store = state.store.clone();
+    let (main, path, _) = blocking(move || worktree_paths(&store, &session_id)).await?;
+    let roots = vec![main.clone(), path.clone()];
+    let reservation = checkout_busy::reserve_idle_checkouts(state, roots.clone(), BUSY).await?;
+    providers::end_lingering_in_checkout(&main).await;
+    providers::end_lingering_in_checkout(&path).await;
+    providers::quiesce_spares_in_checkout(&main).await?;
+    providers::quiesce_spares_in_checkout(&path).await?;
+    checkout_busy::ensure_checkouts_idle(state, &roots, BUSY).await?;
+    blocking(move || {
+        // The Git operation can outlive its awaiting caller.
+        let _reservation = reservation;
+        workspace::merge_worktree(&main, &path, trust)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -3855,22 +3764,68 @@ async fn remove_worktree(
 
 /// `remove_worktree`, and the phone's `worktree.remove` with its [`workspace::Trust`].
 pub(crate) async fn remove_task_worktree(state: &AppState, session_id: String, delete_branch: bool, trust: workspace::Trust) -> Result<workspace::WorktreeRemoval> {
-    if lock_agents(&state.agents).map_err(|e| e.to_string())?.contains_key(&session_id) {
-        return Err("Stop the agent before removing its worktree.".into());
-    }
-    let (main, path, branch) = worktree_paths(&state.store, &session_id)?;
-    // A lingering agent's working directory would block the removal on Windows.
+    const BUSY: &str = "Stop the agent before removing its worktree.";
+    quiesce_worktree(
+        state,
+        &session_id,
+        BUSY,
+        || refuse_worktree_remove_busy(state, &session_id),
+    )
+    .await?;
+    let store = state.store.clone();
+    let (main, path, branch) = blocking(move || worktree_paths(&store, &session_id)).await?;
+    let reservation = checkout_busy::reserve_idle_subtrees(state, vec![path.clone()], BUSY).await?;
+    // A lingering agent or pooled warm spare (from a forked/sibling session) holding `&path`
+    // would block removal on Windows or stay pinned to an unlinked directory inode on Unix.
     providers::end_lingering_in(&path).await;
-    let removed = blocking(move || workspace::remove_worktree_for(&main, &path, branch.as_deref(), delete_branch, trust)).await;
+    providers::quiesce_spares_in(&path).await?;
+    checkout_busy::ensure_subtrees_idle(state, std::slice::from_ref(&path), BUSY).await?;
+    let removed = blocking(move || {
+        let _reservation = reservation;
+        workspace::remove_worktree_for(&main, &path, branch.as_deref(), delete_branch, trust)
+    }).await;
     skill_manager::projects_changed();
     removed
 }
 
 #[tauri::command]
 async fn recreate_worktree(state: State<'_, AppState>, session_id: String) -> Result<Session> {
+    recreate_task_worktree(&state, session_id).await
+}
+
+/// `recreate_worktree`: refuses while this or any other session holds the worktree, retires
+/// the processes pinned to the old folder, then recreates it.
+async fn recreate_task_worktree(state: &AppState, session_id: String) -> Result<Session> {
+    const BUSY: &str = "Stop the agent before recreating its worktree.";
+    if checkout_busy::session_holds_checkout(state, &session_id)? {
+        return Err(BUSY.into());
+    }
+    let (store, sid) = (state.store.clone(), session_id.clone());
+    let (_, path, _) = blocking(move || worktree_paths(&store, &sid)).await?;
+    quiesce_worktree(
+        state,
+        &session_id,
+        BUSY,
+        || async {
+            if checkout_busy::session_holds_checkout(state, &session_id)?
+                || checkout_busy::any_subtree_busy_or_reserved_excluding(state, std::slice::from_ref(&path), Some(&session_id)).await?
+            {
+                return Err(BUSY.into());
+            }
+            Ok(())
+        },
+    )
+    .await?;
+    let (store, sid) = (state.store.clone(), session_id.clone());
+    let (main, path, branch) = blocking(move || worktree_paths(&store, &sid)).await?;
+    let reservation = checkout_busy::reserve_idle_subtrees(state, vec![path.clone()], BUSY).await?;
+    // Retire pooled/lingering processes pinned to the deleted folder's old inode too.
+    providers::end_lingering_in(&path).await;
+    providers::quiesce_spares_in(&path).await?;
+    checkout_busy::ensure_subtrees_idle(state, std::slice::from_ref(&path), BUSY).await?;
     let store = state.store.clone();
     blocking(move || {
-        let (main, path, branch) = worktree_paths(&store, &session_id)?;
+        let _reservation = reservation;
         workspace::recreate_worktree(&main, &path, branch.as_deref())?;
         skill_manager::projects_changed();
         store.lock().map_err(|e| e.to_string())?.session(&session_id)
@@ -3904,16 +3859,159 @@ async fn git_switch_branch(
     switch_branch(&state, &project_id, session_id.as_deref(), branch, workspace::Trust::Desktop).await
 }
 
-/// `git_switch_branch`, and the phone's `git.switchBranch` with its [`workspace::Trust`].
+/// Switches branches for desktop Git with an explicit [`workspace::Trust`].
 pub(crate) async fn switch_branch(state: &AppState, project_id: &str, session_id: Option<&str>, branch: String, trust: workspace::Trust) -> Result<workspace::BranchList> {
-    if let Some(id) = session_id {
-        let store = state.store.lock().map_err(|e| e.to_string())?;
-        if store.session(id)?.worktree_path.is_some() {
-            return Err("This task works in its own worktree; its branch stays as it is.".into());
-        }
+    switch_branch_with(state, project_id, session_id, branch, trust, workspace::git_switch).await
+}
+
+async fn switch_branch_with(
+    state: &AppState,
+    project_id: &str,
+    session_id: Option<&str>,
+    branch: String,
+    trust: workspace::Trust,
+    switch: impl FnOnce(&std::path::Path, &str, workspace::Trust) -> Result<workspace::BranchList> + Send + 'static,
+) -> Result<workspace::BranchList> {
+    const BUSY: &str = "Wait for the active operation in this folder to finish before switching branches.";
+    let project_id = project_id.to_owned();
+    let session_id = session_id.map(str::to_owned);
+    let (root, reservation) = reserve_current_desktop_checkout(
+        state,
+        move |store| {
+            if let Some(id) = &session_id {
+                let task = store.session(id)?;
+                if task.worktree_path.is_some() {
+                    return Err("This task works in its own worktree; its branch stays as it is.".into());
+                }
+            }
+            store.workspace_root(&project_id, session_id.as_deref())
+        },
+        BUSY,
+        "This task's checkout changed while preparing to switch branches. Try again.",
+    )
+    .await?;
+    providers::end_lingering_in_checkout(&root).await;
+    providers::quiesce_spares_in_checkout(&root).await?;
+    checkout_busy::ensure_checkouts_idle(state, std::slice::from_ref(&root), BUSY).await?;
+    blocking(move || {
+        let _reservation = reservation;
+        switch(&root, &branch, trust)
+    })
+    .await
+}
+
+#[cfg(all(test, unix))]
+mod switch_branch_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    const LINGERING_CHILD_ENV: &str = "PANDACODE_DESKTOP_SWITCH_LINGERING_CHILD";
+
+    #[test]
+    fn desktop_switch_branch_ends_lingering_agent_before_git_runs() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "switch_branch_tests::desktop_switch_branch_ends_lingering_agent_before_git_runs_child",
+                "--exact",
+                "--ignored",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env(LINGERING_CHILD_ENV, "1")
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success() && stdout.contains("1 passed"),
+            "desktop switch lingering test failed:\n{stdout}\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
-    let root = state.root(project_id, session_id)?;
-    blocking(move || workspace::git_switch(&root, &branch, trust)).await
+
+    #[tokio::test]
+    #[ignore = "started by desktop_switch_branch_ends_lingering_agent_before_git_runs in its own process"]
+    async fn desktop_switch_branch_ends_lingering_agent_before_git_runs_child() {
+        if std::env::var_os(LINGERING_CHILD_ENV).is_none() {
+            return;
+        }
+        let checkout = checkout_busy::test_support::Checkout::new();
+        let settings_dir = std::env::temp_dir().join(format!(
+            "pandacode-desktop-switch-linger-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(&settings_dir).unwrap();
+        let pid_file = settings_dir.join("agent.pid");
+        let exe = settings_dir.join("fake-antigravity");
+        const SCRIPT: &str = r#"#!/bin/sh
+printf '%s\n' "$$" > '__PID_FILE__'
+read -r a
+printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentCapabilities":{"sessionCapabilities":{"close":{}}}}}'
+read -r a
+printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"sessionId":"s","configOptions":[{"id":"mode","category":"mode","type":"select","currentValue":"default","options":[{"value":"default"}]}]}}'
+read -r a
+printf '%s\n' '{"jsonrpc":"2.0","id":3,"result":{"stopReason":"end_turn"}}'
+while read -r a; do case "$a" in *session/close*) break;; esac; done
+printf '%s\n' '{"jsonrpc":"2.0","id":9,"result":{}}'
+exit 0
+"#;
+        let script = SCRIPT.replace("__PID_FILE__", pid_file.to_str().unwrap());
+        std::fs::write(&exe, script).unwrap();
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let settings = serde_json::json!({ "executablePaths": { "antigravity": exe } });
+        std::fs::write(settings_dir.join("provider-settings.json"), settings.to_string()).unwrap();
+        provider_settings::setup(&settings_dir).unwrap();
+
+        let linger_id = format!("desktop-switch-linger-{}", uuid::Uuid::new_v4().simple());
+        let mut cfg = providers::tests::config("antigravity");
+        cfg.session_id = linger_id.clone();
+        cfg.cwd = checkout.pkg_b.clone();
+        let (input, receiver) = unbounded_channel();
+        let sink: providers::Sink = Arc::new(move |_| {
+            let _ = &input;
+        });
+        providers::run(cfg, sink, receiver).await.unwrap();
+
+        let pid: u32 = std::fs::read_to_string(&pid_file)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        assert!(
+            !providers::process_gone_for_test(pid),
+            "the lingering agent must still be running before switch"
+        );
+
+        let state = AppState {
+            store: Arc::new(Mutex::new(Store::open(std::path::Path::new(":memory:")).unwrap())),
+            agents: Default::default(),
+            terminals: Default::default(),
+            shutdown: Default::default(),
+        };
+        let project = state.store.lock().unwrap().add_project(&checkout.pkg_a).unwrap();
+        let agents = state.agents.clone();
+        let switched = switch_branch_with(
+            &state,
+            &project.id,
+            None,
+            "next".into(),
+            workspace::Trust::Desktop,
+            move |root, branch, _| {
+                if !providers::process_gone_for_test(pid) {
+                    return Err("The lingering agent must exit before switching branches.".into());
+                }
+                assert!(checkout_busy::checkout_reserved(&agents, root));
+                Ok(workspace::BranchList {
+                    current: branch.into(),
+                    branches: vec![branch.into()],
+                    default_branch: String::new(),
+                })
+            },
+        )
+        .await;
+        providers::end_lingering(&linger_id).await;
+        let _ = std::fs::remove_dir_all(&settings_dir);
+        assert_eq!(switched.unwrap().current, "next");
+    }
 }
 
 #[tauri::command]
@@ -4462,14 +4560,13 @@ async fn get_run_script(
 /// clean turn. Bounded; no plan is a result, not an error.
 #[tauri::command]
 async fn run_turn_checks(state: State<'_, AppState>, session_id: String) -> Result<serde_json::Value> {
-    let project_id = state
-        .store
-        .lock()
-        .map_err(|e| e.to_string())?
-        .session(&session_id)?
-        .project_id;
-    let root = state.root(&project_id, Some(&session_id))?;
-    blocking(move || Ok(checks::turn_report(&root))).await
+    use checkout_busy::TaskChecksError;
+    let (root, reservation) = match checkout_busy::prepare_task_checkout_for_checks(&state, &session_id, Store::session).await {
+        Ok(prepared) => prepared,
+        Err(TaskChecksError::Resolve(reason)) => return Err(reason),
+        Err(TaskChecksError::Prepare(reason)) => return Ok(serde_json::json!({"checked": false, "reason": reason})),
+    };
+    Ok(checks::turn_report_after_exit_guarded(&session_id, root, reservation).await)
 }
 #[tauri::command]
 async fn get_run_script_preview(
@@ -4727,6 +4824,16 @@ async fn local_sign_app() -> Result<()> {
         .map_err(|e| e.to_string())?
 }
 
+/// Drops persisted conversation state of tasks deleted by paths that do not forget it (a bot
+/// reset deletes its conversations' rows directly). A failed read keeps everything.
+fn prune_session_state(store: &Store) {
+    let ids = store.db.prepare("SELECT id FROM sessions").and_then(|mut statement| statement.query_map([], |row| row.get::<_, String>(0))?.collect::<rusqlite::Result<HashSet<String>>>());
+    match ids {
+        Ok(ids) => session_state::retain(|id| ids.contains(id)),
+        Err(error) => eprintln!("PandaCode: could not prune session state: {error}"),
+    }
+}
+
 /// State and services shared by the desktop app and `pandacode serve` (docs/headless.md):
 /// storage, credentials, the cloud-run resume loop, Connect hosting, bots and archiving.
 /// Returns the app data dir. GUI-only startup (overlay, tray, appearance, VM idle watch)
@@ -4762,6 +4869,8 @@ fn setup_common(app: &tauri::App) -> crate::Result<PathBuf> {
     if let Err(error) = store.discard_empty_drafts() {
         eprintln!("Could not clear unsent new tasks: {error}");
     }
+    session_state::init(&dir);
+    prune_session_state(&store);
     let db_path = store.path.clone();
     let store = Arc::new(Mutex::new(store));
     remember_db_path(&store, db_path);
@@ -4772,6 +4881,7 @@ fn setup_common(app: &tauri::App) -> crate::Result<PathBuf> {
         shutdown: AtomicU8::new(0),
     });
     cloud_agents::init(app.handle());
+    app_marker::init(app.handle());
     remote::setup(app.handle(), &dir);
     app.manage(browser::BrowserState::default());
     app.manage(simulator::Simulators::default());
@@ -4786,6 +4896,48 @@ fn setup_common(app: &tauri::App) -> crate::Result<PathBuf> {
     remote::orchestrate::reconcile(app.handle());
     schedules::start(app.handle().clone());
     Ok(dir)
+}
+
+/// How long quitting waits, in total, for background CLI exits before killing what is left: the
+/// background exits' own deadline (`BACKGROUND_EXIT_WAIT + TERM_WAIT`) plus 500 ms, so one exit's own escalation
+/// finishes before this gives up. It caps one exit, not a chain: the flushing reap is first in
+/// its session's chain and gets its full budget; a retire queued behind it may be cut by the cap
+/// and is then killed by `shutdown_all`.
+const QUIT_EXIT_WAIT: std::time::Duration = providers::BACKGROUND_EXIT_WAIT
+    .saturating_add(providers::TERM_WAIT)
+    .saturating_add(std::time::Duration::from_millis(500));
+
+/// Quitting: wait for background CLI exits (bounded), then kill what is left. The order matters:
+/// killing first would lose a session file still being flushed.
+async fn exits_then_kill(cap: std::time::Duration, kill: impl FnOnce()) {
+    exits_then_kill_with(providers::await_all_exits(cap), kill).await;
+}
+
+/// `exits_then_kill` over any waiter, so a test can wait on its own registry.
+async fn exits_then_kill_with(waiter: impl std::future::Future<Output = ()>, kill: impl FnOnce()) {
+    waiter.await;
+    kill();
+}
+
+#[cfg(test)]
+mod quit_order_tests {
+    /// A local pending exit stands in for the process-wide registry, which concurrent tests
+    /// also hold entries in.
+    #[tokio::test]
+    async fn quitting_kills_only_after_background_exits_finish() {
+        let (done, mut exiting) = tokio::sync::watch::channel(());
+        let killed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = killed.clone();
+        let quit = tokio::spawn(async move {
+            let waiter = async move { let _ = exiting.changed().await; };
+            super::exits_then_kill_with(waiter, move || flag.store(true, std::sync::atomic::Ordering::SeqCst)).await;
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        assert!(!killed.load(std::sync::atomic::Ordering::SeqCst), "killed while an exit was still pending");
+        drop(done);
+        tokio::time::timeout(std::time::Duration::from_secs(5), quit).await.unwrap().unwrap();
+        assert!(killed.load(std::sync::atomic::Ordering::SeqCst));
+    }
 }
 
 /// Sent (no payload) to the main webview once a deliberate exit is committed, before shutdown.
@@ -4832,6 +4984,8 @@ fn on_run_event(app: &tauri::AppHandle, event: tauri::RunEvent) {
         if state.shutdown.swap(1, Ordering::SeqCst) == 1 {
             return;
         }
+        // No warm spare may start from here on, and none a quit would then wait for.
+        providers::warm_begin_quit();
         // Quitting (or restarting to update) from here on: a crash now is not relaunched.
         crash_guard::notify_exit();
         // Tell the page before it goes: WKWebView may not fire `pagehide` on Cmd+Q, and the
@@ -4845,8 +4999,10 @@ fn on_run_event(app: &tauri::AppHandle, event: tauri::RunEvent) {
         jev::shutdown();
         app.state::<file_preview::FilePreviews>().shutdown();
         if let Ok(agents) = lock_agents(&state.agents) {
-            for (_, tx) in agents.iter().filter(|(id, _)| !cloud.contains(*id)) {
-                let _ = tx.send(RunInput::Stop);
+            // `send` marks the run stopped, as the user's Stop does, so a launch cut short during
+            // its exit wait is never recorded as a clean turn.
+            for (_, agent) in agents.iter().filter(|(id, _)| !cloud.contains(*id)) {
+                let _ = agent.send(RunInput::Stop);
             }
         }
         if let Ok(mut terms) = state.terminals.lock() {
@@ -4862,7 +5018,9 @@ fn on_run_event(app: &tauri::AppHandle, event: tauri::RunEvent) {
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(50)).await;
             }
-            providers::shutdown_all();
+            // Clean Claude-family turns reap their CLI in the background; killing one still
+            // flushing its session file would lose the last write. Wait for every one, bounded.
+            exits_then_kill(QUIT_EXIT_WAIT, providers::shutdown_all).await;
             // Let pending pipe EOFs finish persistence after a forced cleanup.
             for _ in 0..20 {
                 if lock_agents(&agents).map(|a| a.is_empty()).unwrap_or(true) {
@@ -4877,6 +5035,7 @@ fn on_run_event(app: &tauri::AppHandle, event: tauri::RunEvent) {
             handle.exit(0);
         });
     } else if matches!(event, tauri::RunEvent::Exit) {
+        providers::warm_begin_quit();
         crash_guard::notify_exit();
         // The Dock's Quit and logout end here without ExitRequested; the page may not get it.
         if app.try_state::<AppState>().is_some_and(|state| state.shutdown.load(Ordering::SeqCst) == 0) {
@@ -4891,6 +5050,8 @@ fn on_run_event(app: &tauri::AppHandle, event: tauri::RunEvent) {
         app.state::<vm::Vms>().shutdown();
         cloud::aws_screen::close(None);
         providers::shutdown_all();
+        // Counters and marks are written lazily; save the last few seconds' changes.
+        session_state::flush();
     }
 }
 
@@ -5393,6 +5554,23 @@ pub(crate) fn main_invoke_handler(invoke: tauri::ipc::Invoke<tauri::Wry>) -> boo
         web_server::web_server_configure,
         web_server::web_server_rotate_token,
         web_server::app_version,
+        providers::warm::warm_spares_enabled,
+        providers::warm::set_warm_spares_enabled,
+        providers::warm::warm_spare_stats,
+        explore::explore_enabled,
+        explore::set_explore_enabled,
+        explore::explore_harness_enabled,
+        explore::set_explore_harness_enabled,
+        architect::worker_skills_enabled,
+        architect::set_worker_skills_enabled,
+        architect::worker_trim_enabled,
+        architect::set_worker_trim_enabled,
+        custom_tools::ipc::custom_tools_list,
+        custom_tools::ipc::custom_tools_enabled,
+        custom_tools::ipc::set_custom_tools_enabled,
+        custom_tools::ipc::custom_tool_move,
+        custom_tools::ipc::custom_tool_delete,
+        custom_tools::ipc::custom_tool_set_disabled,
     ];
     handler(invoke)
 }

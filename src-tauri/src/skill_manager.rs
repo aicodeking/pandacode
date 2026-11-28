@@ -18,8 +18,9 @@ use prefs::{
 };
 mod enforcement;
 pub(crate) use enforcement::{
-    codex_arguments, codex_connection_arguments, opencode_agents_at, opencode_configuration_at,
-    opencode_enforcement_with, opencode_launch_with, opencode_permission, OpenCodeAgents,
+    codex_arguments, codex_connection_arguments, opencode_agents_at, opencode_agents_at_with_env,
+    opencode_all_agents_with_env, opencode_configuration_at_with_env, opencode_enforcement_with,
+    opencode_launch_with, opencode_permission, opencode_tool_grants_with, OpenCodeAgents,
 };
 mod matrix;
 #[cfg(test)]
@@ -39,6 +40,7 @@ mod library;
 mod links;
 mod metadata;
 mod opencode_agents;
+pub(crate) use opencode_agents::OpenCodeEnv;
 mod plugins;
 mod quarantine;
 mod reminders;

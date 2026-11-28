@@ -1,0 +1,1053 @@
+{
+ "model": "sonnet",
+ "arms": [
+  "before",
+  "after"
+ ],
+ "batches": 1,
+ "runs": 104,
+ "heldout": {
+  "runs": 32,
+  "loc": {
+   "steps": {
+    "a": 5.3125,
+    "b": 4.875,
+    "medianRel": -0.10989010989010989,
+    "meanRel": -0.08131868131868131,
+    "ci": [
+     -0.18411588411588406,
+     0.040709290709290705
+    ],
+    "pWilcoxon": 0.3125,
+    "pSign": 0.21875,
+    "pMaxT": null,
+    "primary": true,
+    "n": 8,
+    "better": 5,
+    "worse": 1,
+    "read": "within noise"
+   },
+   "turns (num_turns, also counts parallel tool messages)": {
+    "a": 5.375,
+    "b": 5.5625,
+    "medianRel": 0.038461538461538436,
+    "meanRel": 0.03730748418248418,
+    "ci": [
+     -0.11794143356643355,
+     0.21509740259740262
+    ],
+    "pWilcoxon": 1,
+    "pSign": 1,
+    "pMaxT": 1,
+    "primary": false,
+    "n": 8,
+    "better": 3,
+    "worse": 4,
+    "read": "within noise"
+   },
+   "wall s": {
+    "a": 20.0720625,
+    "b": 18.238,
+    "medianRel": -0.11321898385539825,
+    "meanRel": -0.09334174928204562,
+    "ci": [
+     -0.12979199537854455,
+     -0.048232711820795804
+    ],
+    "pWilcoxon": 0.015625,
+    "pSign": 0.0703125,
+    "pMaxT": 0.0390625,
+    "primary": false,
+    "n": 8,
+    "better": 7,
+    "worse": 1,
+    "read": "lower"
+   },
+   "duration s": {
+    "a": 19.852625,
+    "b": 17.99575,
+    "medianRel": -0.11475705307978601,
+    "meanRel": -0.09560293332282127,
+    "ci": [
+     -0.13216202573591512,
+     -0.0502103466082838
+    ],
+    "pWilcoxon": 0.015625,
+    "pSign": 0.0703125,
+    "pMaxT": 0.03125,
+    "primary": false,
+    "n": 8,
+    "better": 7,
+    "worse": 1,
+    "read": "lower"
+   },
+   "API s": {
+    "a": 19.052937500000002,
+    "b": 17.7055,
+    "medianRel": -0.08769210271483963,
+    "meanRel": -0.07079612403869126,
+    "ci": [
+     -0.10860112444009057,
+     -0.027897678543183535
+    ],
+    "pWilcoxon": 0.0390625,
+    "pSign": 0.0703125,
+    "pMaxT": 0.0703125,
+    "primary": false,
+    "n": 8,
+    "better": 7,
+    "worse": 1,
+    "read": "within noise"
+   },
+   "API s/step": {
+    "a": 3.613282738095238,
+    "b": 3.726688020833333,
+    "medianRel": 0.021875383987568275,
+    "meanRel": 0.03389893812748347,
+    "ci": [
+     -0.04973074488126557,
+     0.12056587050581474
+    ],
+    "pWilcoxon": 0.546875,
+    "pSign": 1,
+    "pMaxT": 0.9453125,
+    "primary": false,
+    "n": 8,
+    "better": 4,
+    "worse": 4,
+    "read": "within noise"
+   },
+   "non-API s": {
+    "a": 0.7996874999999999,
+    "b": 0.29025,
+    "medianRel": -0.6904545454545454,
+    "meanRel": -0.6239581081302109,
+    "ci": [
+     -0.7576670885938919,
+     -0.4656817544597712
+    ],
+    "pWilcoxon": 0.0078125,
+    "pSign": 0.0078125,
+    "pMaxT": 0.0078125,
+    "primary": false,
+    "n": 8,
+    "better": 8,
+    "worse": 0,
+    "read": "lower"
+   },
+   "cost $": {
+    "a": 0.1148978375,
+    "b": 0.11716347499999999,
+    "medianRel": 0.023956213213508715,
+    "meanRel": 0.04845316838265573,
+    "ci": [
+     -0.037788850608536276,
+     0.15216429437599552
+    ],
+    "pWilcoxon": 0.7421875,
+    "pSign": 0.7265625,
+    "pMaxT": 0.90625,
+    "primary": false,
+    "n": 8,
+    "better": 3,
+    "worse": 5,
+    "read": "within noise"
+   },
+   "cost beyond first write $": {
+    "a": 0.0612260875,
+    "b": 0.063490975,
+    "medianRel": 0.04369343871224918,
+    "meanRel": 0.07623355354096364,
+    "ci": [
+     -0.0706577581267212,
+     0.24306246542992843
+    ],
+    "pWilcoxon": 0.7421875,
+    "pSign": 0.7265625,
+    "pMaxT": 0.90625,
+    "primary": false,
+    "n": 8,
+    "better": 3,
+    "worse": 5,
+    "read": "within noise"
+   },
+   "cost at 150k context $": {
+    "a": 0.14226600625,
+    "b": 0.13796753750000001,
+    "medianRel": -0.10268761193353615,
+    "meanRel": -0.023127178216233946,
+    "ci": [
+     -0.12593659332211654,
+     0.09742880802526925
+    ],
+    "pWilcoxon": 0.546875,
+    "pSign": 0.7265625,
+    "pMaxT": 1,
+    "primary": false,
+    "n": 8,
+    "better": 5,
+    "worse": 3,
+    "read": "within noise"
+   },
+   "cache read tok": {
+    "a": 142154.625,
+    "b": 136637.25,
+    "medianRel": -0.1087890255190671,
+    "meanRel": -0.048844883156692984,
+    "ci": [
+     -0.1785637862304176,
+     0.12579851624660943
+    ],
+    "pWilcoxon": 0.3828125,
+    "pSign": 0.7265625,
+    "pMaxT": 0.9921875,
+    "primary": false,
+    "n": 8,
+    "better": 5,
+    "worse": 3,
+    "read": "within noise"
+   },
+   "cache write tok": {
+    "a": 20813.25,
+    "b": 21658.5,
+    "medianRel": 0.060929527627660685,
+    "meanRel": 0.10113546583203563,
+    "ci": [
+     -0.016257730594538153,
+     0.249787529217088
+    ],
+    "pWilcoxon": 0.3828125,
+    "pSign": 0.7265625,
+    "pMaxT": 0.703125,
+    "primary": false,
+    "n": 8,
+    "better": 3,
+    "worse": 5,
+    "read": "within noise"
+   },
+   "output tok": {
+    "a": 1740.8125,
+    "b": 1684.625,
+    "medianRel": -0.023852978217701937,
+    "meanRel": -0.030492187304496876,
+    "ci": [
+     -0.05886841608862986,
+     -0.0043496657841916725
+    ],
+    "pWilcoxon": 0.109375,
+    "pSign": 0.7265625,
+    "pMaxT": 0.359375,
+    "primary": false,
+    "n": 8,
+    "better": 5,
+    "worse": 3,
+    "read": "within noise"
+   },
+   "cache write tok/step after the first": {
+    "a": 1594.8409226190474,
+    "b": 2117.148958333333,
+    "medianRel": 0.21008711667317037,
+    "meanRel": 0.423534435872593,
+    "ci": [
+     0.09265433406061425,
+     0.7861910947243644
+    ],
+    "pWilcoxon": 0.0546875,
+    "pSign": 0.0703125,
+    "pMaxT": null,
+    "primary": false,
+    "n": 8,
+    "better": 1,
+    "worse": 7,
+    "read": "within noise"
+   }
+  },
+  "gate": {
+   "recall": {
+    "a": 0.8854166666666666,
+    "b": 0.9010416666666666,
+    "diff": 0.015625,
+    "ci": [
+     0,
+     0.046875
+    ],
+    "margin": -0.05,
+    "pass": true,
+    "n": 8
+   },
+   "precision": {
+    "a": 0.7645833333333333,
+    "b": 0.7177884615384615,
+    "diff": -0.04679487179487181,
+    "ci": [
+     -0.13333333333333336,
+     0.033333333333333354
+    ],
+    "margin": -0.05,
+    "pass": false,
+    "n": 8
+   },
+   "editPass": null
+  },
+  "exploreUse": {
+   "runs": 16,
+   "adopted": 16,
+   "firstTool": 16,
+   "callsPerRun": 4,
+   "calls": 64,
+   "singleKindCalls": 44,
+   "errors": 0,
+   "runsWithErrors": 0,
+   "truncatedResults": 43,
+   "resultChars": {
+    "median": 1890,
+    "max": 14523
+   },
+   "toolSearch": 0
+  }
+ },
+ "loc": {
+  "steps": {
+   "a": 4.925,
+   "b": 4.275,
+   "medianRel": -0.09545454545454546,
+   "meanRel": -0.09708971583971587,
+   "ci": [
+    -0.1855390442890443,
+    0.0012619325119324954
+   ],
+   "pWilcoxon": 0.0120849609375,
+   "pSign": 0.012939453125,
+   "pMaxT": null,
+   "primary": true,
+   "n": 20,
+   "better": 12,
+   "worse": 2,
+   "read": "within noise"
+  },
+  "turns (num_turns, also counts parallel tool messages)": {
+   "a": 5.025,
+   "b": 5.125,
+   "medianRel": 0,
+   "meanRel": 0.047857212232212246,
+   "ci": [
+    -0.07837752525252524,
+    0.19331210456210451
+   ],
+   "pWilcoxon": 0.928802490234375,
+   "pSign": 1,
+   "pMaxT": 0.972355,
+   "primary": false,
+   "n": 20,
+   "better": 8,
+   "worse": 8,
+   "read": "within noise"
+  },
+  "wall s": {
+   "a": 22.434625,
+   "b": 19.321725000000004,
+   "medianRel": -0.09744044389032619,
+   "meanRel": -0.113506153468995,
+   "ci": [
+    -0.1812667967393034,
+    -0.03667682620439374
+   ],
+   "pWilcoxon": 0.0014,
+   "pSign": 0.0025768280029296875,
+   "pMaxT": 0.028685,
+   "primary": false,
+   "n": 20,
+   "better": 17,
+   "worse": 3,
+   "read": "lower"
+  },
+  "duration s": {
+   "a": 22.168225000000003,
+   "b": 19.023474999999998,
+   "medianRel": -0.10144208051307274,
+   "meanRel": -0.11560107397081935,
+   "ci": [
+    -0.1847444467351253,
+    -0.03558438827616846
+   ],
+   "pWilcoxon": 0.001405,
+   "pSign": 0.0025768280029296875,
+   "pMaxT": 0.031835,
+   "primary": false,
+   "n": 20,
+   "better": 17,
+   "worse": 3,
+   "read": "lower"
+  },
+  "API s": {
+   "a": 20.8992,
+   "b": 18.3732,
+   "medianRel": -0.08176400693737834,
+   "meanRel": -0.08752391216170285,
+   "ci": [
+    -0.1554758066366217,
+    -0.009291770665569826
+   ],
+   "pWilcoxon": 0.00214,
+   "pSign": 0.0025768280029296875,
+   "pMaxT": 0.12588,
+   "primary": false,
+   "n": 20,
+   "better": 17,
+   "worse": 3,
+   "read": "within noise"
+  },
+  "API s/step": {
+   "a": 4.2432549404761915,
+   "b": 4.354699226190476,
+   "medianRel": 0.02351251291470735,
+   "meanRel": 0.029935740866238188,
+   "ci": [
+    -0.02134370555369059,
+    0.0815402813118548
+   ],
+   "pWilcoxon": 0.293505,
+   "pSign": 0.8238029479980469,
+   "pMaxT": 0.770305,
+   "primary": false,
+   "n": 20,
+   "better": 9,
+   "worse": 11,
+   "read": "within noise"
+  },
+  "non-API s": {
+   "a": 1.269025,
+   "b": 0.650275,
+   "medianRel": -0.7425828685223663,
+   "meanRel": -0.525352652718331,
+   "ci": [
+    -0.7026601624055865,
+    -0.32977376174530787
+   ],
+   "pWilcoxon": 0.00376,
+   "pSign": 0.01181793212890625,
+   "pMaxT": 0.000235,
+   "primary": false,
+   "n": 20,
+   "better": 16,
+   "worse": 4,
+   "read": "lower"
+  },
+  "cost $": {
+   "a": 0.1704674075,
+   "b": 0.1650783975,
+   "medianRel": 0.0067114776269115994,
+   "meanRel": 0.023684296729507635,
+   "ci": [
+    -0.0487088815719789,
+    0.12356822601039512
+   ],
+   "pWilcoxon": 0.78391,
+   "pSign": 0.8238029479980469,
+   "pMaxT": 0.99325,
+   "primary": false,
+   "n": 20,
+   "better": 9,
+   "worse": 11,
+   "read": "within noise"
+  },
+  "cost beyond first write $": {
+   "a": 0.0709869075,
+   "b": 0.06559919750000001,
+   "medianRel": 0.015662859254908512,
+   "meanRel": 0.03496756055612662,
+   "ci": [
+    -0.11468456245743903,
+    0.22421497357073955
+   ],
+   "pWilcoxon": 0.78391,
+   "pSign": 0.8238029479980469,
+   "pMaxT": 0.998685,
+   "primary": false,
+   "n": 20,
+   "better": 9,
+   "worse": 11,
+   "read": "within noise"
+  },
+  "cost at 150k context $": {
+   "a": 0.14735876999999997,
+   "b": 0.13221972750000002,
+   "medianRel": -0.03145453126066711,
+   "meanRel": -0.044400717203135945,
+   "ci": [
+    -0.1503566349630661,
+    0.0796248656443064
+   ],
+   "pWilcoxon": 0.187695,
+   "pSign": 0.8238029479980469,
+   "pMaxT": 0.95542,
+   "primary": false,
+   "n": 20,
+   "better": 11,
+   "worse": 9,
+   "read": "within noise"
+  },
+  "cache read tok": {
+   "a": 187390.075,
+   "b": 154000.475,
+   "medianRel": -0.05879782139966838,
+   "meanRel": -0.0821434885252439,
+   "ci": [
+    -0.20251949482784162,
+    0.0584541483749504
+   ],
+   "pWilcoxon": 0.080985,
+   "pSign": 0.5034446716308594,
+   "pMaxT": 0.7051,
+   "primary": false,
+   "n": 20,
+   "better": 12,
+   "worse": 8,
+   "read": "within noise"
+  },
+  "cache write tok": {
+   "a": 33102.675,
+   "b": 32946.375,
+   "medianRel": 0.016017278590046535,
+   "meanRel": 0.05150977707288362,
+   "ci": [
+    -0.017679831361615977,
+    0.14955281852899932
+   ],
+   "pWilcoxon": 0.783705,
+   "pSign": 0.26317596435546875,
+   "pMaxT": 0.74393,
+   "primary": false,
+   "n": 20,
+   "better": 7,
+   "worse": 13,
+   "read": "within noise"
+  },
+  "output tok": {
+   "a": 1929.8,
+   "b": 1787.575,
+   "medianRel": -0.03309529142438267,
+   "meanRel": -0.024513991711109927,
+   "ci": [
+    -0.11143141313676472,
+    0.07966943721863666
+   ],
+   "pWilcoxon": 0.090105,
+   "pSign": 0.26317596435546875,
+   "pMaxT": 0.995,
+   "primary": false,
+   "n": 20,
+   "better": 13,
+   "worse": 7,
+   "read": "within noise"
+  },
+  "cache write tok/step after the first": {
+   "a": 1983.5214285714283,
+   "b": 2421.347083333333,
+   "medianRel": 0.15395854810749854,
+   "meanRel": 0.28110979046317236,
+   "ci": [
+    0.12966754367425495,
+    0.4424765816952088
+   ],
+   "pWilcoxon": 0.003625,
+   "pSign": 0.0025768280029296875,
+   "pMaxT": null,
+   "primary": false,
+   "n": 20,
+   "better": 3,
+   "worse": 17,
+   "read": "higher"
+  }
+ },
+ "edit": {
+  "steps": {
+   "a": 6.666666666666667,
+   "b": 7.166666666666667,
+   "medianRel": 0.14358974358974352,
+   "meanRel": 0.18840845145192966,
+   "ci": [
+    -0.1077294685990338,
+    0.485958485958486
+   ],
+   "pWilcoxon": 0.71875,
+   "pSign": 0.6875,
+   "pMaxT": null,
+   "primary": true,
+   "n": 6,
+   "better": 2,
+   "worse": 4,
+   "read": "within noise"
+  },
+  "turns (num_turns, also counts parallel tool messages)": {
+   "a": 6.833333333333333,
+   "b": 8.833333333333334,
+   "medianRel": 0.4833333333333333,
+   "meanRel": 0.41410256410256413,
+   "ci": [
+    0.10576923076923078,
+    0.6432692307692307
+   ],
+   "pWilcoxon": 0.28125,
+   "pSign": 0.21875,
+   "pMaxT": 0.1875,
+   "primary": false,
+   "n": 6,
+   "better": 1,
+   "worse": 5,
+   "read": "within noise"
+  },
+  "wall s": {
+   "a": 50.94300000000001,
+   "b": 50.20225,
+   "medianRel": 0.050483970385105326,
+   "meanRel": 0.1299690471769134,
+   "ci": [
+    -0.08185879339746242,
+    0.37716899915688384
+   ],
+   "pWilcoxon": 0.84375,
+   "pSign": 0.6875,
+   "pMaxT": 0.8125,
+   "primary": false,
+   "n": 6,
+   "better": 2,
+   "worse": 4,
+   "read": "within noise"
+  },
+  "duration s": {
+   "a": 50.33383333333333,
+   "b": 49.90058333333334,
+   "medianRel": 0.04503537794192192,
+   "meanRel": 0.13058477050633885,
+   "ci": [
+    -0.08041543224762242,
+    0.37737557154533663
+   ],
+   "pWilcoxon": 0.84375,
+   "pSign": 0.6875,
+   "pMaxT": 0.8125,
+   "primary": false,
+   "n": 6,
+   "better": 2,
+   "worse": 4,
+   "read": "within noise"
+  },
+  "API s": {
+   "a": 22.651666666666667,
+   "b": 24.260749999999998,
+   "medianRel": 0.07419887612669973,
+   "meanRel": 0.11277510694328625,
+   "ci": [
+    -0.0780765739014077,
+    0.3164147643288486
+   ],
+   "pWilcoxon": 0.4375,
+   "pSign": 0.6875,
+   "pMaxT": 0.8125,
+   "primary": false,
+   "n": 6,
+   "better": 2,
+   "worse": 4,
+   "read": "within noise"
+  },
+  "API s/step": {
+   "a": 3.711082738095238,
+   "b": 3.500878207671958,
+   "medianRel": -0.03149821854126561,
+   "meanRel": -0.020551862393626868,
+   "ci": [
+    -0.13265154636158744,
+    0.10551576406327866
+   ],
+   "pWilcoxon": 0.6875,
+   "pSign": 0.6875,
+   "pMaxT": 1,
+   "primary": false,
+   "n": 6,
+   "better": 4,
+   "worse": 2,
+   "read": "within noise"
+  },
+  "non-API s": {
+   "a": 27.682166666666664,
+   "b": 25.639833333333332,
+   "medianRel": -0.10148367017606458,
+   "meanRel": 0.39789019872054343,
+   "ci": [
+    -0.18071168228570444,
+    1.3404105949465732
+   ],
+   "pWilcoxon": 0.84375,
+   "pSign": 0.6875,
+   "pMaxT": 0.875,
+   "primary": false,
+   "n": 6,
+   "better": 4,
+   "worse": 2,
+   "read": "within noise"
+  },
+  "cost $": {
+   "a": 0.16502315,
+   "b": 0.16913403333333332,
+   "medianRel": 0.005707057486934841,
+   "meanRel": 0.030644796518514834,
+   "ci": [
+    -0.06596825001868595,
+    0.13134475020867628
+   ],
+   "pWilcoxon": 0.84375,
+   "pSign": 1,
+   "pMaxT": 1,
+   "primary": false,
+   "n": 6,
+   "better": 3,
+   "worse": 3,
+   "read": "within noise"
+  },
+  "cost beyond first write $": {
+   "a": 0.07915548333333333,
+   "b": 0.08326436666666666,
+   "medianRel": 0.017333983989684387,
+   "meanRel": 0.11992952106309647,
+   "ci": [
+    -0.10740266105061419,
+    0.3792908657954743
+   ],
+   "pWilcoxon": 0.84375,
+   "pSign": 1,
+   "pMaxT": 0.875,
+   "primary": false,
+   "n": 6,
+   "better": 3,
+   "worse": 3,
+   "read": "within noise"
+  },
+  "cost at 150k context $": {
+   "a": 0.18131550833333332,
+   "b": 0.19292544166666667,
+   "medianRel": 0.06339594657760717,
+   "meanRel": 0.14322931776851142,
+   "ci": [
+    -0.11232375314696331,
+    0.402311023452683
+   ],
+   "pWilcoxon": 0.5625,
+   "pSign": 0.6875,
+   "pMaxT": 0.8125,
+   "primary": false,
+   "n": 6,
+   "better": 2,
+   "worse": 4,
+   "read": "within noise"
+  },
+  "cache read tok": {
+   "a": 222958.16666666666,
+   "b": 253602,
+   "medianRel": 0.1590572291625708,
+   "meanRel": 0.27084327881035963,
+   "ci": [
+    -0.11513956214705212,
+    0.670027210951301
+   ],
+   "pWilcoxon": 0.4375,
+   "pSign": 0.6875,
+   "pMaxT": 0.65625,
+   "primary": false,
+   "n": 6,
+   "better": 2,
+   "worse": 4,
+   "read": "within noise"
+  },
+  "cache write tok": {
+   "a": 29825.166666666668,
+   "b": 29529.416666666668,
+   "medianRel": -0.03074124351183899,
+   "meanRel": -0.009075840396588708,
+   "ci": [
+    -0.06151915997953759,
+    0.04760544694721445
+   ],
+   "pWilcoxon": 0.6875,
+   "pSign": 0.6875,
+   "pMaxT": 1,
+   "primary": false,
+   "n": 6,
+   "better": 4,
+   "worse": 2,
+   "read": "within noise"
+  },
+  "output tok": {
+   "a": 2340,
+   "b": 2562.75,
+   "medianRel": 0.1871110159537781,
+   "meanRel": 0.13996401404467476,
+   "ci": [
+    -0.021851477049159258,
+    0.29438838892072067
+   ],
+   "pWilcoxon": 0.21875,
+   "pSign": 0.6875,
+   "pMaxT": 0.53125,
+   "primary": false,
+   "n": 6,
+   "better": 2,
+   "worse": 4,
+   "read": "within noise"
+  },
+  "cache write tok/step after the first": {
+   "a": 1653.3658730158731,
+   "b": 1347.4710648148148,
+   "medianRel": -0.09959297458091088,
+   "meanRel": -0.11605435530527751,
+   "ci": [
+    -0.26049306293798336,
+    0.030335337321552264
+   ],
+   "pWilcoxon": 0.21875,
+   "pSign": 0.6875,
+   "pMaxT": null,
+   "primary": false,
+   "n": 6,
+   "better": 4,
+   "worse": 2,
+   "read": "within noise"
+  }
+ },
+ "laterWrites": {
+  "before": {
+   "stepWeighted": 2097.4649681528663,
+   "median": 1821,
+   "steps": 157
+  },
+  "after": {
+   "stepWeighted": 2466.1297709923665,
+   "median": 1959,
+   "steps": 131
+  }
+ },
+ "firstWrite": {
+  "tokens": 24869.9625,
+  "share": 0.5548130126925186
+ },
+ "underCeiling": {
+  "tasks": 13,
+  "atCeiling": 7,
+  "recall": {
+   "a": 0.668269230769231,
+   "b": 0.7211538461538461,
+   "diff": 0.052884615384615384,
+   "ci": [
+    -0.009386446886446896,
+    0.1201923076923077
+   ],
+   "margin": -0.05,
+   "pass": true,
+   "n": 13
+  },
+  "steps": {
+   "a": 5.1923076923076925,
+   "b": 4.384615384615385,
+   "medianRel": -0.09999999999999998,
+   "meanRel": -0.13740020663097588,
+   "ci": [
+    -0.22790927021696256,
+    -0.05574340189724805
+   ],
+   "pWilcoxon": 0.01953125,
+   "pSign": 0.0390625,
+   "pMaxT": null,
+   "primary": true,
+   "n": 13,
+   "better": 8,
+   "worse": 1,
+   "read": "lower"
+  }
+ },
+ "byTag": {
+  "auth": {
+   "a": 0.5555555555555555,
+   "b": 0.6666666666666666,
+   "diff": 0.1111111111111111,
+   "ci": [
+    0,
+    0.3333333333333333
+   ],
+   "margin": -0.05,
+   "pass": true,
+   "n": 3
+  },
+  "big-repo": {
+   "a": 1,
+   "b": 1,
+   "diff": 0,
+   "ci": [
+    0,
+    0
+   ],
+   "margin": -0.05,
+   "pass": true,
+   "n": 1
+  },
+  "dot-config": {
+   "a": 1,
+   "b": 1,
+   "diff": 0,
+   "ci": [
+    0,
+    0
+   ],
+   "margin": -0.05,
+   "pass": true,
+   "n": 4
+  },
+  "glob-narrow": {
+   "a": 0.7845238095238095,
+   "b": 0.7761904761904762,
+   "diff": -0.008333333333333349,
+   "ci": [
+    -0.0785714285714286,
+    0.059523809523809514
+   ],
+   "margin": -0.05,
+   "pass": false,
+   "n": 5
+  },
+  "secret-named": {
+   "a": 0.75,
+   "b": 0.8333333333333334,
+   "diff": 0.08333333333333333,
+   "ci": [
+    0,
+    0.16666666666666663
+   ],
+   "margin": -0.05,
+   "pass": true,
+   "n": 3
+  },
+  "truncated-read": {
+   "a": 0.7470238095238096,
+   "b": 0.7440476190476191,
+   "diff": -0.0029761904761905025,
+   "ci": [
+    -0.07142857142857151,
+    0.125
+   ],
+   "margin": -0.05,
+   "pass": false,
+   "n": 3
+  }
+ },
+ "fittedPrices": {
+  "write": 3.99978955693181,
+  "read": 0.10005746364455649,
+  "output": 10.00771496021364,
+  "medianError": 0.000019592192801910482,
+  "maxError": 0.00014746536981348056,
+  "runs": 104
+ },
+ "exploreUse": {
+  "loc": {
+   "runs": 40,
+   "adopted": 38,
+   "firstTool": 38,
+   "callsPerRun": 3.825,
+   "calls": 153,
+   "singleKindCalls": 104,
+   "errors": 0,
+   "runsWithErrors": 0,
+   "truncatedResults": 88,
+   "resultChars": {
+    "median": 2855,
+    "max": 16891
+   },
+   "toolSearch": 0
+  },
+  "edit": {
+   "runs": 12,
+   "adopted": 11,
+   "firstTool": 11,
+   "callsPerRun": 1.6666666666666667,
+   "calls": 20,
+   "singleKindCalls": 14,
+   "errors": 0,
+   "runsWithErrors": 0,
+   "truncatedResults": 10,
+   "resultChars": {
+    "median": 1320.5,
+    "max": 6247
+   },
+   "toolSearch": 0
+  }
+ },
+ "editPairs": {
+  "onlyA": 0,
+  "onlyB": 1,
+  "pMcNemar": 1,
+  "pairs": 12,
+  "changedFiles": {
+   "before": 1.4166666666666667,
+   "after": 1.1666666666666667
+  }
+ },
+ "gatePerBatch": {
+  "E2": {
+   "recall": {
+    "a": 0.784375,
+    "b": 0.80625,
+    "diff": 0.021875,
+    "ci": [
+     -0.028571428571428574,
+     0.07410714285714286
+    ],
+    "margin": -0.05,
+    "pass": true,
+    "n": 20
+   },
+   "precision": {
+    "a": 0.5426387501387502,
+    "b": 0.5347411324056062,
+    "diff": -0.007897617733144064,
+    "ci": [
+     -0.05463403555508821,
+     0.04010000963948329
+    ],
+    "margin": -0.05,
+    "pass": false,
+    "n": 20
+   },
+   "editPass": {
+    "a": 0.8333333333333334,
+    "b": 0.9166666666666666,
+    "diff": 0.08333333333333333,
+    "ci": [
+     0,
+     0.25
+    ],
+    "margin": -0.05,
+    "pass": true,
+    "n": 6
+   }
+  }
+ },
+ "failures": [
+  {
+   "task": "edit-connect-secrets",
+   "arm": "before",
+   "seed": 10,
+   "reason": "success"
+  },
+  {
+   "task": "edit-projects-added-order",
+   "arm": "after",
+   "seed": 9,
+   "reason": "success"
+  },
+  {
+   "task": "edit-projects-added-order",
+   "arm": "before",
+   "seed": 9,
+   "reason": "success"
+  }
+ ]
+}

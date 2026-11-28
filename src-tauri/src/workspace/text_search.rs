@@ -12,7 +12,7 @@ const MAX_MATCHES: usize = 2_000;
 const MAX_FILES: usize = 50_000;
 const MAX_ENTRIES: usize = 200_000;
 const MAX_TOTAL_BYTES: u64 = 64 * 1024 * 1024;
-const MAX_FILE_BYTES: u64 = 1024 * 1024;
+pub(crate) const MAX_FILE_BYTES: u64 = 1024 * 1024;
 const PREVIEW_CHARS: usize = 300;
 const CONTEXT_BEFORE: usize = 40;
 const DEADLINE: Duration = Duration::from_secs(5);
@@ -21,6 +21,15 @@ const DEADLINE: Duration = Duration::from_secs(5);
 fn generations() -> std::sync::MutexGuard<'static, HashMap<PathBuf, u64>> {
     static LATEST: OnceLock<Mutex<HashMap<PathBuf, u64>>> = OnceLock::new();
     LATEST.get_or_init(Default::default).lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// A regex for `word` as a whole word. Like VS Code, an edge that is not a word character needs
+/// no boundary (`@foo`, `foo()`).
+pub(crate) fn whole_word_pattern(word: &str) -> String {
+    let is_word = |c: Option<char>| c.is_some_and(|c| c.is_alphanumeric() || c == '_');
+    let before = if is_word(word.chars().next()) { r"\b" } else { "" };
+    let after = if is_word(word.chars().next_back()) { r"\b" } else { "" };
+    format!("{before}{}{after}", regex::escape(word))
 }
 
 #[derive(Debug, Serialize)]
@@ -77,16 +86,10 @@ fn search_text_with(
         return Err("Search text must be 1 to 512 bytes and contain no null characters.".into());
     }
     let pattern = if regex { query.to_owned() } else { regex::escape(query) };
-    let pattern = if !whole_word {
-        pattern
-    } else if regex {
-        format!(r"\b(?:{pattern})\b")
-    } else {
-        // Like VS Code, a literal edge that is not a word character needs no boundary (`@foo`, `foo()`).
-        let word = |c: Option<char>| c.is_some_and(|c| c.is_alphanumeric() || c == '_');
-        let before = if word(query.chars().next()) { r"\b" } else { "" };
-        let after = if word(query.chars().next_back()) { r"\b" } else { "" };
-        format!("{before}{pattern}{after}")
+    let pattern = match (whole_word, regex) {
+        (false, _) => pattern,
+        (true, true) => format!(r"\b(?:{pattern})\b"),
+        (true, false) => whole_word_pattern(query),
     };
     let matcher = regex::RegexBuilder::new(&pattern)
         .case_insensitive(!match_case)
@@ -97,11 +100,7 @@ fn search_text_with(
     if !root.is_dir() {
         return Err("Project folder is unavailable.".into());
     }
-    let in_repo = root.ancestors().any(|path| path.join(".git").exists());
-    let walker = ignore::WalkBuilder::new(&root)
-        .hidden(false)
-        .require_git(in_repo)
-        .max_depth(Some(48))
+    let walker = super::project_walker(&root)
         .filter_entry(|entry| {
             !super::file_search::excluded(entry.file_name(), entry.file_type().is_some_and(|t| t.is_dir()))
         })
@@ -178,16 +177,56 @@ fn search_text_with(
 /// symlink, resolves outside `root`, or is no longer the file that was opened; `skip_links`
 /// also refuses a file with more than one hard link (checked on the opened handle).
 fn read_inside(root: &Path, path: &Path, skip_links: bool) -> Option<Vec<u8>> {
+    read_checked(root, path, MAX_FILE_BYTES, |_| false, skip_links)
+}
+
+/// Opens without waiting: a FIFO swapped in after the type check opens at once and is refused.
+/// Returns the file and its metadata.
+fn open_regular(path: &Path) -> Option<(std::fs::File, std::fs::Metadata)> {
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NONBLOCK);
+    }
+    let file = options.open(path).ok()?;
+    let metadata = file.metadata().ok()?;
+    metadata.is_file().then_some((file, metadata))
+}
+
+/// `refused` judges the opened file's real path, relative to `root`.
+pub(crate) fn read_inside_up_to(root: &Path, path: &Path, limit: u64, refused: impl Fn(&str) -> bool) -> Option<Vec<u8>> {
+    read_checked(root, path, limit, refused, true)
+}
+
+fn read_checked(root: &Path, path: &Path, limit: u64, refused: impl Fn(&str) -> bool, skip_links: bool) -> Option<Vec<u8>> {
     use std::io::Read;
-    if std::fs::symlink_metadata(path).ok()?.file_type().is_symlink() {
+    let (file, size) = open_checked(root, path, limit, refused, skip_links)?;
+    let mut bytes = Vec::with_capacity(size as usize);
+    file.take(limit + 1).read_to_end(&mut bytes).ok()?;
+    (bytes.len() as u64 <= limit).then_some(bytes)
+}
+
+/// `read_inside_up_to`'s checks without the read: the opened file and its size, for a caller
+/// that streams it.
+pub(crate) fn open_inside_up_to(root: &Path, path: &Path, limit: u64, refused: impl Fn(&str) -> bool) -> Option<(std::fs::File, u64)> {
+    open_checked(root, path, limit, refused, true)
+}
+
+fn open_checked(root: &Path, path: &Path, limit: u64, refused: impl Fn(&str) -> bool, skip_links: bool) -> Option<(std::fs::File, u64)> {
+    // Checked before opening: opening a FIFO would wait for a writer.
+    if !std::fs::symlink_metadata(path).ok()?.file_type().is_file() {
         return None;
     }
-    let file = std::fs::File::open(path).ok()?;
-    let opened = file.metadata().ok()?;
-    if !opened.is_file() || opened.len() > MAX_FILE_BYTES {
+    let (file, opened) = open_regular(path)?;
+    if opened.len() > limit {
         return None;
     }
-    if !path.canonicalize().ok()?.starts_with(root) {
+    // Judged by where the opened handle is now, never by looking the path up again: a folder
+    // swapped for a symlink since the caller's checks may lead elsewhere inside the root.
+    let real = handle_path(&file, path)?;
+    if real.strip_prefix(root).ok().is_none_or(|inside| refused(&inside.to_string_lossy())) {
         return None;
     }
     #[cfg(unix)]
@@ -201,11 +240,92 @@ fn read_inside(root: &Path, path: &Path, skip_links: bool) -> Option<Vec<u8>> {
             return None;
         }
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    if skip_links && !has_at_most_one_link(&file) {
+        return None;
+    }
+    #[cfg(not(any(unix, windows)))]
     let _ = skip_links;
-    let mut bytes = Vec::with_capacity(opened.len() as usize);
-    file.take(MAX_FILE_BYTES + 1).read_to_end(&mut bytes).ok()?;
-    (bytes.len() as u64 <= MAX_FILE_BYTES).then_some(bytes)
+    Some((file, opened.len()))
+}
+
+#[cfg(windows)]
+fn has_at_most_one_link(file: &std::fs::File) -> bool {
+    use std::{ffi::c_void, mem::MaybeUninit, os::windows::io::AsRawHandle};
+
+    #[repr(C)]
+    struct Filetime {
+        low: u32,
+        high: u32,
+    }
+
+    #[repr(C)]
+    struct ByHandleFileInformation {
+        file_attributes: u32,
+        creation_time: Filetime,
+        last_access_time: Filetime,
+        last_write_time: Filetime,
+        volume_serial_number: u32,
+        file_size_high: u32,
+        file_size_low: u32,
+        number_of_links: u32,
+        file_index_high: u32,
+        file_index_low: u32,
+    }
+
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetFileInformationByHandle(handle: *mut c_void, info: *mut ByHandleFileInformation) -> i32;
+    }
+
+    let mut info = MaybeUninit::<ByHandleFileInformation>::uninit();
+    // SAFETY: the file owns the open handle, and info points to writable storage of the required size.
+    if unsafe { GetFileInformationByHandle(file.as_raw_handle(), info.as_mut_ptr()) } == 0 {
+        return false;
+    }
+    // SAFETY: a successful call initialized the structure.
+    unsafe { info.assume_init() }.number_of_links <= 1
+}
+
+/// The real path of the file `file` has open (macOS `F_GETPATH`, Linux `/proc/self/fd`).
+#[cfg(target_os = "macos")]
+fn handle_path(file: &std::fs::File, _path: &Path) -> Option<std::path::PathBuf> {
+    use std::os::unix::{ffi::OsStrExt, io::AsRawFd};
+    let mut buffer = vec![0u8; libc::PATH_MAX as usize];
+    // SAFETY: F_GETPATH writes a NUL-terminated path of at most PATH_MAX bytes into the buffer.
+    if unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GETPATH, buffer.as_mut_ptr()) } == -1 {
+        return None;
+    }
+    let length = buffer.iter().position(|&byte| byte == 0)?;
+    Some(std::ffi::OsStr::from_bytes(&buffer[..length]).into())
+}
+
+#[cfg(target_os = "linux")]
+fn handle_path(file: &std::fs::File, _path: &Path) -> Option<std::path::PathBuf> {
+    use std::os::unix::io::AsRawFd;
+    // A file deleted since opening reads `… (deleted)`; the inode check after this refuses it.
+    std::fs::read_link(format!("/proc/self/fd/{}", file.as_raw_fd())).ok()
+}
+
+/// Windows: the handle's final path, in the `\\?\` form `canonicalize` gives the root.
+#[cfg(windows)]
+fn handle_path(file: &std::fs::File, _path: &Path) -> Option<std::path::PathBuf> {
+    use std::os::windows::{ffi::OsStringExt, io::AsRawHandle};
+    use windows::Win32::{
+        Foundation::HANDLE,
+        Storage::FileSystem::{GetFinalPathNameByHandleW, FILE_NAME_NORMALIZED},
+    };
+    let mut buffer = vec![0u16; 32768];
+    // SAFETY: the handle is open for the call and the buffer's length is passed with it.
+    let length = unsafe { GetFinalPathNameByHandleW(HANDLE(file.as_raw_handle()), &mut buffer, FILE_NAME_NORMALIZED) } as usize;
+    (length > 0 && length < buffer.len()).then(|| std::ffi::OsString::from_wide(&buffer[..length]).into())
+}
+
+// ponytail: other platforms resolve the path again, not the handle, so a folder swapped in
+// between can pass; add their handle lookup if one is ever shipped.
+#[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
+fn handle_path(_file: &std::fs::File, path: &Path) -> Option<std::path::PathBuf> {
+    path.canonicalize().ok()
 }
 
 /// A trimmed window of the line around its first match; ranges are UTF-16 offsets into it.
@@ -365,11 +485,43 @@ mod tests {
         let other = Fixture::new();
         other.write("x.txt", "hi");
         assert!(read_inside(&f.0, &other.0.join("x.txt"), false).is_none());
+        assert_eq!(read_inside_up_to(&f.0, &f.0.join("ok.txt"), 1, |_| false), None);
         #[cfg(unix)]
         {
             std::os::unix::fs::symlink(other.0.join("x.txt"), f.0.join("link.txt")).unwrap();
             assert!(read_inside(&f.0, &f.0.join("link.txt"), false).is_none());
         }
+    }
+
+    /// A folder swapped for a symlink after the caller's checks is judged again by where the
+    /// opened file really is.
+    #[cfg(unix)]
+    #[test]
+    fn the_real_path_is_judged_after_opening() {
+        let f = Fixture::new();
+        f.write(".ssh/id", "key");
+        f.write("docs/id", "doc");
+        let root = f.0.canonicalize().unwrap();
+        let refused = |path: &str| path.starts_with(".ssh");
+        assert_eq!(read_inside_up_to(&root, &root.join("docs/id"), 10, refused).unwrap(), b"doc");
+        std::fs::remove_dir_all(root.join("docs")).unwrap();
+        std::os::unix::fs::symlink(root.join(".ssh"), root.join("docs")).unwrap();
+        assert!(read_inside_up_to(&root, &root.join("docs/id"), 10, refused).is_none());
+        assert!(open_inside_up_to(&root, &root.join("docs/id"), 10, refused).is_none());
+        assert_eq!(read_inside(&root, &root.join("docs/id"), false).unwrap(), b"key", "no rule, no refusal");
+    }
+
+    /// The handle is judged, not the name: a folder renamed after opening moves the answer.
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn the_handle_path_follows_the_open_file() {
+        let f = Fixture::new();
+        f.write("docs/id", "doc");
+        let root = f.0.canonicalize().unwrap();
+        let (file, _) = open_regular(&root.join("docs/id")).unwrap();
+        assert_eq!(handle_path(&file, &root.join("docs/id")).unwrap(), root.join("docs/id"));
+        std::fs::rename(root.join("docs"), root.join(".ssh")).unwrap();
+        assert_eq!(handle_path(&file, &root.join("docs/id")).unwrap(), root.join(".ssh/id"));
     }
 
     #[test]
@@ -382,6 +534,26 @@ mod tests {
         assert_eq!(paths, ["a/a.txt", "a/z.txt", "b.txt", "c.txt"]);
     }
 
+    #[test]
+    fn a_file_over_the_limit_is_not_opened() {
+        let f = Fixture::new();
+        f.write("a.txt", "12345");
+        let path = f.0.join("a.txt");
+        assert!(open_inside_up_to(&f.0, &path, 5, |_| false).is_some_and(|(_, size)| size == 5));
+        assert!(open_inside_up_to(&f.0, &path, 4, |_| false).is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn opening_a_fifo_never_waits_for_a_writer() {
+        let f = Fixture::new();
+        let fifo = f.0.join("pipe");
+        assert!(std::process::Command::new("mkfifo").arg(&fifo).status().unwrap().success());
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || sender.send(open_regular(&fifo).is_none()));
+        assert_eq!(receiver.recv_timeout(std::time::Duration::from_secs(5)), Ok(true));
+    }
+
     #[cfg(unix)]
     #[test]
     fn does_not_follow_symlinks_out_of_the_project() {
@@ -390,6 +562,22 @@ mod tests {
         let f = Fixture::new();
         std::os::unix::fs::symlink(&outside.0, f.0.join("link")).unwrap();
         assert!(f.search("needle", false, false, false).files.is_empty());
+    }
+
+    #[test]
+    fn read_inside_up_to_and_open_inside_up_to_refuse_hard_linked_files() {
+        let outside = Fixture::new();
+        outside.write("id_rsa", "secret");
+        let f = Fixture::new();
+        f.write("plain.txt", "plain");
+        let linked = f.0.join("notes.txt");
+        let plain = f.0.join("plain.txt");
+        fs::hard_link(outside.0.join("id_rsa"), &linked).unwrap();
+
+        assert!(read_inside_up_to(&f.0, &linked, 16, |_| false).is_none());
+        assert!(open_inside_up_to(&f.0, &linked, 16, |_| false).is_none());
+        assert_eq!(read_inside_up_to(&f.0, &plain, 16, |_| false).as_deref(), Some(b"plain".as_slice()));
+        assert!(open_inside_up_to(&f.0, &plain, 16, |_| false).is_some_and(|(_, size)| size == 5));
     }
 
     #[cfg(unix)]

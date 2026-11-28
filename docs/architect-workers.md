@@ -326,6 +326,15 @@ latest 200 messages and 64 KiB); the full visible transcript remains unchanged.
   in the team panel and worker tools. These are advisory task
   boundaries, not an operating-system filesystem sandbox. Workers run with full
   access (see above). Other apps and terminals can still edit files.
+- Release note: workers on Claude-family harnesses have `Skill` on by default (Settings → Agents → Workers can use skills; the `worker-skills-off` marker turns it off). Only while it is off, and only on the Claude-family harnesses that really deny `Skill`, do worker rules say workers have no Skill tool, and user rules telling workers to use a skill stop working. Its saving was never isolated (batch S3 measured a bundle of changes) and worker quality with or without it is unmeasured.
+- Worker quality under the launch trim is not measured end to end. Batches S2 and
+  S3 ran only localization and report tasks (S3's writer units included), the GUI
+  batch G2 has 0 of 480 main runs because of account quota, and steps rose 6.9% in
+  S2 (descriptive). The trim is therefore opt-in and off by default (Settings → Agents →
+  Trim worker tools; the `worker-trim-on` marker in app data turns it on): S2 showed no
+  billed-cost saving (−1.8%, CI spans 0), steps +6.9% (CI +0.7% to +14.0%) and 92 vs 51
+  Bash calls, so when on it buys cache stability and a faster start, not a measured
+  token saving. See [worker tokens](worker-tokens.md#decision).
 - Dependencies refer to already-created assignments. The scheduler launches work
   only when its dependencies have completed. Assignment keys prevent a retried
   tool call from creating the same worker twice within one objective; a new
@@ -359,9 +368,109 @@ latest 200 messages and 64 KiB); the full visible transcript remains unchanged.
 - Every 30 seconds the app also settles a worker whose run is gone without reporting
   back, releases a lead turn that never started, and runs the scheduler. One team's
   error never stops scheduling for the others.
-- An architect turn ends with no pre-started spare process while its workers are
-  unsettled; the wake after they settle starts cold, so no idle process holds
-  memory meanwhile.
+- On plain Claude (`warm::supported`; GLM, MiMo and Alibaba Token Plan leads start cold, because an idle
+  relay spare is not free of network traffic, see [worker-tokens.md](worker-tokens.md#turn-speed-cached-instructions-and-warm-spares)),
+  an architect turn that ends while its workers are unsettled starts the next turn's process in the background (`lead_spare.rs`,
+  `providers/warm.rs`), so the review wake skips the CLI's startup. Lead spares
+  sit in their own pool of 2 that ordinary tasks never evict. Every team works in
+  the lead's shared checkout (`architect.rs` accepts only `workspace == "shared"`),
+  so lead spares serve teams whose live workers are all read-only (such as Council
+  reviews or read-only research swarms); a team with any live write worker starts
+  no lead spare, since its edits change the shared checkout and would make the
+  spare's git status stale. An expired spare (10 idle minutes) is restarted at most 2 times, and the
+  idle limit and the 30-minute renewal chain are checked against both the
+  monotonic and the wall clock, so a laptop that slept overnight never adopts an
+  hours-old spare. Whether to restart is asked
+  once per expiry: only while every live worker still runs and none waits on
+  your approval or answer, and never once the wake has launched; a "no" ends the
+  renewals for good. Settings → Agents shows each pool's current-launch totals
+  beside the **Warm Claude spares** switch: the live `idle now` count and, during a
+  backoff, `paused (N min left)` (hidden while the switch is off), then ordinary `<adopted>/<started> adopted`
+  plus `not used`, `expired`, `evicted`, `replaced`, `discarded`, `cold`, `N starts paused` (starts
+  skipped by backoff) and `N skipped (low memory)` (starts skipped by `warm/memory.rs`; each shown whenever nonzero), and the lead totals separately, so unused expiries and the
+  adoption rate are never hidden; read when the page opens, when the switch is
+  toggled, every 30 s while Settings → Agents is open and when it becomes visible again, not streamed. A pool that evicts `limit` spares in a row with no adoption
+  between pauses its starts for 5 minutes, and one whose spares expire unused 3 times
+  in a row (`EXPIRY_BACKOFF_STREAK`) pauses them for 30 minutes (`EXPIRY_COOLDOWN`); when
+  that pause lapses, one unused probe spare pauses the pool again at double the length,
+  30 → 60 → 120 → 240 minutes (`MAX_EXPIRY_COOLDOWN`), and a spare already pooled that
+  expires during a pause extends it at the same length.
+  A full unadopted lead renewal chain counts as one unused expiry, recorded only when
+  the chain ends without renewal, without a wake superseding it, and with spares on,
+  so renewals never trigger the expiry pause mid-chain (a mid-chain lead spare found expired
+  at launch, `renewal_due`, joins neither streak); expiries while
+  `warm-spares-on` is absent (spares off) never count. 3 consecutive staleness or exit misses (`not used`
+  because a warm-key field changed, the process exited, or the config folder or git
+  status cannot be read; a user Stop before adoption or a blocking-task join error does not
+  count, and a launch-time expiry joins the expiry streak instead) in a pool with no adoption between (`MISS_BACKOFF_STREAK` 3) pause its starts for
+  5 minutes (`CHURN_COOLDOWN`), like eviction churn. Skipped starts count in
+  `churn_skipped` (`paused`); any committed adoption resets all three streaks and the
+  doubling and
+  ends the pause, and otherwise the cooldown lapsing ends it; cooldowns are checked on
+  both the monotonic and wall clocks, like the idle limits, so laptop sleep does not
+  stretch a 5- or 30–240-minute pause; `idle now` leaves out spares already past their idle
+  limit. No spare starts with under 6 GiB of total RAM, under 1.5 GiB available (Linux/Windows) or macOS
+  memory pressure (`providers/warm/memory.rs`; an unavailable probe never blocks). Every adoption is also logged to stderr, locally only
+  (`Team lead's warm Claude agent adopted.` or `Team lead's warm Claude agent
+  not used (<reason>); starting cold.`, from `providers/warm/stats.rs`), followed by
+  the pool's running lifecycle totals since launch (`Lead spares since launch:
+  <started> started, <adopted> adopted, <missed> not used, <expired> expired,
+  <evicted> evicted, <replaced> replaced, <discarded> discarded; <cold> cold
+  launches without a spare.`). An idle
+  expiry without renewal (`Team lead's warm Claude agent expired idle.`, or
+  `Team lead's warm Claude agent expired idle (not renewed: its launch settings
+  changed).` when the renewal check finds changed launch inputs or non-`gitStatus`
+  settings, without counting the expiry twice; a renewal re-reads `git status` fresh at
+  spawn, and with `warm-spares-on` absent a renewal just ends without that line), a switch-off discard
+  (`Team lead's warm Claude agent discarded.`) and a refused registration (a
+  spare that finished spawning after its launch moved on, counted in both
+  `started` and `discarded` and logged as `... discarded.`) log the same totals,
+  so spares that expire or are dropped unused stay visible and the wake
+  speed-up can be measured. A wake whose spare never started (declined or
+  failed) or whose removal reason aged out of the 64-entry `gone` table is
+  counted as a cold launch in the lead pool's own totals. With **Warm Claude spares** off
+  nothing is logged or counted (turning it off, `disable_all`, also clears pending
+  lead `gone` notes, so a later wake logs nothing either; a CLI update or a Colab
+  settings change only retires pooled spares, `discard_all`, and keeps those notes). On the lead pool `not used` counts every wake that
+  missed its spare, including spares already counted in `expired`, `evicted`,
+  `replaced` or `discarded` when they left the pool. Each spare is an idle CLI process (~195–255 MiB RSS on
+  short sessions; Claude Code 2.1.325, macOS arm64, sampled after 2–3.5 s of
+  idling, from the resumed one-turn medians (195.6 MiB telemetry off, 204.6 MiB
+  default; 50-turn probe 194.7–205.3 MiB) through fresh minimal and full user
+  config (251.8 MiB); a single end-of-window `ps` RSS sample after 10 idle minutes read 93–235 MiB
+  on minimal configs (n = 1 each; one snapshot, not continuous sampling, and macOS RSS omits
+  compressed pages, so it does not lower the short-session figure), a 50-turn synthetic resumed probe added ~3–4 MiB, a minimal Node
+  stdio MCP server child added ~51 MiB per spare, and larger histories, plugins
+  or heavier/multiple MCP servers can use more). It runs your `SessionStart` hooks; an unused spare retired in the background
+  gets 2 s after stdin EOF (`SPARE_RETIRE_WAIT`) to exit cleanly and run `SessionEnd`
+  hooks, then is force-terminated (process-group `SIGKILL` on Unix, process termination
+  on Windows), while urgent removals (a launch-time miss, a same-task replacement, session or folder quiesce, app quit) force-terminate
+  at once without `SessionEnd` (turn **Warm
+  Claude spares** off if you rely on paired hooks). It also snapshots
+  `gitStatus` (branch, working-tree status, recent commits) when it starts, so a
+  renewal chain can run hooks in up to three processes per wake, and hook
+  output can be up to 10 minutes old when adopted. A
+  branch switch or commit changes the warm key's `gitHead` and starts the wake
+  fresh. For all-read-only teams, the spare stamps a digest of
+  `git status --porcelain`, read right before it spawns (after the previous
+  process has exited, so it matches Claude Code's own spawn-time snapshot), and
+  checks it again at adoption (run alongside the warm-key walk with a 500 ms
+  timeout), so a changed working tree
+  starts the wake cold instead of adopting stale status. With **Turn off agent
+  telemetry** on, where an adopted spare saves ~0.38 s on a real sign-in (~0.17–0.25 s in the offline bench), adopting a lead
+  spare in a slow repository whose `git status` takes 250–500 ms can be slower
+  than starting cold (on this 2,326-file repository it took a median of 46.3 ms,
+  max 71.2 ms). The spare saves
+  the CLI's startup: ~0.17–1.71 s per adopted spare in the offline loopback benchmark
+  (~1.7 s in the default env, ~0.17–0.25 s with telemetry off) and ~0.38–0.62 s of CLI
+  startup on a real signed-in login (n = 5 live Haiku pairs, where API latency hid the
+  end-to-end saving), for ~0.4 s of CPU per parked start; details in
+  [worker-tokens.md](worker-tokens.md#turn-speed-cached-instructions-and-warm-spares); with an API
+  key the 5-minute message cache has likely expired before many review wakes, so
+  it does not save the history's cache cost, and PandaCode does not set
+  `ENABLE_PROMPT_CACHING_1H`. Stopping the task, or the team's Pause or Stop, drops the spare; a
+  team that ended by itself (completed, ready or failed) leaves its lead an
+  ordinary spare for your follow-up, with no renewals.
 - Explicit completion moves the parent task to Review. Marking the task complete
   and its seven-day archive policy work as before.
 
@@ -419,17 +528,30 @@ Select a worker to see its latest progress checkpoint alongside its transcript.
 
 Each team conversation gets the full team rules and coordination guide once. While
 the harness resumes the same conversation, later turns get a one-line reminder (which
-names the user's team guidance when one is set) and only the messages they have not
-seen. The full rules go out again when they change, when the harness starts a new conversation, and on every
-eighth turn so a compacted conversation never loses them for long. The architect's
+names the user's team guidance when one is set) and only the messages and notes they
+have not seen. The full brief goes out again when the harness starts a new
+conversation, at once after a compaction the harness reported, and when the rules
+change (for example new limits). A change to the roster alone is a one-line
+**Team roster update** instead. The roster is the team's usable model profiles
+and the routing note that counts them, so a model that model health pauses or
+allows again changes it; dispatching a worker does not. Every eighth turn the
+rules are resent with a compact identity block (457 bytes in the test fixture: the agent's team
+ID, the never-poll rule, its saved checkpoint and the note keys) but not the
+messages and notes already seen, so a conversation the harness compacted without
+saying so never loses them for long. The architect's
 review, update, failure and continue turns quote the objective in full only on those
 turns or when it is under 2,000 bytes; otherwise they carry its first 1,400 and last 600 bytes, marked "objective unchanged". An objective over 8 KiB is also saved whole as the reserved `objective` note, and turns say so. Update and failure turns list only changed or unsettled workers.
 
-Tool descriptions are terse and leave out what the rules already say; harness names
-and unknown fields are checked by the handlers rather than repeated in every turn's
-schemas.
-`team_turn_overhead_stays_within_budget` keeps the architect's team tools under
-4,200 bytes and a worker's under 3,000.
+Tool descriptions are terse and leave out what the rules already say; string
+limits, harness names and unknown fields are checked by the handlers, whose errors
+name the limit, rather than repeated in every turn's schemas.
+`team_turn_overhead_stays_within_budget` keeps the architect's team tools at most
+4,365 bytes and a worker's at most 3,175 (measured 4,359 and 3,170). The `tokenSaver`
+parameter's schema is one line; its explanation (`saver::LEAD_SAVER_GUIDANCE` in
+`src-tauri/src/architect/saver.rs`) is added to the lead's rules only while token
+saver packs are on in its thread or its team guidance mentions them. That literal
+opens with `Start assignments` because the pinned `findLeadGuidance` in
+`scripts/agent-bench/saver.mjs` finds it that way.
 
 Only an urgent message or a new blocker wakes an idle architect while workers
 continue; other messages wait for its next review or turn. These wakes run at most

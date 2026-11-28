@@ -137,20 +137,63 @@ pub(crate) fn apply_options(current: &BTreeMap<String, String>, changes: &Value)
     Ok(next)
 }
 
+/// Whether a Colab option change alters what a Claude launch gets (`nativeTools` or `colabMcp`).
+pub(crate) fn affects_warm_spares(before: &BTreeMap<String, String>, after: &BTreeMap<String, String>) -> bool {
+    flag(before, "nativeTools", true) != flag(after, "nativeTools", true)
+        || flag(before, "colabMcp", false) != flag(after, "colabMcp", false)
+}
+
 /// Save option changes. Refused once disconnected, checked under the save lock, so a save
 /// that raced Disconnect never recreates the Colab options.
 pub fn update_config(changes: &Value) -> Result<ColabConfig> {
-    {
-        let _saving = saving();
-        if !is_connected() {
-            return Err(SIGN_IN_FIRST.into());
-        }
-        let mut settings = super::super::settings();
-        let next = apply_options(&options(), changes)?;
-        settings.providers.insert(PROVIDER.into(), next);
-        super::super::save_settings(&settings)?;
-    }
+    update_config_with(changes, is_connected, options, save_options, discard_warm_spares)?;
     Ok(config())
+}
+
+/// `update_config` with the connection check, the saved options, the save and the warm-spare
+/// discard injected, so tests never touch disk. Colab's tools and MCP server shape every
+/// launch, the accelerator and High-RAM choice none: only the first two discard spares.
+pub(super) fn update_config_with(
+    changes: &Value,
+    is_connected: impl Fn() -> bool,
+    load: impl Fn() -> BTreeMap<String, String>,
+    save: impl Fn(BTreeMap<String, String>) -> Result<()>,
+    discard: impl FnOnce(),
+) -> Result<()> {
+    if save_options_with(changes, is_connected, load, save)? {
+        discard();
+    }
+    Ok(())
+}
+
+/// Apply `changes` under the save lock; whether warm spares must go. The caller discards
+/// them outside the lock, so the save and warm-pool locks never nest.
+fn save_options_with(
+    changes: &Value,
+    is_connected: impl Fn() -> bool,
+    load: impl Fn() -> BTreeMap<String, String>,
+    save: impl Fn(BTreeMap<String, String>) -> Result<()>,
+) -> Result<bool> {
+    let _saving = saving();
+    if !is_connected() {
+        return Err(SIGN_IN_FIRST.into());
+    }
+    let before = load();
+    let next = apply_options(&before, changes)?;
+    let discard = affects_warm_spares(&before, &next);
+    save(next)?;
+    Ok(discard)
+}
+
+/// Store `next` as the Colab options in the cloud settings.
+fn save_options(next: BTreeMap<String, String>) -> Result<()> {
+    let mut settings = super::super::settings();
+    settings.providers.insert(PROVIDER.into(), next);
+    super::super::save_settings(&settings)
+}
+
+fn discard_warm_spares() {
+    crate::providers::warm::discard_all();
 }
 
 /// After a sign-in: defaults for a first sign-in, the user's choices kept on a re-sign-in.
@@ -166,27 +209,62 @@ pub(crate) fn signed_in_options(current: &BTreeMap<String, String>, email: &str,
 
 /// Save a finished sign-in; returns the Settings detail line.
 pub(crate) fn persist(email: &str, mode: &str, secret: &OAuthSecret) -> Result<String> {
+    let line = persist_with(email, mode, || secret.save(), options, save_options)?;
+    discard_warm_spares();
+    Ok(line)
+}
+
+/// `persist` without the warm-spare discard (the caller's, outside the save lock), with the
+/// secret save, the saved options and the options save injected.
+pub(super) fn persist_with(
+    email: &str,
+    mode: &str,
+    save_secret: impl FnOnce() -> Result<()>,
+    load: impl Fn() -> BTreeMap<String, String>,
+    save: impl Fn(BTreeMap<String, String>) -> Result<()>,
+) -> Result<String> {
     let _saving = saving();
-    secret.save()?;
-    let mut settings = super::super::settings();
-    let next = signed_in_options(&options(), email, mode)?;
+    save_secret()?;
+    let next = signed_in_options(&load(), email, mode)?;
     let line = next.get("detail").cloned().unwrap_or_default();
-    settings.providers.insert(PROVIDER.into(), next);
-    super::super::save_settings(&settings)?;
+    save(next)?;
     Ok(line)
 }
 
 /// `cloud_connect` for Colab: `authMode: "adc"` connects with gcloud's existing login;
 /// otherwise a signed-in account saves its options (sign-in itself is `sign_in_start`).
 pub fn connect(options: &Value) -> Result<()> {
-    if options["authMode"].as_str() == Some("adc") {
+    let adc_sign_in = || {
         let signed = block(oauth::adc_verify(&Urls::default()))?;
-        persist(&signed.email, "adc", &signed.secret)?;
+        persist_with(&signed.email, "adc", || signed.secret.save(), self::options, save_options).map(|_| ())
+    };
+    connect_with(options, adc_sign_in, is_connected, self::options, save_options, discard_warm_spares)
+}
+
+/// `connect` with the ADC sign-in (which saves without discarding), the connection check,
+/// the saved options, the save and the discard injected. A fresh sign-in or a tool/MCP
+/// change discards warm spares exactly once, even when both happen or the save then fails.
+pub(super) fn connect_with(
+    options: &Value,
+    adc_sign_in: impl FnOnce() -> Result<()>,
+    is_connected: impl Fn() -> bool,
+    load: impl Fn() -> BTreeMap<String, String>,
+    save: impl Fn(BTreeMap<String, String>) -> Result<()>,
+    discard: impl FnOnce(),
+) -> Result<()> {
+    let signed_in = options["authMode"].as_str() == Some("adc");
+    if signed_in {
+        adc_sign_in()?;
     }
-    if !is_connected() {
-        return Err("Use Sign in with Google to connect Google Colab.".into());
+    let saved = if is_connected() {
+        save_options_with(options, &is_connected, load, save)
+    } else {
+        Err("Use Sign in with Google to connect Google Colab.".into())
+    };
+    if signed_in || matches!(saved, Ok(true)) {
+        discard();
     }
-    update_config(options).map(|_| ())
+    saved.map(|_| ())
 }
 
 /// Install Google's Colab CLI (pinned) with uv, whose OAuth client the sign-in uses.
@@ -217,6 +295,8 @@ pub fn disconnect() -> Result<()> {
     if let Ok(path) = store::path() {
         let _ = std::fs::remove_file(path);
     }
+    drop(_saving);
+    crate::providers::warm::discard_all();
     Ok(())
 }
 

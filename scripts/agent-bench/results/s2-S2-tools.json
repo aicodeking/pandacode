@@ -1,0 +1,16 @@
+{
+ "BASE": {
+  "runs": 84,
+  "explore": 194,
+  "bash": 51,
+  "bashSearch": 42,
+  "runsWithBash": 26
+ },
+ "LEAN": {
+  "runs": 84,
+  "explore": 183,
+  "bash": 92,
+  "bashSearch": 83,
+  "runsWithBash": 43
+ }
+}

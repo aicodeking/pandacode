@@ -5,9 +5,31 @@ use serde_json::{json, Value};
 
 pub(crate) const TOOL: &str = "pandacode_track_files";
 
+#[path = "claude_policy.rs"]
+mod claude_policy;
+#[cfg(test)]
+pub(crate) use claude_policy::edits_wait_for_approval;
+pub(crate) use claude_policy::{claude_restricts_reads, edits_wait_for_run};
+
+/// The tracking instruction, the same for every run: every edit batch, native tools included,
+/// begins a capture first, which is correct whether or not native edits wait for approval.
+/// It is part of the cached app instructions (Claude's `--append-system-prompt`), so it must
+/// not depend on the run's mode, allow rules or connection: a different prefix would make the
+/// harness rewrite the whole history's cache. Runs whose native edits wait for approval learn
+/// from `turn_note` in the turn's own message that they may skip the native-edit handshake.
 pub(crate) fn instruction() -> &'static str {
     "\n\nFile change tracking: when pandacode_track_files is available, before any file-edit batch (native editing tools, shell commands, or scripts), call pandacode_track_files with action begin and the exact project-relative paths you intend to modify (include both paths for a rename). After that batch finishes, call action complete with the returned captureId and only the paths you actually changed. Do not report files changed by other tasks or the user, and do not use Git status as ownership evidence. Always begin the capture before editing and await its result; provider notifications alone may arrive after a fast write."
 }
+
+/// One line added to the turn's message when `edits_wait` (`edits_wait_for_run`, for a run that
+/// lists the tracking tool): native edit tools wait for approval, so their baseline is taken in
+/// time and only shell or script edits need the handshake. In the message, not the cached
+/// system prompt, so switching modes never rewrites the cache.
+pub(crate) fn turn_note(edits_wait: bool) -> Option<&'static str> {
+    edits_wait.then_some(EDITS_NOTE)
+}
+
+const EDITS_NOTE: &str = "\n\n(This turn your native edit tools are tracked automatically: call pandacode_track_files begin/complete only around shell commands or scripts that edit files.)";
 
 /// Keep the catalog stable across resumed turns; control-only turns have no tracker.
 pub(crate) fn with_host(
@@ -19,7 +41,7 @@ pub(crate) fn with_host(
         .as_ref()
         .map_or_else(Vec::new, |host| host.tools.clone());
     tools.push(json!({"type":"function","name":TOOL,
-        "description":"Track this task's file edits, including native tools, shell commands and scripts. Before writing, begin a capture of exact project-relative paths. After writing, complete that capture with only paths actually changed. Does not edit files or authorize writes. Include source and destination of a rename. Do not report other tasks' or user edits.",
+        "description":"Track this task's file edits (shell commands and scripts, and native edit tools unless the turn's message says they are tracked automatically). Before writing, begin a capture of exact project-relative paths; after, complete that capture with only paths actually changed. Does not edit files or authorize writes. Include source and destination of a rename. Do not report other tasks' or user edits.",
         "inputSchema":{"type":"object","properties":{
             "action":{"type":"string","enum":["begin","complete"]},
             "paths":{"type":"array","items":{"type":"string","minLength":1,"maxLength":4096},"maxItems":200},
@@ -126,148 +148,5 @@ impl Tracker {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn assert_reported_path_spelling(begin_path: &str, complete_path: &str) {
-        let f = crate::turn_changes::tests::Fixture::new(false);
-        f.write("src/ours.txt", "before batch\n");
-        let mut tracker = Tracker::start(f.root.clone(), f.cache.clone());
-        let begun = tracker
-            .report(json!({"action":"begin","paths":[begin_path]}))
-            .unwrap();
-        f.write("src/ours.txt", "before batch\nour edit\n");
-        tracker
-            .report(json!({"action":"complete","captureId":begun["captureId"],"paths":[complete_path]}))
-            .unwrap();
-        let captured = tracker.finish().unwrap();
-        assert_eq!(captured.summary.files.len(), 1);
-        assert_eq!(captured.summary.files[0].path, "src/ours.txt");
-        assert_eq!((captured.summary.additions, captured.summary.deletions), (1, 0));
-        assert!(!captured.summary.truncated);
-        assert!(captured.details[0].patch.contains("+our edit"));
-    }
-
-    #[test]
-    fn reported_paths_normalize_repeated_separators_at_begin_and_complete() {
-        for (begin, complete) in [
-            ("src//ours.txt", "src/ours.txt"),
-            ("src/ours.txt", "src//ours.txt"),
-            ("src//ours.txt", "src//ours.txt"),
-        ] {
-            assert_reported_path_spelling(begin, complete);
-        }
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn reported_windows_paths_normalize_backslashes_at_begin_and_complete() {
-        for (begin, complete) in [
-            (r"src\ours.txt", "src/ours.txt"),
-            ("src/ours.txt", r"src\ours.txt"),
-            (r"src\ours.txt", r"src\ours.txt"),
-        ] {
-            assert_reported_path_spelling(begin, complete);
-        }
-    }
-
-    #[tokio::test]
-    async fn reported_shell_batch_is_scoped_frozen_and_cannot_be_reused_by_another_task() {
-        let f = crate::turn_changes::tests::Fixture::new(false);
-        f.write("ours.txt", "dirty before batch\n");
-        let tracker = Arc::new(Mutex::new(Tracker::start(f.root.clone(), f.cache.clone())));
-        let stopped = Arc::new(AtomicBool::new(false));
-        let host = with_host(None, Some(tracker.clone()), stopped.clone());
-        let begun = (host.handler)(TOOL.into(), json!({"action":"begin","paths":["ours.txt"]}))
-            .await
-            .unwrap();
-        // A native edit within an acknowledged batch must not replace its
-        // earlier baseline, even if the notification arrives after the write.
-        f.write("ours.txt", "dirty before batch\nour script edit\n");
-        let native = ToolActivity {
-            id: "native".into(),
-            name: "Write".into(),
-            status: "running".into(),
-            input: String::new(),
-            output: String::new(),
-            write_paths: Some(vec!["ours.txt".into()]),
-        };
-        tracker.lock().unwrap().observe_tool("native", &native);
-        tracker.lock().unwrap().observe_tool(
-            "native",
-            &ToolActivity {
-                status: "completed".into(),
-                ..native
-            },
-        );
-        f.write("external.txt", "someone else\n");
-        let other = with_host(
-            None,
-            Some(Arc::new(Mutex::new(Tracker::start(
-                f.root.clone(),
-                f.cache.clone(),
-            )))),
-            stopped.clone(),
-        );
-        let completed =
-            json!({"action":"complete","captureId":begun["captureId"],"paths":["ours.txt"]});
-        assert!((other.handler)(TOOL.into(), completed.clone())
-            .await
-            .is_err());
-        assert!((host.handler)(
-            TOOL.into(),
-            json!({"action":"complete","captureId":begun["captureId"],"paths":["external.txt"]})
-        )
-        .await
-        .is_err());
-        (host.handler)(TOOL.into(), completed.clone())
-            .await
-            .unwrap();
-        assert!((host.handler)(TOOL.into(), completed).await.is_err());
-        f.write("ours.txt", "later editor change\n");
-        let captured = tracker.lock().unwrap().finish().unwrap();
-        assert_eq!(captured.summary.files.len(), 1);
-        assert_eq!(captured.summary.files[0].path, "ours.txt");
-        assert_eq!(
-            (captured.summary.additions, captured.summary.deletions),
-            (1, 0)
-        );
-        assert!(captured.details[0].patch.contains("+our script edit"));
-        assert!(!captured.details[0].patch.contains("later editor change"));
-    }
-
-    #[tokio::test]
-    async fn report_tool_rejects_traversal_and_stopped_tasks_and_preserves_base_tools() {
-        let f = crate::turn_changes::tests::Fixture::new(false);
-        let tracker = Arc::new(Mutex::new(Tracker::start(f.root.clone(), f.cache.clone())));
-        let stopped = Arc::new(AtomicBool::new(false));
-        let base = ToolHost {
-            tools: vec![],
-            approval_tools: ["other".into()].into(),
-            handler: Arc::new(|name, args| {
-                Box::pin(async move { Ok(json!({"name":name,"args":args})) })
-            }),
-        };
-        let host = with_host(Some(base), Some(tracker), stopped.clone());
-        assert!(host.approval_tools.contains("other"));
-        assert_eq!(
-            (host.handler)("other".into(), json!({"hello":true}))
-                .await
-                .unwrap()["args"]["hello"],
-            true
-        );
-        for path in ["../outside", "src/../outside", ".git/config", ".GIT/config", "src//.git/config", "/tmp/absolute"] {
-            assert!(
-                (host.handler)(TOOL.into(), json!({"action":"begin","paths":[path]}))
-                    .await
-                    .is_err()
-            );
-        }
-        stopped.store(true, Ordering::SeqCst);
-        assert!(
-            (host.handler)(TOOL.into(), json!({"action":"begin","paths":["file.txt"]}))
-                .await
-                .is_err()
-        );
-    }
-}
+#[path = "host_tests.rs"]
+mod tests;

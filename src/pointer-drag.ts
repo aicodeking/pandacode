@@ -9,7 +9,7 @@ const ghostFor = (source: Element, x: number, y: number): HTMLElement => {
   const ghost = document.createElement('div');
   ghost.className = 'drag-ghost';
   ghost.setAttribute('aria-hidden', 'true');
-  ghost.textContent = (source.querySelector('.task-title, .thread-tile-name, .queue-text') ?? source).textContent?.trim() ?? '';
+  ghost.textContent = (source.querySelector('.task-title, .thread-tile-name, .queue-text, .custom-tool-title strong') ?? source).textContent?.trim() ?? '';
   ghost.style.translate = `${x + GHOST_OFFSET}px ${y + GHOST_OFFSET}px`;
   document.body.append(ghost);
   return ghost;

@@ -92,6 +92,8 @@ export interface TeamWorker extends WorkerProfile {
   attempt: number;
   abandoned?: boolean;
   checkpoint?: WorkerCheckpoint | null;
+  /** Token saver packs the lead gave it (workers never inherit one). */
+  tokenSaver?: { packs: string[]; level?: string } | null;
   council?: CouncilSeat | null;
   /** When a writing run last started or ended; 0 or absent for one that never ran. */
   wroteAt?: number;

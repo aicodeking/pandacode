@@ -64,14 +64,6 @@ pub(super) fn environment() -> Result<Vec<(String, String)>, String> {
     ])
 }
 
-pub(super) fn configure(command: &mut Command) -> Result<String, String> {
-    let env = environment()?;
-    let endpoint = env.iter().find(|(name, _)| name == "ANTHROPIC_BASE_URL").unwrap().1.clone();
-    let key = env.iter().find(|(name, _)| name == "ANTHROPIC_AUTH_TOKEN").unwrap().1.clone();
-    apply_environment(command, &endpoint, &key);
-    Ok(key)
-}
-
 /// Settings-file isolation, as for GLM: inherited Claude credentials or gateways
 /// must never replace the MiMo endpoint; the key itself stays out of argv.
 pub(super) fn arguments(endpoint: &str) -> Vec<String> {
@@ -89,7 +81,7 @@ pub(super) fn saved_arguments() -> Result<Vec<String>, String> {
     Ok(arguments(resolve_endpoint(crate::provider_settings::mimo_endpoint())?))
 }
 
-fn apply_environment(command: &mut Command, endpoint: &str, key: &str) {
+pub(super) fn apply_environment(command: &mut Command, endpoint: &str, key: &str) {
     command.args(arguments(endpoint));
     command
         .env("ANTHROPIC_BASE_URL", endpoint)

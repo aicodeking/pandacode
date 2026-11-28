@@ -133,6 +133,41 @@ impl Drop for Terminal {
     }
 }
 pub type Terminals = Arc<Mutex<HashMap<String, Terminal>>>;
+
+// Closing a tab removes its Terminal before the reader has reaped the child.
+static LIVE_HARNESS_TERMINALS: LazyLock<Mutex<HashMap<(usize, String), String>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+struct LiveHarnessGuard {
+    key: Option<(usize, String)>,
+}
+
+impl LiveHarnessGuard {
+    // The caller holds the terms lock. Always acquire it before the live registry lock.
+    fn register(terms: &Terminals, id: &str, session_id: Option<&str>) -> Self {
+        let key = session_id.map(|session_id| {
+            let key = (Arc::as_ptr(terms) as usize, id.to_owned());
+            LIVE_HARNESS_TERMINALS
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(key.clone(), session_id.to_owned());
+            key
+        });
+        Self { key }
+    }
+}
+
+impl Drop for LiveHarnessGuard {
+    fn drop(&mut self) {
+        if let Some(key) = &self.key {
+            LIVE_HARNESS_TERMINALS
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .remove(key);
+        }
+    }
+}
+
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct TerminalEvent {
@@ -424,6 +459,7 @@ pub struct HarnessContext<'a> {
     pub mode: &'a str,
 }
 
+/// The caller must receive Ok from `providers::await_exit` before resuming a session here.
 pub fn start_harness(
     app: AppHandle,
     terms: Terminals,
@@ -527,14 +563,45 @@ fn harness_command(context: &HarnessContext<'_>, root: &Path) -> Result<CommandB
         cmd.env_remove("ACP_BACKEND");
     }
     if context.provider == "opencode" {
-        let permission = Some(existing("OPENCODE_PERMISSION")).filter(|text| !text.is_empty());
-        for (key, value) in
-            opencode_console_environment(context.mode, &disabled, root, permission.as_deref())
-        {
+        let env = opencode_command_environment(&cmd);
+        let permission = cmd
+            .get_env("OPENCODE_PERMISSION")
+            .and_then(std::ffi::OsStr::to_str)
+            .filter(|text| !text.is_empty())
+            .map(str::to_owned);
+        let inline = cmd
+            .get_env("OPENCODE_CONFIG_CONTENT")
+            .and_then(std::ffi::OsStr::to_str)
+            .filter(|text| !text.is_empty())
+            .map(str::to_owned);
+        for (key, value) in opencode_console_environment(
+            context.mode,
+            &disabled,
+            root,
+            permission.as_deref(),
+            inline.as_deref(),
+            &env,
+        ) {
             cmd.env(key, value);
         }
     }
     Ok(cmd)
+}
+
+/// Effective OpenCode discovery paths on the PTY command after saved provider overrides.
+fn opencode_command_environment(cmd: &CommandBuilder) -> crate::skill_manager::OpenCodeEnv {
+    crate::skill_manager::OpenCodeEnv::from_environment(|name| {
+        cmd.get_env(name).map(std::ffi::OsStr::to_os_string)
+    })
+}
+
+fn opencode_mode_permission(mode: &str) -> serde_json::Value {
+    match mode {
+        "full" => serde_json::json!({"*":"allow"}),
+        "auto" => serde_json::json!({"*":"ask","read":"allow","glob":"allow","grep":"allow","edit":"allow"}),
+        "plan" => serde_json::json!({"*":"deny","read":"allow","glob":"allow","grep":"allow","list":"allow","lsp":"allow","webfetch":"allow","websearch":"allow","external_directory":"ask"}),
+        _ => serde_json::json!({"*":"ask","read":"allow","glob":"allow","grep":"allow"}),
+    }
 }
 
 /// An OpenCode console's skill denies: merged into the inline configuration, and also through
@@ -547,13 +614,33 @@ fn opencode_console_environment(
     disabled: &BTreeSet<String>,
     root: &Path,
     permission: Option<&str>,
+    inline: Option<&str>,
+    env: &crate::skill_manager::OpenCodeEnv,
 ) -> Vec<(&'static str, String)> {
-    let inline = crate::skill_manager::opencode_configuration_at(
-        &crate::providers::opencode_configuration(mode),
-        disabled,
-        root,
-    );
-    let mut environment = vec![("OPENCODE_CONFIG_CONTENT", inline)];
+    let content = if let Some(inline) = inline.filter(|text| !text.trim().is_empty()) {
+        let agents = crate::skill_manager::opencode_agents_at_with_env(disabled, root, env);
+        let launch =
+            crate::skill_manager::opencode_launch_with(inline, permission, disabled, &agents);
+        if launch.enforced {
+            let policy = opencode_mode_permission(mode);
+            crate::skill_manager::opencode_enforcement_with(
+                inline,
+                disabled,
+                &agents,
+                Some(&policy),
+            )
+        } else {
+            launch.content
+        }
+    } else {
+        crate::skill_manager::opencode_configuration_at_with_env(
+            &crate::providers::opencode_configuration(mode),
+            disabled,
+            root,
+            env,
+        )
+    };
+    let mut environment = vec![("OPENCODE_CONFIG_CONTENT", content)];
     if let Some(permission) = crate::skill_manager::opencode_permission(permission, disabled) {
         environment.push(("OPENCODE_PERMISSION", permission));
     }
@@ -919,13 +1006,41 @@ fn harness_arguments_for(context: &HarnessContext<'_>) -> Result<Vec<String>, St
 }
 
 pub fn harness_running(terms: &Terminals, session_id: &str) -> Result<bool, String> {
-    let terms = terms
+    let owner = Arc::as_ptr(terms) as usize;
+    let registry = terms
         .lock()
         .map_err(|_| "Terminal registry is unavailable")?;
-    Ok(terms.values().any(|terminal| {
+    let live = LIVE_HARNESS_TERMINALS
+        .lock()
+        .map_err(|_| "Live harness terminal registry is unavailable")?;
+    Ok(registry.values().any(|terminal| {
         terminal.harness_session.as_deref() == Some(session_id)
             && !terminal.closed.load(Ordering::SeqCst)
-    }))
+    }) || live
+        .iter()
+        .any(|((registry_owner, _), session)| *registry_owner == owner && session == session_id))
+}
+
+pub fn active_harness_sessions(terms: &Terminals) -> Result<Vec<String>, String> {
+    let owner = Arc::as_ptr(terms) as usize;
+    let registry = terms
+        .lock()
+        .map_err(|_| "Terminal registry is unavailable")?;
+    let live = LIVE_HARNESS_TERMINALS
+        .lock()
+        .map_err(|_| "Live harness terminal registry is unavailable")?;
+    let sessions: HashSet<_> = registry
+        .values()
+        .filter(|terminal| !terminal.closed.load(Ordering::SeqCst))
+        .filter_map(|terminal| terminal.harness_session.as_ref())
+        .chain(
+            live.iter()
+                .filter(|((registry_owner, _), _)| *registry_owner == owner)
+                .map(|(_, session)| session),
+        )
+        .cloned()
+        .collect();
+    Ok(sessions.into_iter().collect())
 }
 
 #[derive(Debug, Default, Serialize)]
@@ -1223,6 +1338,7 @@ fn start_command(
     drop(pty.slave);
     let id = crate::storage::id();
     let log_session = harness_session.clone();
+    let live_harness = LiveHarnessGuard::register(&terms, &id, harness_session.as_deref());
     registry.insert(
         id.clone(),
         Terminal {
@@ -1322,6 +1438,7 @@ fn start_command(
         reader_closed.store(true, Ordering::SeqCst);
         let terminal = registry.lock().ok().and_then(|mut m| m.remove(&tid));
         drop(terminal);
+        drop(live_harness);
         let _ = app.emit(
             "terminal-event",
             TerminalEvent {
@@ -1993,6 +2110,10 @@ mod tests {
     }
 
     fn shell(script: &str) -> TestShell {
+        shell_with_harness(script, None)
+    }
+
+    fn shell_with_harness(script: &str, harness: Option<(&str, mpsc::Receiver<()>)>) -> TestShell {
         let pty = native_pty_system().openpty(size(80, 24)).unwrap();
         let mut command = CommandBuilder::new("/bin/sh");
         command.args(["-c", script]);
@@ -2009,6 +2130,28 @@ mod tests {
         let writer = Arc::new(Mutex::new(writer));
         let (ready_tx, ready_rx) = mpsc::sync_channel(1);
         let (exit_tx, exited) = mpsc::sync_channel(1);
+        let id = "terminal-under-test".to_string();
+        let terms = Terminals::default();
+        let (harness_session, wait) =
+            harness.map_or((None, None), |(sid, wait)| (Some(sid.to_owned()), Some(wait)));
+        let live_harness = {
+            let mut registry = terms.lock().unwrap();
+            let live_harness = LiveHarnessGuard::register(&terms, &id, harness_session.as_deref());
+            registry.insert(
+                id.clone(),
+                Terminal {
+                    master: pty.master,
+                    writer,
+                    shell_pid: Some(pid),
+                    shell_name: "sh".into(),
+                    closed,
+                    harness_session,
+                    run_script: false,
+                },
+            );
+            live_harness
+        };
+        let registry = terms.clone();
         std::thread::spawn(move || {
             let mut buf = [0; 8192];
             let mut ready = false;
@@ -2032,22 +2175,14 @@ mod tests {
                     let _ = ready_tx.send(());
                 }
             }
-            let _ = child.wait();
+            if let Some(wait) = wait {
+                let _ = wait.recv();
+            }
+            child.wait().unwrap();
+            drop(live_harness);
+            drop(registry);
             let _ = exit_tx.send(());
         });
-        let id = "terminal-under-test".to_string();
-        let terms = Arc::new(Mutex::new(HashMap::from([(
-            id.clone(),
-            Terminal {
-                master: pty.master,
-                writer,
-                shell_pid: Some(pid),
-                shell_name: "sh".into(),
-                closed,
-                harness_session: None,
-                run_script: false,
-            },
-        )])));
         ready_rx
             .recv_timeout(Duration::from_secs(3))
             .expect("Shell did not become ready");
@@ -2057,6 +2192,28 @@ mod tests {
             pid,
             exited,
         }
+    }
+
+    #[test]
+    fn closing_harness_stays_active_until_its_child_is_reaped() {
+        let (allow_wait, wait) = mpsc::channel();
+        let session_id = "closing-harness";
+        let shell = shell_with_harness("printf ready; read line", Some((session_id, wait)));
+        assert!(harness_running(&shell.terms, session_id).unwrap());
+        assert_eq!(active_harness_sessions(&shell.terms).unwrap(), [session_id]);
+
+        close(&shell.terms, &shell.id).unwrap();
+        assert!(shell.terms.lock().unwrap().is_empty());
+        assert!(harness_running(&shell.terms, session_id).unwrap());
+        assert_eq!(active_harness_sessions(&shell.terms).unwrap(), [session_id]);
+        let other_terms = Terminals::default();
+        assert!(!harness_running(&other_terms, session_id).unwrap());
+        assert!(active_harness_sessions(&other_terms).unwrap().is_empty());
+
+        allow_wait.send(()).unwrap();
+        shell.exited.recv_timeout(Duration::from_secs(3)).unwrap();
+        assert!(!harness_running(&shell.terms, session_id).unwrap());
+        assert!(active_harness_sessions(&shell.terms).unwrap().is_empty());
     }
 
     #[test]
@@ -2261,10 +2418,17 @@ mod platform_tests {
     fn opencode_console_denies_switched_off_skills_through_inline_config_and_permission() {
         let root = std::env::temp_dir();
         let disabled = BTreeSet::from(["review".to_string()]);
-        let environment: std::collections::BTreeMap<_, _> =
-            opencode_console_environment("default", &disabled, &root, Some(r#"{"bash":"ask"}"#))
-                .into_iter()
-                .collect();
+        let env = crate::skill_manager::OpenCodeEnv::default();
+        let environment: std::collections::BTreeMap<_, _> = opencode_console_environment(
+            "default",
+            &disabled,
+            &root,
+            Some(r#"{"bash":"ask"}"#),
+            None,
+            &env,
+        )
+        .into_iter()
+        .collect();
         let inline: serde_json::Value =
             serde_json::from_str(&environment["OPENCODE_CONFIG_CONTENT"]).unwrap();
         assert_eq!(inline["permission"]["skill"]["review"], "deny");
@@ -2275,9 +2439,105 @@ mod platform_tests {
             r#"{"bash":"ask","skill":{"review":"deny","review *":"deny"},"skill *":{"review":"deny","review *":"deny"}}"#
         );
         // Nothing switched off: no OPENCODE_PERMISSION is added.
-        let environment = opencode_console_environment("default", &BTreeSet::new(), &root, None);
+        let environment =
+            opencode_console_environment("default", &BTreeSet::new(), &root, None, None, &env);
         assert_eq!(environment.len(), 1);
         assert_eq!(environment[0].0, "OPENCODE_CONFIG_CONTENT");
+    }
+
+    #[test]
+    fn opencode_console_honors_provider_discovery_paths_and_inline_config() {
+        let root = std::env::temp_dir().join(format!(
+            "pandacode-opencode-console-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let repo = root.join("repo");
+        let config_file = root.join("provider-opencode.json");
+        let config_dir = root.join("provider-config-dir");
+        let xdg_home = root.join("provider-xdg");
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        std::fs::create_dir_all(config_dir.join("agents")).unwrap();
+        std::fs::create_dir_all(xdg_home.join("opencode/agents")).unwrap();
+        std::fs::write(
+            &config_file,
+            r#"{"agents":{"from-config":{"permissions":[{"action":"*","resource":"*","effect":"allow"}]}}}"#,
+        )
+        .unwrap();
+        std::fs::write(config_dir.join("agents/from-config-dir.md"), "Review").unwrap();
+        std::fs::write(xdg_home.join("opencode/agents/from-xdg.md"), "Review").unwrap();
+
+        let mut cmd = CommandBuilder::new("opencode");
+        cmd.env("OPENCODE_CONFIG", &config_file);
+        cmd.env("OPENCODE_CONFIG_DIR", &config_dir);
+        cmd.env("XDG_CONFIG_HOME", &xdg_home);
+        let env = opencode_command_environment(&cmd);
+        assert_eq!(env.config.as_deref(), Some(config_file.as_path()));
+        assert_eq!(env.config_dir.as_deref(), Some(config_dir.as_path()));
+        assert_eq!(env.xdg_config.as_deref(), Some(xdg_home.as_path()));
+
+        let mut cleared = cmd.clone();
+        cleared.env_remove("OPENCODE_CONFIG");
+        assert_eq!(opencode_command_environment(&cleared).config, None);
+
+        let disabled = BTreeSet::from(["review".to_string()]);
+        let result: std::collections::BTreeMap<_, _> =
+            opencode_console_environment("plan", &disabled, &repo, None, None, &env)
+                .into_iter()
+                .collect();
+        let value: serde_json::Value =
+            serde_json::from_str(&result["OPENCODE_CONFIG_CONTENT"]).unwrap();
+        for agent in ["from-config", "from-config-dir", "from-xdg", "build", "plan"] {
+            let rules = value["agents"][agent]["permissions"]
+                .as_array()
+                .unwrap_or_else(|| panic!("missing V2 permissions for {agent}: {value}"));
+            assert!(
+                rules
+                    .iter()
+                    .any(|r| r["action"] == "skill" && r["resource"] == "review" && r["effect"] == "deny"),
+                "{agent}: {value}"
+            );
+        }
+
+        // Provider-configured OPENCODE_CONFIG_CONTENT is preserved and merged with mode & denies.
+        let provider_inline = r#"{"provider":{"work":{"name":"Work"}}}"#;
+        let merged: std::collections::BTreeMap<_, _> = opencode_console_environment(
+            "plan",
+            &disabled,
+            &repo,
+            None,
+            Some(provider_inline),
+            &env,
+        )
+        .into_iter()
+        .collect();
+        let merged_val: serde_json::Value =
+            serde_json::from_str(&merged["OPENCODE_CONFIG_CONTENT"]).unwrap();
+        assert_eq!(merged_val["provider"]["work"]["name"], "Work");
+        assert_eq!(merged_val["permission"]["*"], "deny");
+        assert!(merged_val["agents"]["from-config"]["permissions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["action"] == "skill" && r["resource"] == "review" && r["effect"] == "deny"));
+
+        // Opaque provider OPENCODE_CONFIG_CONTENT stays verbatim whether or not skills are off.
+        let opaque = r#"{"provider":{"work": broken"#;
+        for switches in [BTreeSet::new(), disabled] {
+            let kept: std::collections::BTreeMap<_, _> = opencode_console_environment(
+                "plan",
+                &switches,
+                &repo,
+                None,
+                Some(opaque),
+                &env,
+            )
+            .into_iter()
+            .collect();
+            assert_eq!(kept["OPENCODE_CONFIG_CONTENT"], opaque);
+            assert_eq!(kept.contains_key("OPENCODE_PERMISSION"), !switches.is_empty());
+        }
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

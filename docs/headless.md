@@ -29,6 +29,60 @@ would normally do are done natively in `src-tauri/src/headless.rs`:
 | App-action tools (`pandacode_run_project`, `pandacode_preview_file`, `open_*`) | open in the window | refused with "headless host" so agents fail fast |
 | Updates | checked every 6 h, may relaunch | never (no updater; update by reinstalling) |
 
+The local code explorer (`pandacode_explore`) is off by default. To enable it for
+Claude Code, create an empty `explore-on` file in the service user's app data
+directory (on Linux, `touch ~/.local/share/ai.pandacode.desktop/explore-on`). To
+enable another supported harness, also create its `explore-on-<provider>` file,
+such as `explore-on-codex`. Delete `explore-on` to turn it off for every harness.
+Each run reads the markers at startup, so changes apply on the next run. While
+off, PandaCode refuses calls to the explorer that a resumed conversation still
+holds. See [Agent tools](agent-tools.md).
+
+Warm Claude spares are off by default, as in Settings → Agents → **Warm Claude
+spares** on desktop. To enable them for `pandacode serve`, create an empty
+`warm-spares-on` file in the service user's app data directory (on Linux, for
+example, `touch ~/.local/share/ai.pandacode.desktop/warm-spares-on`); delete it
+to turn them off again. An absent or unreadable marker means off, so no new
+spares start, make startup connections or run `SessionStart` hooks. On a running
+host, creating the marker lets the next successful turn start a spare. Deleting
+it stops future spawns, renewals and adoptions. An operation already past its
+final marker check after `git status` can still finish once. Parked spares retire
+on their task's next cold turn, after 10 idle minutes, or when you restart
+`pandacode serve`. On desktop, turning the Settings switch off starts retirement
+immediately. Parked spares get up to 2 s to exit and run `SessionEnd` hooks.
+Once retired, no spare processes or hooks run. See
+[worker tokens](worker-tokens.md#turn-speed-cached-instructions-and-warm-spares)
+for cost estimates and caveats.
+
+Background reaping of a finished turn's Claude CLI has a similar switch: an empty
+`background-reap-off` file in the same app data directory makes every Claude-family
+launch exit inline at turn end (as managed workers do) instead of being reaped in the
+background. It is read at each launch, so it takes effect at once without a rebuild
+or restart; an unreadable marker fails closed to inline exit. Delete it to restore
+background reaping.
+
+Team worker tool settings use two markers in the same app data directory, both read at
+each launch:
+
+- `worker-trim-on` (off by default, matching Settings → Agents → **Trim worker tools**):
+  create an empty `worker-trim-on` file to trim team worker tools on Claude-family
+  launches; delete it to turn the trim off again. An unreadable marker keeps the
+  default (off).
+- `worker-skills-off` (on by default, matching Settings → Agents → **Workers can use
+  skills**): create an empty `worker-skills-off` file to remove `Skill` from Claude,
+  GLM, MiMo and Alibaba Token Plan team workers; delete it to restore `Skill`. An
+  unreadable marker keeps the default (on).
+
+Agent-made tools follow the same `custom-tools-on` switch as the desktop.
+Creating or deleting the marker takes effect on the next run. While off,
+PandaCode refuses calls to agent-made tools that a resumed conversation still holds.
+With no window, a `pandacode_tool_run` approval (any task not in Full access) goes to whatever
+can answer it: subscribed PandaCode Connect devices, and the channel of a bot conversation. Nothing
+answers it on its own: unanswered, the MCP host's 5-minute approval wait ends with "App
+approval expired or was cancelled" (sooner if the harness ends the tool call first), the
+run continues and the tool does not run. Run unattended tasks in Full access, or answer
+from a device, if they rely on agent-made tools.
+
 Turn checks are desktop-only (they are opt-in and off by default). Browser-dependent work
 (Jev, the built-in browser) is unavailable on a headless host.
 

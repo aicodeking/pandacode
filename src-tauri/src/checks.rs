@@ -6,7 +6,7 @@
 use serde_json::{json, Value};
 use std::{path::Path, process::Command, time::Duration};
 
-use crate::workspace::run_process;
+use crate::{checkout_busy::Reservation, workspace::run_process};
 
 const OUTPUT_LIMIT: usize = 64 * 1024;
 const TIMEOUT: Duration = Duration::from_secs(120);
@@ -81,6 +81,58 @@ pub(crate) fn turn_report(root: &Path) -> Value {
         // not the agent's doing: it is skipped, never reported as a failure.
         Err(error) => json!({"checked": false, "reason": error}),
     }
+}
+
+#[cfg(test)]
+async fn turn_report_after_exit(session_id: &str, root: std::path::PathBuf) -> Value {
+    turn_report_after_exit_with(session_id, root, None).await
+}
+
+/// Run the check after pending exits settle, holding the checkout through the blocking script.
+pub(crate) async fn turn_report_after_exit_guarded(
+    session_id: &str,
+    root: std::path::PathBuf,
+    reservation: Reservation,
+) -> Value {
+    turn_report_after_exit_with(session_id, root, Some(reservation)).await
+}
+
+async fn turn_report_after_exit_with(
+    session_id: &str,
+    root: std::path::PathBuf,
+    reservation: Option<Reservation>,
+) -> Value {
+    let wait_root = root.clone();
+    let session = session_id.to_owned();
+    let exit = async move {
+        let wait = async {
+            crate::providers::await_exit_patiently(&session).await?;
+            crate::providers::await_exits_in_checkout_patiently(&wait_root).await
+        };
+        tokio::time::timeout(crate::providers::EXIT_HARD_CAP, wait)
+            .await
+            .map_err(|_| "The previous run of this conversation is still shutting down. Try again.".to_string())?
+    };
+    report_when_exited(exit, root, reservation, turn_report).await
+}
+
+/// Runs `check` (on a blocking thread) only after `exit` resolves `Ok`.
+async fn report_when_exited(
+    exit: impl std::future::Future<Output = Result<(), String>>,
+    root: std::path::PathBuf,
+    reservation: Option<Reservation>,
+    check: impl FnOnce(&Path) -> Value + Send + 'static,
+) -> Value {
+    if let Err(error) = exit.await {
+        return json!({"checked": false, "reason": error});
+    }
+    tokio::task::spawn_blocking(move || {
+        // The script can outlive a cancelled desktop or Connect request.
+        let _reservation = reservation;
+        check(&root)
+    })
+    .await
+    .unwrap_or_else(|error| json!({"checked": false, "reason": format!("The check did not finish: {error}")}))
 }
 
 fn run(root: &Path, plan: &Plan) -> Result<Value, String> {
@@ -234,10 +286,130 @@ mod tests {
     }
 
     #[test]
+    fn a_session_that_has_not_exited_skips_the_check() {
+        let ran = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let seen = ran.clone();
+        let report = tokio::runtime::Builder::new_current_thread().build().unwrap().block_on(report_when_exited(
+            async { Err("still shutting down".to_string()) },
+            PathBuf::from("."),
+            None,
+            move |_| {
+                seen.store(true, std::sync::atomic::Ordering::SeqCst);
+                json!({"checked": true})
+            },
+        ));
+        assert_eq!(report["checked"], false);
+        assert_eq!(report["reason"], "still shutting down");
+        assert!(!ran.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    /// The check never runs while an exit is still registered for the session, and runs once it ends.
+    #[tokio::test]
+    async fn the_check_waits_for_the_registered_exit_of_its_session() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let session = "turn-check-waits-for-exit";
+        let hold = crate::providers::hold_exit_for_test(session);
+        let ran = std::sync::Arc::new(AtomicBool::new(false));
+        let seen = ran.clone();
+        let waiting = tokio::spawn(report_when_exited(
+            crate::providers::await_exit(session),
+            PathBuf::from("."),
+            None,
+            move |_| {
+                seen.store(true, Ordering::SeqCst);
+                json!({"checked": true})
+            },
+        ));
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(!ran.load(Ordering::SeqCst), "the check ran while the session's process was still exiting");
+        assert!(!waiting.is_finished());
+        drop(hold);
+        let report = tokio::time::timeout(Duration::from_secs(5), waiting).await.unwrap().unwrap();
+        assert_eq!(report["checked"], true);
+        assert!(ran.load(Ordering::SeqCst));
+    }
+
+    #[test]
     fn tails_cut_at_char_boundaries() {
         let text = "ж".repeat(TAIL_BYTES); // 2 bytes each, so the cut lands mid-character
         let cut = tail(&text);
         assert_eq!(cut.chars().count(), TAIL_BYTES / 2);
         assert_eq!(tail("done"), "done");
+    }
+}
+
+#[cfg(test)]
+mod exit_wait_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn cancelling_the_caller_keeps_the_checkout_reserved_until_the_check_finishes() {
+        use crate::checkout_busy::{any_checkout_reserved, reserve_for_test};
+        let root = std::env::temp_dir().join(format!("pandacode-checks-cancel-{}", uuid::Uuid::new_v4()));
+        let reservation = reserve_for_test(vec![root.clone()]);
+        let (started, running) = tokio::sync::oneshot::channel();
+        let (allow_finish, finish) = std::sync::mpsc::channel::<()>();
+        let waiter = tokio::spawn(report_when_exited(
+            async { Ok(()) },
+            root.clone(),
+            Some(reservation),
+            move |_| {
+                let _ = started.send(());
+                let _ = finish.recv();
+                json!({"checked": true})
+            },
+        ));
+        tokio::time::timeout(Duration::from_secs(2), running)
+            .await
+            .expect("the blocking check started")
+            .unwrap();
+        waiter.abort();
+        assert!(waiter.await.unwrap_err().is_cancelled());
+        assert!(any_checkout_reserved(&root));
+
+        drop(allow_finish);
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while any_checkout_reserved(&root) {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("the script released its checkout when it finished");
+    }
+
+    #[tokio::test]
+    async fn turn_report_after_exit_waits_for_sibling_pending_exit_in_same_root() {
+        let checkout = crate::checkout_busy::test_support::Checkout::new();
+        let self_id = format!("checks-self-{}", uuid::Uuid::new_v4().simple());
+        let sibling_id = format!("checks-sibling-{}", uuid::Uuid::new_v4().simple());
+        let other_id = format!("checks-other-{}", uuid::Uuid::new_v4().simple());
+
+        let hold_other =
+            crate::providers::hold_exit_in_cwd_for_test(&other_id, checkout.nested.clone());
+        let hold_sibling =
+            crate::providers::hold_exit_in_cwd_for_test(&sibling_id, checkout.pkg_b.clone());
+
+        let waiting = tokio::spawn({
+            let root = checkout.pkg_a.clone();
+            async move { turn_report_after_exit(&self_id, root).await }
+        });
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        let waited_for_sibling = !waiting.is_finished();
+
+        drop(hold_sibling);
+        let report = tokio::time::timeout(Duration::from_secs(2), waiting).await;
+        drop(hold_other);
+        for id in [&sibling_id, &other_id] {
+            crate::providers::await_exit(id).await.unwrap();
+        }
+        assert!(
+            waited_for_sibling,
+            "checks must wait while a sibling exit is pending in the same checkout"
+        );
+        let report = report
+            .expect("checks should run once the sibling exit clears")
+            .unwrap();
+        assert_eq!(report["checked"], false);
+        assert!(report["reason"].as_str().unwrap().contains("no fast check"));
     }
 }

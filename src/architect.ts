@@ -17,6 +17,7 @@ import { LEAD_RETRY, teamActive, teamHeldUntil, type TeamConfig, type TeamSnapsh
 import { resetTime } from './usage-limit';
 import { mountTeamProfiles } from './team-profiles';
 import { dismissPinnedTip, infoMark } from './tooltip';
+import { PACKS } from './token-saver';
 import { workerQueueReason } from './worker-scheduling';
 import { Subagents } from './subagents';
 import { WorkerList, approvalLabel, effortLabel, markScrollRegions, requestHtml, workerActive, workerState, workerWord } from './architect-worker-list';
@@ -36,6 +37,13 @@ type SetupOptions = {
 };
 const statusNames: Record<string, string> = { ready: 'Ready', running: 'Working', waiting: 'Waiting', paused: 'Paused', completed: 'Ready for review', failed: 'Needs attention', interrupted: 'Interrupted', queued: 'Queued', stopped: 'Stopped', parked: 'Waiting on sub-workers' };
 const modelName = (selection: ModelSelection, providers: Provider[]) => providers.find(p => p.id === selection.provider)?.models.find(m => m.id === selection.model)?.name ?? fallbackModel(selection.provider, selection.model || 'default').name;
+/** `Caveman lite · Quiet tools` as chips, or nothing. */
+const saverChips = (saver: TeamWorker['tokenSaver']) => {
+  const names = (saver?.packs ?? []).map(id => `${PACKS.find(pack => pack.id === id)?.title ?? id}${id === 'caveman' && saver?.level ? ` ${saver.level}` : ''}`);
+  if (!names.length) return '';
+  const label = `Token saver: ${names.join(' · ')}`;
+  return `<span class="architect-saver" role="note" aria-label="${escape(label)}" data-tip="${escape(label)}">${names.map(name => `<span class="architect-saver-chip">${escape(name)}</span>`).join('')}</span>`;
+};
 const modelMarkup = (selection: ModelSelection, providers: Provider[]) => `<span class="provider-small ${escape(selection.provider)}">${providerLogo(selection.provider)}</span><span>${escape(modelName(selection, providers))}${selection.reasoningEffort ? `<small> · ${escape(selection.reasoningEffort)}</small>` : ''}</span>${icon('down')}`;
 
 type SetupController = (() => void) & { hasChildMenu: () => boolean };
@@ -556,7 +564,7 @@ export class ArchitectView {
       const meta = panel.querySelector<HTMLElement>('.architect-worker-meta')!;
       const queueReason = workerQueueReason(worker, team.workers, team.config.maxParallel);
       const facts = [modelName(worker, this.providers), worker.reasoningEffort ? `${effortLabel(worker.reasoningEffort)}${worker.note ? ' (adjusted)' : ''}` : '', workerWord(worker, workerState(worker, team), this.needsApproval(worker.sessionId), this.needsInput(worker.sessionId)).full, worker.readOnly ? 'Read only' : ''].filter(Boolean).join(' · ');
-      const head = `${providerLogo(worker.provider)}<div class="architect-worker-copy"><strong>${escape(worker.name)}</strong><small>${escape(facts)}</small><small class="architect-worker-queue" role="status"></small><small class="architect-worker-error" role="status"></small></div>`;
+      const head = `${providerLogo(worker.provider)}<div class="architect-worker-copy"><strong>${escape(worker.name)}</strong><small>${escape(facts)}</small>${saverChips(worker.tokenSaver)}<small class="architect-worker-queue" role="status"></small><small class="architect-worker-error" role="status"></small></div>`;
       // The queue reason and error are live: their elements stay and only their text changes, so it is announced.
       if (meta.dataset.head !== head) { meta.innerHTML = head; meta.dataset.head = head; }
       const queue = meta.querySelector<HTMLElement>('.architect-worker-queue')!, error = meta.querySelector<HTMLElement>('.architect-worker-error')!;

@@ -3,8 +3,9 @@
 //! desktop's own command or module. See `methods/mod.rs` and docs/remote-access.md,
 //! "Adding a method".
 use super::files::{data_page, offset_param, resolve, split_data_url, target_param, Target};
-use super::super::host::workspace_task;
+use super::super::host::{workspace_session_from, workspace_task};
 use super::{allow_task_mode, id_param, name_param, task_root, Access, Ctx, Method, Reply, Run, PAGE_BUDGET};
+use crate::checkout_busy::{prepare_task_checkout_for_checks, TaskChecksError};
 use crate::Result;
 use serde_json::{json, Value};
 use tauri::{Emitter, Manager};
@@ -96,9 +97,10 @@ impl Run for ChecksRun {
         Box::pin(async move {
             // The repo's check commands run with no approval step, like `runScript.start`.
             super::terminal::require_full_access_to(ctx.full_access, super::terminal::RUN_CHECKS)?;
-            let root = task_root(&ctx.state(), &self.session_id).await?;
+            let (root, reservation) = prepare_task_checkout_for_checks(&ctx.state(), &self.session_id, workspace_session_from)
+                .await.map_err(TaskChecksError::into_reason)?;
             // Bounded by checks.rs (120 s, 64 KiB of output, a 4 KB tail in the reply).
-            crate::blocking(move || Ok(crate::checks::turn_report(&root))).await
+            Ok(crate::checks::turn_report_after_exit_guarded(&self.session_id, root, reservation).await)
         })
     }
 }
@@ -612,6 +614,17 @@ mod tests {
     }
 
     #[test]
+    fn checks_run_waits_for_the_session_exit_before_running_checks() {
+        let source = include_str!("tools.rs");
+        let body = &source[source.find("impl Run for ChecksRun").unwrap()..source.find("// ---- recipes.list").unwrap()];
+        let gate = body.find("require_full_access_to(ctx.full_access, ").unwrap();
+        let prepare = body.find("prepare_task_checkout_for_checks(&ctx.state(), &self.session_id, workspace_session_from)").unwrap();
+        let check = body.find("crate::checks::turn_report_after_exit_guarded(").unwrap();
+        assert!(gate < prepare && prepare < check, "access precedes checkout preparation and checks");
+        assert!(!body.contains("crate::checks::turn_report("));
+    }
+
+    #[test]
     fn skills_activate_needs_full_access_for_remote_tasks() {
         let source = include_str!("tools.rs");
         let body = &source[source.find("impl Run for SkillsActivate").unwrap()..source.find("// ---- runScript.get").unwrap()];
@@ -722,5 +735,142 @@ mod tests {
         assert!(json!({"items": list}).to_string().len() <= PAGE_BUDGET);
         let mut small = vec![json!(1)];
         assert!(!fit(&mut small, "items"));
+    }
+
+    #[test]
+    fn checks_run_guards_sibling_agents_and_pending_exits_in_the_checkout() {
+        let source = include_str!("tools.rs");
+        let body = &source[source.find("impl Run for ChecksRun").unwrap()..source.find("// ---- recipes.list").unwrap()];
+        let prepare = body
+            .find("let (root, reservation) = prepare_task_checkout_for_checks(")
+            .expect("checks.run uses the revalidated checkout and its reservation");
+        let check = body.find("Ok(crate::checks::turn_report_after_exit_guarded(&self.session_id, root, reservation).await)").unwrap();
+        assert!(prepare < check);
+    }
+
+    #[tokio::test]
+    async fn prepare_checkout_for_checks_refuses_active_sibling_and_waits_for_pending_exits() {
+        let dir = std::env::temp_dir().join(format!("pandacode-tools-checks-{}", uuid::Uuid::new_v4().simple()));
+        let root = dir.join("repo");
+        let elsewhere = dir.join("elsewhere");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        let store = crate::storage::Store::open(std::path::Path::new(":memory:")).unwrap();
+        let project = store.add_project(&root).unwrap();
+        let other_project = store.add_project(&elsewhere).unwrap();
+        let first = store.create_session(&project.id, "claude", "default", "full").unwrap();
+        let sibling = store.create_session(&project.id, "claude", "default", "full").unwrap();
+        let unrelated = store.create_session(&other_project.id, "claude", "default", "full").unwrap();
+        let state = std::sync::Arc::new(crate::AppState {
+            store: std::sync::Arc::new(std::sync::Mutex::new(store)),
+            agents: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+            terminals: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+            shutdown: std::sync::atomic::AtomicU8::new(0),
+        });
+
+        // Active unrelated agent does not refuse.
+        let (tx, _rx) = crate::unbounded_channel();
+        state.agents.lock().unwrap().insert(
+            unrelated.id.clone(),
+            crate::RunningAgent::new(tx, std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false))),
+        );
+        let reservation = crate::checkout_busy::prepare_checkout_for_checks(&state, &first.id, &root).await.unwrap();
+        drop(reservation);
+        state.agents.lock().unwrap().remove(&unrelated.id);
+
+        // Active sibling in the same checkout refuses immediately.
+        let (tx, _rx) = crate::unbounded_channel();
+        state.agents.lock().unwrap().insert(
+            sibling.id.clone(),
+            crate::RunningAgent::new(tx, std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false))),
+        );
+        assert!(crate::checkout_busy::prepare_checkout_for_checks(&state, &first.id, &root).await.is_err());
+        state.agents.lock().unwrap().remove(&sibling.id);
+
+        // Sibling pending exit (matched only via persisted task root, cwd: None) is awaited.
+        let hold_sibling = crate::providers::hold_exit_for_test(&sibling.id);
+        let waiting = tokio::spawn({
+            let state = state.clone();
+            let sid = first.id.clone();
+            let root = root.clone();
+            async move { crate::checkout_busy::prepare_checkout_for_checks(&state, &sid, &root).await }
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+        assert!(!waiting.is_finished(), "must wait for sibling pending exit in the same checkout");
+        drop(hold_sibling);
+        let reservation = tokio::time::timeout(std::time::Duration::from_secs(2), waiting)
+            .await
+            .expect("should finish once sibling exit clears")
+            .unwrap()
+            .unwrap();
+        drop(reservation);
+
+        // Unpersisted worker/spare pending exit with matching cwd is also awaited, and a sibling
+        // starting during the wait causes refusal afterward.
+        let eph = format!("tools-checks-eph-{}", uuid::Uuid::new_v4().simple());
+        let hold_eph = crate::providers::hold_exit_in_cwd_for_test(&eph, root.join("."));
+        let waiting = tokio::spawn({
+            let state = state.clone();
+            let sid = first.id.clone();
+            let root = root.clone();
+            async move { crate::checkout_busy::prepare_checkout_for_checks(&state, &sid, &root).await }
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+        assert!(!waiting.is_finished(), "must wait for unpersisted cwd pending exit");
+        let (tx, _rx) = crate::unbounded_channel();
+        state.agents.lock().unwrap().insert(
+            sibling.id.clone(),
+            crate::RunningAgent::new(tx, std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false))),
+        );
+        drop(hold_eph);
+        let outcome = tokio::time::timeout(std::time::Duration::from_secs(2), waiting)
+            .await
+            .expect("should complete after exit clears")
+            .unwrap();
+        assert!(outcome.is_err(), "sibling started during wait must refuse checks");
+        state.agents.lock().unwrap().remove(&sibling.id);
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn prepare_checkout_for_checks_excludes_overlapping_work_until_released() {
+        use crate::checkout_busy::{any_checkout_reserved, checkout_reserved, reserve_idle_checkouts};
+        use std::{
+            path::Path,
+            sync::{Arc, Mutex},
+            time::Duration,
+        };
+
+        let root = std::env::temp_dir().join(format!("pandacode-tools-reserved-{}", uuid::Uuid::new_v4()));
+        let subfolder = root.join("src");
+        let sid = format!("tools-reserved-{}", uuid::Uuid::new_v4());
+        let state = crate::AppState {
+            store: Arc::new(Mutex::new(crate::storage::Store::open(Path::new(":memory:")).unwrap())),
+            agents: Default::default(),
+            terminals: Default::default(),
+            shutdown: Default::default(),
+        };
+        let existing = reserve_idle_checkouts(&state, vec![root.clone()], "busy").await.unwrap();
+        let pending = crate::providers::hold_exit_for_test(&sid);
+        let outcome = tokio::time::timeout(
+            Duration::from_secs(2),
+            crate::checkout_busy::prepare_checkout_for_checks(&state, &sid, &root),
+        )
+        .await
+        .expect("an existing reservation must refuse the check before waiting for exit");
+        assert_eq!(outcome.err().as_deref(), Some("Wait for the agent to finish first."));
+        drop(pending);
+        drop(existing);
+
+        let reservation = crate::checkout_busy::prepare_checkout_for_checks(&state, &sid, &root).await.unwrap();
+        assert!(checkout_reserved(&state.agents, &subfolder));
+        assert!(any_checkout_reserved(&subfolder));
+        assert!(reserve_idle_checkouts(&state, vec![subfolder.clone()], "busy").await.is_err());
+        drop(reservation);
+
+        assert!(!checkout_reserved(&state.agents, &subfolder));
+        assert!(!any_checkout_reserved(&subfolder));
+        assert!(reserve_idle_checkouts(&state, vec![subfolder], "busy").await.is_ok());
     }
 }

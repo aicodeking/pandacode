@@ -15,6 +15,8 @@ fn protocol() -> Protocol {
         goal: None,
         codex_settings: None,
         images: Vec::new(),
+        worker: None,
+        disallowed_tools: None,
         no_fresh_resume_fallback: false,
     });
     protocol.remote_id = "main".into();

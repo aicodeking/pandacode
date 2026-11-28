@@ -1,0 +1,217 @@
+{
+  "localizationCommit": "df884aa0d347a00e7407bedbd46c6f7ee69342e3",
+  "localizationSuffix": "This is a question about the code: do not edit anything. Finish your reply with one fenced json block of the form {\"files\":[\"repo/relative/path\"],\"functions\":[\"name\"]} listing the files that would have to change for this work (including tests), most important first, and the key function names.",
+  "localization": [
+    {
+      "id": "loc-model-picker-errors",
+      "prompt": "When a harness's model list can't be fetched, the model picker shows a 'Could not load' error. I want to change how that error shows up. Where does this live, and what covers it in tests?",
+      "gold": [
+        "src/model-picker.ts",
+        "tests/settings.spec.ts",
+        "tests/ui.spec.ts"
+      ]
+    },
+    {
+      "id": "loc-opencode-models",
+      "prompt": "OpenCode's models and their reasoning efforts come out wrong in the picker. Where do we parse OpenCode's model list and effort variants?",
+      "gold": [
+        "src-tauri/src/providers.rs",
+        "src-tauri/src/providers/acp.rs"
+      ]
+    },
+    {
+      "id": "loc-cloud-credentials",
+      "prompt": "Cloud agents: I want to tighten how harness credentials get passed through the environment, and the errors from a failing `auth import` leak too much. Which code handles this?",
+      "gold": [
+        "src-tauri/src/cloud_agents/credentials.rs",
+        "src-tauri/src/cloud_agents/setup.rs",
+        "src-tauri/src/cloud_agents/tasks.rs",
+        "src-tauri/src/providers.rs"
+      ]
+    },
+    {
+      "id": "loc-schedule-messages",
+      "prompt": "Task schedules: I need to change how a timed message is inserted into a thread and how chained schedules work, including the settings UI. Where is that?",
+      "gold": [
+        "src-tauri/src/schedules.rs",
+        "src-tauri/src/schedules/tests.rs",
+        "src/schedules-api.ts",
+        "src/schedules-settings.ts"
+      ]
+    },
+    {
+      "id": "loc-skill-activation",
+      "prompt": "When turning a skill on fails partway, its activation state can stay half-applied, and a bot's brief doesn't roll back. Where would I fix this?",
+      "gold": [
+        "src-tauri/src/bots/gateway.rs",
+        "src-tauri/src/skills.rs",
+        "src-tauri/src/skills/scoped.rs",
+        "src-tauri/src/skills/tests.rs"
+      ]
+    },
+    {
+      "id": "loc-streaming-markdown",
+      "prompt": "Streaming agent replies repaint too much Markdown as text arrives. Where's the paint path for streaming Markdown, and what test covers it?",
+      "gold": [
+        "src/streaming-markdown.ts",
+        "src/dom.ts",
+        "tests/streaming-markdown.test.mjs"
+      ]
+    },
+    {
+      "id": "loc-project-relink",
+      "prompt": "When a project folder moves and gets relinked, its tasks and worktrees have to follow. Where are the project relink command and the worktree helpers it relies on?",
+      "gold": [
+        "src-tauri/src/lib.rs",
+        "src-tauri/src/storage.rs"
+      ]
+    },
+    {
+      "id": "loc-remote-journal",
+      "prompt": "PandaCode Connect: a phone subscribing to a task replays from an event journal, and old journal entries get swept. Where does the host do the journal subscribe and the sweep?",
+      "gold": [
+        "src-tauri/src/remote/host.rs"
+      ]
+    }
+  ],
+  "edit": [
+    {
+      "id": "edit-recipe-harnesses",
+      "commit": "b26b182",
+      "prompt": "Workflow recipes can't be opened on a GitHub Copilot CLI task: the dry run answers \"Unknown harness.\" A steer step on Oh My Pi (omp) or OpenCode is also marked as a fallback, as if they could not take a message mid-turn, but both can. Please fix this so every harness the app supports can run a recipe. A test will iterate the app's provider table, so make that table visible to other modules as crate::providers::PROVIDERS. Keep the recipe module's `HARNESSES` list as a constant, since the test also reads it.",
+      "overlay": [
+        {
+          "path": "src-tauri/src/recipes.rs",
+          "mode": "rust-tests"
+        }
+      ],
+      "test": {
+        "cwd": "src-tauri",
+        "command": [
+          "cargo",
+          "test",
+          "--lib",
+          "recipes::"
+        ]
+      }
+    },
+    {
+      "id": "edit-connect-secrets",
+      "commit": "28f989d",
+      "prompt": "If PandaCode Connect's secrets file is corrupt or can't be read, the next write silently replaces it and the relay token and device key are lost. Reads may still treat it as empty, but writes must refuse and leave the file untouched: the error should contain \"corrupt\" for a parse failure and \"Could not read\" for a read failure. A missing file is still fine to create. Please fix it. Take an exclusive advisory lock around read-modify-write so two app processes cannot interleave, using a lock file named by a `const LOCK: &str = \"connect-secrets.lock\"` beside `FILE`; the secrets directory should then hold only those two files after a write.",
+      "overlay": [
+        {
+          "path": "src-tauri/src/remote/secrets.rs",
+          "mode": "rust-tests"
+        }
+      ],
+      "test": {
+        "cwd": "src-tauri",
+        "command": [
+          "cargo",
+          "test",
+          "--lib",
+          "remote::secrets::"
+        ]
+      }
+    },
+    {
+      "id": "edit-simulator-screen",
+      "commit": "c9354ea",
+      "prompt": "Newer iOS device types omit the main screen size from their profile, so the simulator bridge fails with \"The device profile has no screen size.\" It should fall back to the device's capabilities, and then to measuring a captured frame. For the frame, add `pub fn screen_from_png(png: &[u8], scale: f64, home_button: bool) -> Option<Screen>` beside the other screen parsing: it reads the pixel size from the PNG header, gives points as pixels / scale rounded, and returns None for anything that isn't a PNG.",
+      "overlay": [
+        {
+          "path": "src-tauri/src/simulator.rs",
+          "mode": "rust-tests"
+        }
+      ],
+      "test": {
+        "cwd": "src-tauri",
+        "command": [
+          "cargo",
+          "test",
+          "--lib",
+          "simulator::"
+        ]
+      }
+    },
+    {
+      "id": "edit-npx-platforms",
+      "commit": "91bff36",
+      "prompt": "The npx installer's no-build error and its --help text only name three platforms, although a release ships six builds, so Windows arm64, Linux arm64 and macOS Intel users are told they have no build. Derive the list from the installer's asset map so it can't go stale: export that map as `ASSETS` and add an exported `supportedPlatforms()` returning a person-readable name per build, using the terms 'Apple silicon', 'Intel', 'Windows x64', 'Windows arm64', 'Linux x64' and 'Linux arm64'. Both messages must use it.",
+      "overlay": [
+        {
+          "path": "packages/npx/installer.test.mjs",
+          "mode": "file"
+        }
+      ],
+      "test": {
+        "cwd": ".",
+        "command": [
+          "node",
+          "--test",
+          "packages/npx/installer.test.mjs"
+        ]
+      }
+    },
+    {
+      "id": "edit-startup-smoke-bundle",
+      "commit": "493290f",
+      "prompt": "The release startup check fails on Windows and Linux after compiling, because it can't find the built installer: it reads a field of the target config that no longer exists. Please fix it, taking the location from the same target config the build uses. Export a helper `bundleDirectory(target, base = root)` from the check's script that returns where Tauri leaves the target's installer.",
+      "overlay": [
+        {
+          "path": "scripts/release/ci-startup-smoke.test.mjs",
+          "mode": "file"
+        }
+      ],
+      "test": {
+        "cwd": ".",
+        "command": [
+          "node",
+          "--test",
+          "scripts/release/ci-startup-smoke.test.mjs"
+        ]
+      }
+    },
+    {
+      "id": "edit-grok-install-dir",
+      "commit": "69f418e",
+      "prompt": "Grok Build's official installer puts its CLI in ~/.grok/bin only, and PandaCode doesn't find it there, so Grok shows as not installed. Please fix it.",
+      "overlay": [
+        {
+          "path": "src-tauri/src/providers/launch.rs",
+          "mode": "rust-tests"
+        }
+      ],
+      "test": {
+        "cwd": "src-tauri",
+        "command": [
+          "cargo",
+          "test",
+          "--lib",
+          "providers::launch::"
+        ]
+      }
+    },
+    {
+      "id": "edit-check-cannot-start",
+      "commit": "a00f945",
+      "prompt": "Turn checks: when a project's check can't start (say npm is missing) or can't finish in time, the task is reported as failing a check, which isn't the agent's doing. It should count as skipped, not failed. Please fix it.",
+      "overlay": [
+        {
+          "path": "src-tauri/src/checks.rs",
+          "mode": "rust-tests"
+        }
+      ],
+      "test": {
+        "cwd": "src-tauri",
+        "command": [
+          "cargo",
+          "test",
+          "--lib",
+          "checks::"
+        ]
+      }
+    }
+  ]
+}

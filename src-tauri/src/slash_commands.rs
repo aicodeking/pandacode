@@ -670,6 +670,15 @@ pub struct Resolution {
     pub skill: Option<(String, PathBuf)>,
 }
 
+impl Resolution {
+    /// A native `/compact`: the one maintenance command that changes what a resumed process
+    /// would load, so its turn starts no post-turn warm spare. Read-only maintenance commands
+    /// (`/status`, `/context`, …) leave the conversation as it was and still warm the next turn.
+    pub(crate) fn compacts(&self) -> bool {
+        self.maintenance && split_command(&self.prompt).is_some_and(|(name, _)| name == "/compact")
+    }
+}
+
 pub async fn resolve(provider: &str, cwd: &Path, text: &str) -> Result<Resolution, String> {
     let Some((name, _)) = split_command(text) else {
         return Ok(plain_resolution(text));
@@ -1319,6 +1328,23 @@ mod tests {
             command(&cache.cached(&key, None).unwrap(), "/interactive-only").invocation,
             Invocation::Native
         ));
+    }
+
+    #[test]
+    fn only_a_native_compact_withholds_the_next_warm_spare() {
+        let names = ["/compact", "/status", "/context", "/usage", "/cost", "/mcp", "/tasks", "/help", "/review"];
+        let value = native_catalog(&names);
+        for text in ["/compact", "/compact keep the API notes"] {
+            let result = resolve_from_catalog("claude", text, &value).unwrap();
+            assert!(result.maintenance && result.compacts(), "{text}");
+        }
+        for name in &names[1..8] {
+            let result = resolve_from_catalog("claude", name, &value).unwrap();
+            assert!(result.maintenance, "{name} stays a maintenance command");
+            assert!(!result.compacts(), "{name} still warms the next turn");
+        }
+        assert!(!resolve_from_catalog("claude", "/review", &value).unwrap().compacts());
+        assert!(!plain_resolution("/compact").compacts(), "unresolved text is not the command");
     }
 
     #[test]

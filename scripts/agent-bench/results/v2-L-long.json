@@ -1,0 +1,289 @@
+{
+ "model": "sonnet",
+ "arms": [
+  "before",
+  "after"
+ ],
+ "batches": 1,
+ "runs": 8,
+ "long": {
+  "steps": {
+   "a": 3.75,
+   "b": 3,
+   "medianRel": -0.25,
+   "meanRel": -0.20833333333333334,
+   "ci": [
+    -0.33333333333333337,
+    -0.08333333333333331
+   ],
+   "pWilcoxon": 0.25,
+   "pSign": 0.25,
+   "pMaxT": null,
+   "primary": true,
+   "n": 4,
+   "better": 3,
+   "worse": 0,
+   "read": "within noise"
+  },
+  "turns (num_turns, also counts parallel tool messages)": {
+   "a": 3.75,
+   "b": 3.75,
+   "medianRel": 0,
+   "meanRel": 0,
+   "ci": [
+    0,
+    0
+   ],
+   "pWilcoxon": 1,
+   "pSign": 1,
+   "pMaxT": 1,
+   "primary": false,
+   "n": 4,
+   "better": 0,
+   "worse": 0,
+   "read": "within noise"
+  },
+  "wall s": {
+   "a": 33.361000000000004,
+   "b": 30.42475,
+   "medianRel": -0.10908337474043961,
+   "meanRel": -0.031206702498187022,
+   "ci": [
+    -0.17057313612198055,
+    0.16531191583284793
+   ],
+   "pWilcoxon": 0.375,
+   "pSign": 0.625,
+   "pMaxT": 1,
+   "primary": false,
+   "n": 4,
+   "better": 3,
+   "worse": 1,
+   "read": "within noise"
+  },
+  "duration s": {
+   "a": 23.66,
+   "b": 20.04475,
+   "medianRel": -0.1349837622011491,
+   "meanRel": -0.1042280985195389,
+   "ci": [
+    -0.25433151546208016,
+    0.06212208344849912
+   ],
+   "pWilcoxon": 0.375,
+   "pSign": 0.625,
+   "pMaxT": 1,
+   "primary": false,
+   "n": 4,
+   "better": 3,
+   "worse": 1,
+   "read": "within noise"
+  },
+  "API s": {
+   "a": 22.57425,
+   "b": 19.68575,
+   "medianRel": -0.11486145474486359,
+   "meanRel": -0.0669369843882649,
+   "ci": [
+    -0.2373306388466817,
+    0.12779680368277088
+   ],
+   "pWilcoxon": 0.375,
+   "pSign": 0.625,
+   "pMaxT": 1,
+   "primary": false,
+   "n": 4,
+   "better": 3,
+   "worse": 1,
+   "read": "within noise"
+  },
+  "API s/step": {
+   "a": 5.960375000000001,
+   "b": 7.076608333333333,
+   "medianRel": 0.1622422624299309,
+   "meanRel": 0.1849510689217992,
+   "ci": [
+    0.023956099260940333,
+    0.3630843229986741
+   ],
+   "pWilcoxon": 0.25,
+   "pSign": 0.625,
+   "pMaxT": 0.75,
+   "primary": false,
+   "n": 4,
+   "better": 1,
+   "worse": 3,
+   "read": "within noise"
+  },
+  "non-API s": {
+   "a": 1.08575,
+   "b": 0.359,
+   "medianRel": -0.6709958133796434,
+   "meanRel": -0.6827786429366853,
+   "ci": [
+    -0.8174152049214399,
+    -0.5599249105089728
+   ],
+   "pWilcoxon": 0.125,
+   "pSign": 0.125,
+   "pMaxT": 0.125,
+   "primary": false,
+   "n": 4,
+   "better": 4,
+   "worse": 0,
+   "read": "within noise"
+  },
+  "cost $": {
+   "a": 0.128767125,
+   "b": 0.11632550000000003,
+   "medianRel": -0.10014164326789854,
+   "meanRel": -0.10225567345795267,
+   "ci": [
+    -0.21331842383494787,
+    0.0066930467289884055
+   ],
+   "pWilcoxon": 0.25,
+   "pSign": 0.625,
+   "pMaxT": 0.75,
+   "primary": false,
+   "n": 4,
+   "better": 3,
+   "worse": 1,
+   "read": "within noise"
+  },
+  "cost beyond first write $": {
+   "a": 0.11454412500000002,
+   "b": 0.10209850000000002,
+   "medianRel": -0.11226154757722273,
+   "meanRel": -0.11721882683514698,
+   "ci": [
+    -0.2478348176749549,
+    0.008439884746736709
+   ],
+   "pWilcoxon": 0.25,
+   "pSign": 0.625,
+   "pMaxT": 0.75,
+   "primary": false,
+   "n": 4,
+   "better": 3,
+   "worse": 1,
+   "read": "within noise"
+  },
+  "cost at 150k context $": {
+   "a": 0.1711572,
+   "b": 0.147460175,
+   "medianRel": -0.15570893260306679,
+   "meanRel": -0.1465450930597196,
+   "ci": [
+    -0.2617305512778484,
+    -0.022195795298243615
+   ],
+   "pWilcoxon": 0.25,
+   "pSign": 0.625,
+   "pMaxT": 0.625,
+   "primary": false,
+   "n": 4,
+   "better": 3,
+   "worse": 1,
+   "read": "within noise"
+  },
+  "cache read tok": {
+   "a": 724241.25,
+   "b": 584845,
+   "medianRel": -0.24475553503206737,
+   "meanRel": -0.20622133293523404,
+   "ci": [
+    -0.335725627529624,
+    -0.07671703834084409
+   ],
+   "pWilcoxon": 0.25,
+   "pSign": 0.625,
+   "pMaxT": 0.375,
+   "primary": false,
+   "n": 4,
+   "better": 3,
+   "worse": 1,
+   "read": "within noise"
+  },
+  "cache write tok": {
+   "a": 9924.5,
+   "b": 10606,
+   "medianRel": 0.12205395236533467,
+   "meanRel": 0.04431571837370213,
+   "ci": [
+    -0.13116676443103942,
+    0.15610630891604693
+   ],
+   "pWilcoxon": 0.625,
+   "pSign": 0.625,
+   "pMaxT": 1,
+   "primary": false,
+   "n": 4,
+   "better": 1,
+   "worse": 3,
+   "read": "within noise"
+  },
+  "output tok": {
+   "a": 1663,
+   "b": 1540.5,
+   "medianRel": -0.045617812050952944,
+   "meanRel": -0.006020822632915479,
+   "ci": [
+    -0.1525998804818167,
+    0.1801552246340232
+   ],
+   "pWilcoxon": 0.625,
+   "pSign": 0.625,
+   "pMaxT": 1,
+   "primary": false,
+   "n": 4,
+   "better": 3,
+   "worse": 1,
+   "read": "within noise"
+  }
+ },
+ "fittedPrices": {
+  "write": 3.9999728063990694,
+  "read": 0.10001894537288289,
+  "output": 10.000762859645592,
+  "medianError": 0.0000026979314315451176,
+  "maxError": 0.00001167205789408155,
+  "runs": 8
+ },
+ "exploreUse": {
+  "loc": {
+   "runs": 0,
+   "adopted": 0,
+   "firstTool": 0,
+   "callsPerRun": 0,
+   "calls": 0,
+   "singleKindCalls": 0,
+   "errors": 0,
+   "runsWithErrors": 0,
+   "truncatedResults": 0,
+   "resultChars": null,
+   "toolSearch": 0
+  },
+  "edit": {
+   "runs": 0,
+   "adopted": 0,
+   "firstTool": 0,
+   "callsPerRun": 0,
+   "calls": 0,
+   "singleKindCalls": 0,
+   "errors": 0,
+   "runsWithErrors": 0,
+   "truncatedResults": 0,
+   "resultChars": null,
+   "toolSearch": 0
+  }
+ },
+ "gatePerBatch": {
+  "L": {
+   "recall": null,
+   "precision": null,
+   "editPass": null
+  }
+ },
+ "failures": []
+}

@@ -8,11 +8,11 @@ const ENGINE = readFileSync(new URL('../src/vendor/enriched-markdown/md4c.js', i
 const CHANNEL = '0f0e0d0c-1111-2222-3333-444455556666';
 const ORIGIN = 'http://127.0.0.1:47399';
 
-interface Script { history: unknown; events: { id: number; text: string }[]; busy: boolean; posts: string[]; auth: string[]; fail?: string }
+interface Script { history: unknown; events: { id: number; text: string }[]; busy: boolean; posts: string[]; auth: string[]; fail?: string; noEngine?: boolean }
 
 async function openChat(page: Page, script: Partial<Script> = {}, hash = '#secret-token'): Promise<Script> {
   const state: Script = { history: { bot: { name: 'Scout', role: 'Research assistant', avatar: '🔭', paused: false }, messages: [], busy: false, cursor: 0 }, events: [], busy: false, posts: [], auth: [], ...script };
-  await page.route(`${ORIGIN}/assets/md4c.js`, route => route.fulfill({ contentType: 'text/javascript; charset=utf-8', body: ENGINE }));
+  await page.route(`${ORIGIN}/assets/md4c.js`, route => state.noEngine ? route.abort() : route.fulfill({ contentType: 'text/javascript; charset=utf-8', body: ENGINE }));
   await page.route(`${ORIGIN}/chat/${CHANNEL}`, route => route.fulfill({ contentType: 'text/html', body: PAGE.replace('__CHANNEL__', CHANNEL) }));
   await page.route(`${ORIGIN}/api/chat/${CHANNEL}/**`, async (route: Route) => {
     const request = route.request(), url = new URL(request.url());
@@ -64,6 +64,15 @@ test.describe('bots web chat page', () => {
     await page.getByRole('button', { name: 'Allow once' }).click();
     await expect.poll(() => state.posts).toEqual(['Summarize the repo', 'yes']);
     await expect(page.getByRole('button', { name: 'Allow once' })).toHaveCount(0);
+  });
+
+  test('without the engine, a tool-run approval is one escaped pre', async ({ page }) => {
+    const state = await openChat(page, { noEngine: true });
+    const text = "Approval needed: Run project tool sneaky v1?\nScript (v1):\n````sh\necho ok\n```\n[x](https://evil.example) <b>hi</b>\n````\nReply yes or no. Tool runs ask every time.";
+    state.events.push({ id: 1, text });
+    const reply = page.locator('.msg.bot').first();
+    await expect(reply.locator('pre')).toHaveText(text);
+    await expect(reply.locator('a, b, code')).toHaveCount(0);
   });
 
   test('replies use the Enriched Markdown engine for tasks, notes, tables and math', async ({ page }) => {

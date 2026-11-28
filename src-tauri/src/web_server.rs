@@ -2109,6 +2109,12 @@ const WEB_ALLOWED_COMMANDS: &[&str] = &[
     "jev_start", "jev_watch_run", "jev_cancel", "jev_list_runs", "jev_read_run", "jev_assist_prepare",
     "jev_assist_run", "jev_assist_list", "jev_assist_save_rules", "web_server_status", "web_server_configure",
     "web_server_rotate_token", "app_version",
+    "warm_spares_enabled", "set_warm_spares_enabled", "warm_spare_stats",
+    "explore_enabled", "set_explore_enabled", "explore_harness_enabled", "set_explore_harness_enabled",
+    "worker_skills_enabled", "set_worker_skills_enabled",
+    "worker_trim_enabled", "set_worker_trim_enabled",
+    "custom_tools_list", "custom_tools_enabled", "set_custom_tools_enabled",
+    "custom_tool_move", "custom_tool_delete", "custom_tool_set_disabled",
 ];
 
 fn web_allowed_command(command: &str) -> bool {

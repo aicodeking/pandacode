@@ -251,10 +251,7 @@ pub(super) async fn set_task_preference(
         return Err("Close this task's harness console before changing its settings here.".into());
     }
     if state.store.lock().map_err(|e| e.to_string())?.session(&session_id)?.provider == "claude" {
-        // Claude reads fast mode at launch, so the choice applies from the next turn.
-        let delta = json!({"serviceTier": claude_tier(request)?});
-        let store = state.store.lock().map_err(|e| e.to_string())?;
-        return save_preference(&store, &session_id, &delta);
+        return save_claude_preference(&state, &session_id, request);
     }
     let running = state
         .agents
@@ -315,6 +312,29 @@ fn save_preference(store: &Store, sid: &str, delta: &Value) -> Result<Session> {
     store.session(sid)
 }
 
+pub(crate) fn save_claude_preference(
+    state: &AppState,
+    session_id: &str,
+    request: TaskPreference,
+) -> Result<Session> {
+    // Claude reads fast mode at launch, so the choice applies from the next turn.
+    let delta = json!({"serviceTier": claude_tier(request)?});
+    // Match send/configure's lock order (`agents` before `store`) so concurrent turn admission
+    // either reads the updated speed or finishes admitting before we invalidate stale spares.
+    let _agents = crate::run_requests::lock_agents(&state.agents).map_err(|e| e.to_string())?;
+    let session = {
+        let store = state.store.lock().map_err(|e| e.to_string())?;
+        if store.session(session_id)?.provider != "claude" {
+            return Err("This task's harness changed. Open its settings again.".into());
+        }
+        save_preference(&store, session_id, &delta)?
+    };
+    // Retire any pooled warm spare and advance the epoch so older in-flight spares/renewals
+    // cannot register, while keeping a running turn's epoch nonzero for its post-turn spare.
+    providers::invalidate_warm_agent(session_id);
+    Ok(session)
+}
+
 /// Claude Code has one switch, fast mode, stored as the `fast` tier.
 fn claude_tier(request: TaskPreference) -> Result<Option<String>> {
     let tier = match request {
@@ -369,7 +389,19 @@ struct TaskLease {
 }
 impl TaskLease {
     fn acquire(state: &AppState, sid: &str) -> Result<Self> {
-        let mut agents = crate::run_requests::lock_agents(&state.agents).map_err(|e| e.to_string())?;
+        let mut agents = Self::lock_idle(state, sid)?;
+        {
+            let store = state.store.lock().map_err(|e| e.to_string())?;
+            crate::architect::check_manual(&store, sid)?;
+        }
+        Ok(Self::insert(&state.agents, &mut agents, sid))
+    }
+
+    fn lock_idle<'a>(
+        state: &'a AppState,
+        sid: &str,
+    ) -> Result<crate::run_requests::RegistryGuard<'a>> {
+        let agents = crate::run_requests::lock_agents(&state.agents).map_err(|e| e.to_string())?;
         crate::agent_updates::ensure_not_installing()?;
         if state.shutdown.load(Ordering::SeqCst) != 0 {
             return Err("PandaCode is shutting down.".into());
@@ -380,19 +412,23 @@ impl TaskLease {
                     .into(),
             );
         }
-        {
-            let store = state.store.lock().map_err(|e| e.to_string())?;
-            crate::architect::check_manual(&store, sid)?;
-        }
+        Ok(agents)
+    }
+
+    fn insert(
+        agents_map: &Agents,
+        agents: &mut HashMap<String, RunningAgent>,
+        sid: &str,
+    ) -> Self {
         let (tx, _rx) = unbounded_channel();
         let agent = RunningAgent::new(tx, Arc::new(AtomicBool::new(false)));
         let lease = Self {
-            agents: state.agents.clone(),
+            agents: agents_map.clone(),
             sid: sid.into(),
             run_id: agent.run_id.clone(),
         };
         agents.insert(sid.into(), agent);
-        Ok(lease)
+        lease
     }
 }
 impl Drop for TaskLease {
@@ -766,11 +802,20 @@ pub(super) async fn start_harness_terminal(
             ensure_console_goal_inactive(goal.as_ref())?;
         }
     }
+    if task.resume_id.is_some() {
+        // A clean run's CLI may still be flushing, and its warm spare holds the same session
+        // open: kill the spare (it registers its exit) and wait for both, never overlapping
+        // the console's own `--resume`. Never wait with the agents map locked.
+        providers::quiesce(&session_id).await?;
+    }
     // Stop any lingering ACP process (e.g. `agy acp`) before opening an interactive console so
     // the resumed CLI does not contend on the harness's SQLite/conversation store.
     crate::providers::end_lingering(&session_id).await;
     blocking(move || {
         let active = crate::run_requests::lock_agents(&lease.agents).map_err(|error| error.to_string())?;
+        if crate::checkout_busy::checkout_reserved(&lease.agents, &cwd) {
+            return Err(CHECKOUT_RESERVED.into());
+        }
         if app.state::<AppState>().shutdown.load(Ordering::SeqCst) != 0 {
             return Err("PandaCode is shutting down.".into());
         }
@@ -809,17 +854,30 @@ pub(super) async fn start_harness_terminal(
     .await
 }
 
-/// The console's opening checks. A team worker's session is refused (by the task lease and
+const CHECKOUT_RESERVED: &str = "A worktree operation is in progress for this checkout. Try again once it finishes.";
+
+/// The console's opening checks. A team worker's session is refused (by `check_manual` and
 /// explicitly here): its console would run the harness in the worker's full access.
+/// Keeps the `agents` lock across the checkout-reservation check and lease insertion (lock order:
+/// `agents` -> `terminals` -> `store` -> `RESERVATIONS`) so a reserved checkout never briefly
+/// inserts a placeholder into `state.agents`.
 fn console_task(state: &AppState, session_id: &str) -> Result<(TaskLease, Session, PathBuf)> {
-    let lease = TaskLease::acquire(state, session_id)?;
-    let db = state.store.lock().map_err(|error| error.to_string())?;
-    crate::architect::refuse_worker(&db, session_id)?;
-    let task = db.session(session_id)?;
-    if crate::context_recovery::pending(&db, &task)? {
-        return Err(crate::context_recovery::RECOVERY_REQUIRED.into());
+    let mut agents = TaskLease::lock_idle(state, session_id)?;
+    let (task, cwd) = {
+        let db = state.store.lock().map_err(|error| error.to_string())?;
+        crate::architect::check_manual(&db, session_id)?;
+        crate::architect::refuse_worker(&db, session_id)?;
+        let task = db.session(session_id)?;
+        if crate::context_recovery::pending(&db, &task)? {
+            return Err(crate::context_recovery::RECOVERY_REQUIRED.into());
+        }
+        let cwd = db.workspace_root(&task.project_id, Some(session_id))?;
+        (task, cwd)
+    };
+    if crate::checkout_busy::checkout_reserved(&state.agents, &cwd) {
+        return Err(CHECKOUT_RESERVED.into());
     }
-    let cwd = db.workspace_root(&task.project_id, Some(session_id))?;
+    let lease = TaskLease::insert(&state.agents, &mut agents, session_id);
     Ok((lease, task, cwd))
 }
 
@@ -969,6 +1027,54 @@ mod command_tests {
         assert!(claude_tier(TaskPreference::Speed { tier: Some("priority".into()) }).is_err());
         assert!(claude_tier(TaskPreference::Plan { enabled: true }).is_err());
     }
+    #[tokio::test]
+    async fn claude_fast_mode_preference_discards_warm_agent_only_on_valid_change() {
+        let state = state();
+        let sid = {
+            let store = state.store.lock().unwrap();
+            let project = store.add_project(&std::env::temp_dir()).unwrap();
+            store.create_session(&project.id, "claude", "claude-opus-5-5", "ask").unwrap().id
+        };
+        providers::warm_launched(&sid);
+        let before = providers::warm_epoch(&sid);
+        assert_ne!(before, 0);
+        // Invalid preferences fail without invalidating the existing warm spare or epoch.
+        assert!(save_claude_preference(&state, &sid, TaskPreference::Speed { tier: Some("priority".into()) }).is_err());
+        assert!(save_claude_preference(&state, &sid, TaskPreference::Plan { enabled: true }).is_err());
+        assert_eq!(providers::warm_epoch(&sid), before);
+        // Enabling fast mode mid-turn persists the tier, retires any stale spare, and advances the
+        // epoch without zeroing it so the post-turn spare still spawns with fast mode enabled.
+        #[cfg(unix)]
+        let _serial = providers::spare_pool_test_lock().lock().await;
+        #[cfg(unix)]
+        let stale_pid = providers::insert_spare_in_cwd_for_test(&sid, std::env::temp_dir(), false);
+        let before_enable = providers::warm_epoch(&sid);
+        let enabled = save_claude_preference(&state, &sid, TaskPreference::Fast { enabled: true }).unwrap();
+        assert_eq!(enabled.codex_settings.as_ref().map(|v| &v["serviceTier"]), Some(&json!("fast")));
+        let after_enable = providers::warm_epoch(&sid);
+        assert_ne!(after_enable, 0, "mid-turn /fast must not zero the running turn's warm epoch");
+        assert!(after_enable > before_enable, "epoch must advance to invalidate prior spares");
+        #[cfg(unix)]
+        {
+            assert!(!providers::has_spare_for_test(&sid));
+            providers::await_exit(&sid).await.unwrap();
+            assert!(providers::process_gone_for_test(stale_pid));
+        }
+        // Disabling fast mode persists null and advances the epoch again without zeroing it.
+        let disabled = save_claude_preference(&state, &sid, TaskPreference::Fast { enabled: false }).unwrap();
+        assert_eq!(disabled.codex_settings.as_ref().map(|v| &v["serviceTier"]), Some(&Value::Null));
+        let after_disable = providers::warm_epoch(&sid);
+        assert_ne!(after_disable, 0);
+        assert!(after_disable > after_enable);
+        // Rejects if the session's harness changed away from Claude before locking.
+        state
+            .store
+            .lock()
+            .unwrap()
+            .configure(&sid, "codex", "default", None)
+            .unwrap();
+        assert!(save_claude_preference(&state, &sid, TaskPreference::Fast { enabled: true }).is_err());
+    }
     #[test]
     fn imported_task_lookup_includes_history_outside_the_sidebar_limit() {
         let store = Store::open(Path::new(":memory:")).unwrap();
@@ -1023,5 +1129,52 @@ mod command_tests {
         state.shutdown.store(1, Ordering::SeqCst);
         assert!(TaskLease::acquire(&state, "two").is_err());
         assert!(!state.agents.lock().unwrap().contains_key("two"));
+    }
+
+    #[tokio::test]
+    async fn console_task_refuses_reserved_checkout_without_inserting_agent_lease() {
+        let checkout = crate::checkout_busy::test_support::Checkout::new();
+        let state = state();
+        let (sid, nested_sid) = {
+            let store = state.store.lock().unwrap();
+            let project = store.add_project(&checkout.pkg_a).unwrap();
+            let nested_project = store.add_project(&checkout.nested).unwrap();
+            let main_task = store.create_session(&project.id, "codex", "default", "ask").unwrap();
+            let nested_task = store.create_session(&nested_project.id, "codex", "default", "ask").unwrap();
+            (main_task.id, nested_task.id)
+        };
+        let reservation = crate::checkout_busy::reserve_idle_checkouts(
+            &state,
+            vec![checkout.pkg_b.clone()],
+            "busy",
+        )
+        .await
+        .unwrap();
+
+        let error = console_task(&state, &sid).err().unwrap();
+        assert_eq!(error, CHECKOUT_RESERVED);
+        assert!(
+            state.agents.lock().unwrap().is_empty(),
+            "refusing a reserved checkout must leave state.agents untouched"
+        );
+
+        let (nested_lease, _, _) = console_task(&state, &nested_sid).unwrap();
+        assert!(state.agents.lock().unwrap().contains_key(&nested_sid));
+        drop(nested_lease);
+        assert!(state.agents.lock().unwrap().is_empty());
+
+        drop(reservation);
+        let (lease, _, _) = console_task(&state, &sid).unwrap();
+        assert!(state.agents.lock().unwrap().contains_key(&sid));
+        drop(lease);
+        assert!(state.agents.lock().unwrap().is_empty());
+
+        let source = include_str!("task_controls.rs").replace("\r\n", "\n");
+        let body = &source[source.find("fn console_task(").unwrap()..];
+        let body = &body[..body.find("\n}\n").unwrap()];
+        assert!(
+            body.find("checkout_reserved(").unwrap() < body.find("TaskLease::insert(").unwrap(),
+            "console_task must check checkout_reserved before inserting into state.agents"
+        );
     }
 }

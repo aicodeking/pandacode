@@ -108,6 +108,7 @@ fn skill_manager_live_opencode_injected_config_refuses_a_switched_off_skill_over
             .map(String::from)
             .collect(),
         complete: true,
+        ..Default::default()
     };
     let disabled = BTreeSet::from(["smoke-alpha".into()]);
     let launch = opencode_launch_with(

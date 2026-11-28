@@ -1,5 +1,6 @@
 //! Environment and local paths shared by account identity and usage readers.
 
+use std::ffi::OsString;
 use std::path::PathBuf;
 
 pub(crate) fn environment(
@@ -19,26 +20,65 @@ pub(crate) fn environment(
     env
 }
 
-pub(crate) fn var(env: &[(String, String)], name: &str) -> Option<String> {
+/// Windows environment names are case-insensitive (`UserProfile` is `USERPROFILE`).
+fn env_matches(key: &str, name: &str, ignore_case: bool) -> bool {
+    if ignore_case {
+        key.eq_ignore_ascii_case(name)
+    } else {
+        key == name
+    }
+}
+
+/// The last value `env` gives `name` (later entries override earlier ones), if any.
+pub(crate) fn last_value<'a>(
+    env: &'a [(String, String)],
+    name: &str,
+    ignore_case: bool,
+) -> Option<&'a str> {
     env.iter()
         .rev()
-        .find(|(key, _)| key == name)
-        .map(|(_, value)| value.clone())
+        .find(|(key, _)| env_matches(key, name, ignore_case))
+        .map(|(_, value)| value.as_str())
+}
+
+pub(crate) fn var(env: &[(String, String)], name: &str) -> Option<String> {
+    var_with(env, name, cfg!(windows))
+}
+
+pub(crate) fn var_with(env: &[(String, String)], name: &str, ignore_case: bool) -> Option<String> {
+    last_value(env, name, ignore_case)
+        .map(str::to_owned)
         .or_else(|| std::env::var(name).ok())
 }
 
 pub(crate) fn home(env: &[(String, String)]) -> Option<PathBuf> {
+    home_with(env, cfg!(windows))
+}
+
+/// `home` with explicit name matching: `ignore_case` is `cfg!(windows)` for a real launch.
+pub(crate) fn home_with(env: &[(String, String)], ignore_case: bool) -> Option<PathBuf> {
+    home_in(env, ignore_case, process_var)
+}
+
+fn process_var(name: &str) -> Option<OsString> {
+    std::env::var_os(name)
+}
+
+/// `process` stands in for PandaCode's own environment, so tests never read the real one.
+fn home_in(
+    env: &[(String, String)],
+    ignore_case: bool,
+    process: impl Fn(&str) -> Option<OsString>,
+) -> Option<PathBuf> {
     let names = if cfg!(windows) {
         ["USERPROFILE", "HOME"]
     } else {
         ["HOME", "USERPROFILE"]
     };
     names.into_iter().find_map(|name| {
-        env.iter()
-            .rev()
-            .find(|(key, _)| key == name)
-            .map(|(_, value)| PathBuf::from(value))
-            .or_else(|| std::env::var_os(name).map(PathBuf::from))
+        last_value(env, name, ignore_case)
+            .map(PathBuf::from)
+            .or_else(|| process(name).map(PathBuf::from))
             .filter(|path| path.is_absolute())
     })
 }
@@ -96,5 +136,30 @@ mod tests {
         env.push(("CLAUDE_CONFIG_DIR".into(), "relative".into()));
         assert_eq!(config_dir("claude", &env), None);
         assert_eq!(claude_legacy(&env), None);
+    }
+
+    #[test]
+    fn home_and_var_names_match_case_insensitively_only_when_asked() {
+        let root = std::env::temp_dir().join("pandacode-synthetic-case-home");
+        let value = root.to_string_lossy().into_owned();
+        for name in ["UserProfile", "Home", "userprofile", "home"] {
+            let env = vec![(name.to_owned(), value.clone())];
+            assert_eq!(home_in(&env, true, |_| None), Some(root.clone()), "{name}");
+            assert_eq!(home_in(&env, false, |_| None), None, "{name}");
+        }
+        // An explicit, exactly spelled HOME outranks the process environment either way.
+        let other = std::env::temp_dir().join("pandacode-synthetic-other-home");
+        let env = vec![
+            ("HOME".to_owned(), other.to_string_lossy().into_owned()),
+            ("USERPROFILE".to_owned(), other.to_string_lossy().into_owned()),
+            ("Home".to_owned(), value.clone()),
+            ("UserProfile".to_owned(), value.clone()),
+        ];
+        assert_eq!(home_with(&env, true), Some(root.clone()), "the last spelling wins");
+        assert_eq!(home_with(&env, false), Some(other));
+        let env = vec![("claude_config_dir".to_owned(), value.clone())];
+        assert_eq!(last_value(&env, "CLAUDE_CONFIG_DIR", true), Some(value.as_str()));
+        assert_eq!(last_value(&env, "CLAUDE_CONFIG_DIR", false), None);
+        assert_eq!(var_with(&env, "CLAUDE_CONFIG_DIR", true), Some(value));
     }
 }
