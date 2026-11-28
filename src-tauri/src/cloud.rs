@@ -11,6 +11,7 @@ pub mod aws;
 pub mod aws_screen;
 pub mod blaxel;
 pub mod boat;
+pub mod boxd;
 pub mod cloudflare;
 pub mod codesandbox;
 pub mod colab;
@@ -41,7 +42,7 @@ use serde::{Deserialize, Serialize};
 use crate::secret_store;
 
 const SERVICE: &str = "app.pandacode.cloud";
-pub const PROVIDERS: [&str; 22] = ["daytona", "docker", "digitalocean", "vultr", "hetzner", "runpod", "cloudflare", "aws", "agentcore", "gcloud", "e2b", "modal", "vercel", "codesandbox", "runloop", "blaxel", "tensorlake", "freestyle", "railway", "boat", "instabox", "colab"];
+pub const PROVIDERS: [&str; 23] = ["daytona", "docker", "digitalocean", "vultr", "hetzner", "runpod", "cloudflare", "aws", "agentcore", "gcloud", "e2b", "modal", "vercel", "codesandbox", "runloop", "blaxel", "tensorlake", "freestyle", "railway", "boat", "instabox", "colab", "boxd"];
 
 /// A cloud machine as the panel and tools see it.
 #[derive(Clone, Debug, Serialize, PartialEq)]
