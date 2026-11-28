@@ -15,6 +15,7 @@ import { Glyph, PermissionPicker, useSheetTop } from '../ui/FormParts.tsx';
 import { HarnessLogo } from '../ui/harness.tsx';
 import { useModelOptions } from '../ui/models.ts';
 import { useColors } from '../ui/theme.ts';
+import { useT } from '../ui/language.ts';
 
 type Settings = Pick<TaskSummary, 'provider' | 'model' | 'effort' | 'mode'>;
 
@@ -64,7 +65,7 @@ function Form({ deviceId, sessionId, task, focus }: { deviceId: string; sessionI
       await connect.configureTask(deviceId, { sessionId, ...change });
     } catch (error) {
       setSettings(before);
-      Alert.alert('Could not change settings', (error as Error).message);
+      Alert.alert(t('Could not change settings'), (error as Error).message);
     }
   };
   const efforts = options.efforts(settings.model);

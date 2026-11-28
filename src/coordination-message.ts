@@ -1,3 +1,4 @@
+import { t } from './i18n.ts';
 import './coordination-message.css';
 import type { Message } from './types';
 import { escape, icon } from './dom';
@@ -17,5 +18,5 @@ export function renderCoordination(message: Message): string {
   const label = TEAM[kind] ?? MACHINES[kind] ?? (kind ? kind.replace(/_/g, ' ').replace(/^./, c => c.toUpperCase()) : 'Coordinating team');
   return machine
     ? `<div class="coordination-status" role="note" aria-label="Machines status: ${escape(label)}">${icon('monitor')}<strong>Machines</strong><span>${escape(label)}</span></div>`
-    : `<div class="coordination-status" role="note" aria-label="Team status">${icon('team')}<strong>Team</strong><span>${escape(label)}</span></div>`;
+    : `<div class="coordination-status" role="note" aria-label="${t('Team status')}">${icon('team')}<strong>${t('Team')}</strong><span>${escape(label)}</span></div>`;
 }

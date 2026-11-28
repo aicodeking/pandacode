@@ -1,3 +1,4 @@
+import { t } from './i18n.ts';
 import { call } from './bridge';
 import { icon } from './dom';
 import { errorText } from './error-text';
@@ -34,7 +35,7 @@ export class ProjectRunner {
       button.setAttribute('aria-busy', String(busy));
       button.toggleAttribute('data-running', running);
       if (running) button.setAttribute('aria-description', 'Running'); else button.removeAttribute('aria-description');
-      const label = busy ? 'Starting…' : 'Run';
+      const label = busy ? t('Starting…') : t('Run');
       if (button.dataset.label !== label) { button.innerHTML = `${icon('play')}<span>${label}</span>`; button.dataset.label = label; }
     });
   }
@@ -49,21 +50,21 @@ export class ProjectRunner {
     if (this.revisions.get(id) !== revision) return;
     this.scripts.set(id, script); this.paint();
     // Tell the user once per distinct failure, not on every task selection.
-    if (failure && this.failures.get(id) !== failure) this.fail(`Run is unavailable: ${failure}`);
+    if (failure && this.failures.get(id) !== failure) this.fail(`${t('Run')} is unavailable: ${failure}`);
     if (failure) this.failures.set(id, failure); else this.failures.delete(id);
   }
   async run(requestId?: string, active?: () => Promise<void>): Promise<{ started: boolean; previewPending: boolean }> {
     const context = this.options.context();
-    if (!context) throw new Error('Open a project to run it.');
+    if (!context) throw new Error(t('Open a project to run it.'));
     const id = key(context);
     if (this.starting.has(id)) return { started: false, previewPending: true };
     this.starting.add(id); this.paint();
     try {
       const script = await call<RunScript | null>('get_run_script', { ...context });
-      if (!script) throw new Error('Add pandacode-run.sh to this checkout to run the project.');
+      if (!script) throw new Error(t('Add pandacode-run.sh to this checkout to run the project.'));
       this.scripts.set(id, script);
       await active?.();
-      if (key(this.options.context() ?? { projectId: '' }) !== id) throw new Error('Task changed before the script could start.');
+      if (key(this.options.context() ?? { projectId: '' }) !== id) throw new Error(t('Task changed before the script could start.'));
       const exited = await this.options.start(requestId);
       this.exits.set(id, exited);
       const revision = (this.previewRevisions.get(id) ?? 0) + 1;
@@ -87,6 +88,6 @@ export class ProjectRunner {
       if (exited()) { this.fail('The script exited before its preview was available. Check the Run terminal.'); return; }
       await new Promise(resolve => setTimeout(resolve, Math.min(250 + attempt * 100, 1000)));
     }
-    if (current()) this.options.notify('The script is running. Preview is not ready yet; click Run to check again.');
+    if (current()) this.options.notify(t('The script is running. Preview is not ready yet; click Run to check again.'));
   }
 }

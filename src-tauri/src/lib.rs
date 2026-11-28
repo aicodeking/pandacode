@@ -98,6 +98,7 @@ mod headless;
 mod web_server;
 mod quit_guard;
 mod headless_bots;
+mod ui_language;
 
 pub use usage_keychain::handle_usage_keychain_helper;
 pub use cloud_agents::handle_cloud_bridge;
@@ -4937,6 +4938,7 @@ pub(crate) fn install_main_window(app: &tauri::AppHandle, window: &tauri::Webvie
 /// the main webview) and `pandacode serve --port`'s hidden main webview.
 pub(crate) fn main_invoke_handler(invoke: tauri::ipc::Invoke<tauri::Wry>) -> bool {
     let handler: fn(tauri::ipc::Invoke<tauri::Wry>) -> bool = tauri::generate_handler![
+        ui_language::set_ui_language,
         voice::voice_configuration,
         voice::voice_save_profile,
         voice::voice_select_profile,
@@ -5492,6 +5494,7 @@ pub fn run() {
             // A failure here is not a crash: say why and exit, never a relaunch into it.
             let ready = (|| -> Result<()> {
                 let dir = setup_common(app)?;
+                ui_language::load(&dir);
                 app.manage(voice::Voice::new(dir.clone()));
                 agents_dock::setup(app.handle(), &dir)?;
                 overlay::setup(app.handle(), &dir).map_err(|error| error.to_string())
@@ -5531,6 +5534,7 @@ pub fn run() {
                     overlay::overlay_select_model,
                     overlay::overlay_hide,
                     overlay::overlay_open_task,
+                    ui_language::set_ui_language,
                     task_controls::fork_session_at_message,
                     task_controls::get_message_content,
                     // Deletes only role='error' rows of the given session: reads nothing new.
@@ -5553,6 +5557,7 @@ pub fn run() {
                     tray::tray_hide,
                     tray::tray_quit,
                     tray::tray_resize,
+                    ui_language::set_ui_language,
                 ];
                 return handler(invoke);
             }

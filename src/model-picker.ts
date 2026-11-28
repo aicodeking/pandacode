@@ -1,3 +1,4 @@
+import { t } from './i18n.ts';
 import type { ContextUsage, Provider, ProviderId, ProviderModel } from './types';
 import { advertisedModelsOnly, fallbackModel, modelChoices, tokenCount } from './model-catalog';
 import { escape, icon, isImeKey } from './dom';
@@ -31,7 +32,7 @@ const RECENT_LIMIT = 5;
 const WIDTH = 520;
 const HEIGHT = 440;
 /** The harness list row while `loadProviders` is out; the search field then says "Loading models…". */
-const PROVIDERS_LOADING = 'Loading…';
+const PROVIDERS_LOADING = t('Loading…');
 const recentKey = (provider: ProviderId) => `pandacode.recent-models.${provider}`;
 function storedRecent(provider: ProviderId): string[] {
   try {
@@ -67,8 +68,8 @@ export function openModelPicker(options: ModelPickerOptions) {
   const panel = document.createElement('section');
   panel.className = 'model-menu floating-menu';
   panel.setAttribute('role', 'dialog');
-  panel.setAttribute('aria-label', 'Harness and model');
-  panel.innerHTML = `<div class="model-menu-search">${icon('search')}<input type="search" role="combobox" aria-expanded="true" aria-autocomplete="list" aria-controls="${uid}-list" aria-label="Search harnesses and models" autocomplete="off" spellcheck="false" maxlength="200"></div><div class="model-menu-body"><div class="model-menu-rail" role="tablist" aria-orientation="vertical" aria-label="Harnesses"></div><div class="model-menu-list" id="${uid}-list" role="listbox" aria-label="Models"></div></div><p class="model-menu-error" role="alert" hidden></p><div class="model-menu-settings" hidden></div><p class="model-menu-pending" role="status" hidden>Applying…</p>`;
+  panel.setAttribute('aria-label', t('Harness and model'));
+  panel.innerHTML = `<div class="model-menu-search">${icon('search')}<input type="search" role="combobox" aria-expanded="true" aria-autocomplete="list" aria-controls="${uid}-list" aria-label="${t('Search harnesses and models')}" autocomplete="off" spellcheck="false" maxlength="200"></div><div class="model-menu-body"><div class="model-menu-rail" role="tablist" aria-orientation="vertical" aria-label="Harnesses"></div><div class="model-menu-list" id="${uid}-list" role="listbox" aria-label="Models"></div></div><p class="model-menu-error" role="alert" hidden></p><div class="model-menu-settings" hidden></div><p class="model-menu-pending" role="status" hidden>${t('Applying…')}</p>`;
   const search = panel.querySelector<HTMLInputElement>('input')!;
   const rail = panel.querySelector<HTMLElement>('.model-menu-rail')!;
   const list = panel.querySelector<HTMLElement>('.model-menu-list')!;
@@ -291,7 +292,7 @@ export function openModelPicker(options: ModelPickerOptions) {
       if (group) {
         const visible = shortList(group.provider.id, models(group));
         total = visible.length;
-        const status = group.locked ? '<span>New task required</span>' : group.failure ? `<span data-tip="${escape(group.failure)}">Unavailable</span>` : group.unavailable ? '<span>Unavailable</span>' : `<span data-catalog-loading="${group.provider.id}" hidden>Loading…</span>`;
+        const status = group.locked ? '<span>New task required</span>' : group.failure ? `<span data-tip="${escape(group.failure)}">Unavailable</span>` : group.unavailable ? '<span>Unavailable</span>' : `<span data-catalog-loading="${group.provider.id}" hidden>${t('Loading…')}</span>`;
         markup = heading(providerLogo(group.provider.id), group.name, status) + visible.map(model => modelRow({ group, model }, false, '')).join('');
       }
     }
@@ -614,7 +615,7 @@ export function openModelPicker(options: ModelPickerOptions) {
     void options.loadProviders().then(found => {
       if (closed) return;
       providers = found.map(provider => ({ ...provider, models: [...provider.models] }));
-      providersStatus = providers.length ? '' : 'No harnesses on this computer';
+      providersStatus = providers.length ? '' : t('No harnesses on this computer');
       loadCatalogs();
       rail.querySelector('[tabindex="0"]')?.scrollIntoView({ block: 'nearest' });
     }).catch(failure => {

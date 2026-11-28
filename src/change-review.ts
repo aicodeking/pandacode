@@ -1,3 +1,4 @@
+import { t } from './i18n.ts';
 import './change-review.css';
 import { call } from './bridge';
 import { escape, icon } from './dom';
@@ -9,11 +10,11 @@ import { errorText } from './error-text';
 export function mountChangeReview(host: HTMLElement, sessionId: string, changes: TurnChanges, initialPath?: string, review?: () => void): () => void {
   let disposed = false, request = 0, controller: DiffViewerController | undefined;
   const notice = changeNotice(changes);
-  host.innerHTML = `<div class="change-review-summary"><span>${changes.files.length} changed ${changes.files.length === 1 ? 'file' : 'files'}</span><span class="change-counts">${changeCounts(changes.additions, changes.deletions)}</span><small>Saved at turn completion</small></div>${notice ? `<p class="change-review-notice">${escape(notice)}</p>` : ''}<div class="change-review-workspace"><nav class="change-review-files" aria-label="Changed files">${changes.files.map(file => `<button type="button" data-path="${escape(file.path)}" aria-label="View diff for ${escape(file.path)}" title="${escape(file.oldPath ? file.oldPath + ' → ' + file.path : file.path)}" aria-pressed="false">${icon('file')}<span class="change-review-path">${escape(file.path)}</span><span class="change-counts">${file.binary ? '<span class="change-count-unknown">Binary</span>' : changeCounts(file.additions, file.deletions)}</span></button>`).join('')}</nav><section class="change-review-content" aria-label="Saved file diff"><div class="change-review-filename"></div><div class="change-review-viewer"></div></section></div>`;
+  host.innerHTML = `<div class="change-review-summary"><span>${t`${changes.files.length} changed ${changes.files.length === 1 ? t('file') : t('files')}`}</span><span class="change-counts">${changeCounts(changes.additions, changes.deletions)}</span><small>${t('Saved at turn completion')}</small></div>${notice ? `<p class="change-review-notice">${escape(notice)}</p>` : ''}<div class="change-review-workspace"><nav class="change-review-files" aria-label="${t('Changed files')}">${changes.files.map(file => `<button type="button" data-path="${escape(file.path)}" aria-label="${t`View diff for ${escape(file.path)}`}" title="${escape(file.oldPath ? file.oldPath + ' → ' + file.path : file.path)}" aria-pressed="false">${icon('file')}<span class="change-review-path">${escape(file.path)}</span><span class="change-counts">${file.binary ? `<span class="change-count-unknown">${t('Binary')}</span>` : changeCounts(file.additions, file.deletions)}</span></button>`).join('')}</nav><section class="change-review-content" aria-label="${t('Saved file diff')}"><div class="change-review-filename"></div><div class="change-review-viewer"></div></section></div>`;
   const viewer = host.querySelector<HTMLElement>('.change-review-viewer')!;
   if (review) {
     const button = document.createElement('button'); button.type = 'button'; button.className = 'secondary-button change-review-assist';
-    button.innerHTML = `${icon('spark')}Review with Jev`;
+    button.innerHTML = `${icon('spark')}${t('Review with Jev')}`;
     button.addEventListener('click', review);
     host.querySelector('.change-review-summary')!.append(button);
   }
@@ -24,7 +25,7 @@ export function mountChangeReview(host: HTMLElement, sessionId: string, changes:
     controller?.dispose(); controller = undefined;
     host.querySelectorAll<HTMLButtonElement>('.change-review-files button').forEach(button => button.setAttribute('aria-pressed', String(button.dataset.path === path)));
     host.querySelector<HTMLElement>('.change-review-filename')!.textContent = file.oldPath ? `${file.oldPath} → ${file.path}` : file.path;
-    viewer.innerHTML = '<p class="change-review-loading" role="status">Loading saved diff…</p>';
+    viewer.innerHTML = `<p class="change-review-loading" role="status">${t('Loading saved diff…')}</p>`;
     try {
       const diff = await call<TurnChangeDiff>('turn_change_diff', { sessionId, changeId: changes.id, path });
       if (disposed || current !== request) return;

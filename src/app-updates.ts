@@ -1,3 +1,4 @@
+import { t } from './i18n.ts';
 /* Automatic updates from GitHub Releases. The app checks the latest release's
  * latest.json (tauri.conf.json `plugins.updater`) shortly after launch and every six
  * hours, downloads a newer version in the background, and installs it with a restart
@@ -98,7 +99,7 @@ export function startAppUpdates(host: UpdatesHost): AppUpdates {
     // The user asked for it: restart as soon as no agent is working, idle or not.
     approved = true;
     const busy = host.busy();
-    if (busy) host.notify('PandaCode will restart to update when your agents finish.');
+    if (busy) host.notify(t('PandaCode will restart to update when your agents finish.'));
     if (state.kind === 'available') { try { await download(pending); } catch (cause) { set({ kind: 'error', message: message(cause) }); return; } }
     if (busy || host.busy()) return;
     const version = pending.version;
@@ -148,7 +149,7 @@ export function mountUpdatePill(pill: HTMLButtonElement, updates: AppUpdates): v
   const later = document.createElement('button');
   later.type = 'button';
   later.className = 'update-status update-later';
-  later.textContent = 'Later';
+  later.textContent = t('Later');
   later.hidden = true;
   pill.after(later);
   let dismissed: string | null = null;

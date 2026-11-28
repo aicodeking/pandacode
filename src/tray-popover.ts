@@ -1,3 +1,4 @@
+import { t } from './i18n.ts';
 import './motion.css';
 import './tray-popover.css';
 import { accentTokens } from './palette-core';
@@ -48,18 +49,18 @@ function resetLabel(value?: string | null): string {
   const reset = value ? new Date(value).getTime() : NaN;
   if (!Number.isFinite(reset)) return '';
   const left = reset - Date.now();
-  return left <= 0 ? 'reset due' : left < 86_400_000 ? `resets in ${duration(left)}` : `resets ${new Date(reset).toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' })}`;
+  return left <= 0 ? t('reset due') : left < 86_400_000 ? t`resets in ${duration(left)}` : t`resets ${new Date(reset).toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' })}`;
 }
 const tone = (value: number) => value >= 95 ? 'exhausted' : value >= 80 ? 'high' : 'normal';
 const name = (id: string) => NAMES[id as ProviderId] ?? id;
 
 function row(task: TrayTask, kind: 'running' | 'waiting' | 'finished'): string {
   const elapsed = duration(Date.now() - task.at);
-  const sub = [task.project, kind === 'finished' ? (elapsed === 'now' ? 'just now' : `${elapsed} ago`) : elapsed].filter(Boolean).join(' · ');
-  const status = kind === 'running' ? '<span class="tray-spinner" aria-label="Running"></span>'
-    : kind === 'waiting' ? '<span class="tray-pill">Respond</span>'
-    : task.failed ? `<span class="tray-result failed" aria-label="Failed">${icon('close')}</span>` : `<span class="tray-result" aria-label="Done">${icon('check')}</span>`;
-  return `<button type="button" class="tray-row" data-id="${escape(task.id)}"><span class="tray-logo">${providerLogo(task.provider)}</span><span class="tray-text"><span class="tray-title">${escape(task.title || 'Untitled task')}</span><span class="tray-sub">${escape(sub)}</span></span>${status}</button>`;
+  const sub = [task.project, kind === 'finished' ? (elapsed === 'now' ? t('just now') : t`${elapsed} ago`) : elapsed].filter(Boolean).join(' · ');
+  const status = kind === 'running' ? `<span class="tray-spinner" aria-label="${t('Running')}"></span>`
+    : kind === 'waiting' ? `<span class="tray-pill">${t('Respond')}</span>`
+    : task.failed ? `<span class="tray-result failed" aria-label="${t('Failed')}">${icon('close')}</span>` : `<span class="tray-result" aria-label="${t('Done')}">${icon('check')}</span>`;
+  return `<button type="button" class="tray-row" data-id="${escape(task.id)}"><span class="tray-logo">${providerLogo(task.provider)}</span><span class="tray-text"><span class="tray-title">${escape(task.title || t('Untitled task'))}</span><span class="tray-sub">${escape(sub)}</span></span>${status}</button>`;
 }
 
 /** While PandaCode runs Claude Code for the Claude check, its row says so (and appears for it if it had none). */
@@ -112,12 +113,12 @@ function render(): void {
   const usage = withAsking(snapshot.usage, Boolean(snapshot.askingClaude));
   const parts = [running.length && `${running.length} running`, (waiting.length + finished.length) && `${waiting.length + finished.length} to review`].filter(Boolean);
   summary.textContent = parts.length ? parts.join(' · ') : 'All quiet';
-  const sections = ([['Running', running, 'running'], ['Needs you', waiting, 'waiting'], ['Finished', finished, 'finished']] as const)
-    .filter(([, tasks]) => tasks.length)
+  const sections = ([[t('Running'), running, 'running'], ['Needs you', waiting, 'waiting'], ['Finished', finished, 'finished']] as const)
+    .filter(([t, tasks]) => tasks.length)
     .map(([label, tasks, kind]) => `<section class="tray-section"><h2>${label}</h2>${tasks.map(task => row(task, kind)).join('')}</section>`).join('');
   const usageBody = usage.length ? usage.map(item => usageBlock(item, Boolean(snapshot!.askingClaude))).join('') : `<p class="tray-quiet">${checking ? 'Checking plan limits…' : 'No plan limits reported.'}</p>`;
   const focused = (document.activeElement as HTMLElement | null)?.dataset.id;
-  body.innerHTML = `${sections || '<p class="tray-quiet tray-empty">No agents running.</p>'}<section class="tray-section tray-plan"><h2>Plan usage<button type="button" class="tray-icon-button tray-refresh${checking ? ' checking' : ''}" aria-label="Refresh usage" title="Refresh usage"${checking ? ' aria-busy="true"' : ''}>${icon('refresh')}</button></h2>${usageBody}</section>`;
+  body.innerHTML = `${sections || `<p class="tray-quiet tray-empty">${t('No agents running.')}</p>`}<section class="tray-section tray-plan"><h2>${t('Plan usage')}<button type="button" class="tray-icon-button tray-refresh${checking ? ' checking' : ''}" aria-label="${t('Refresh usage')}" title="${t('Refresh usage')}"${checking ? ' aria-busy="true"' : ''}>${icon('refresh')}</button></h2>${usageBody}</section>`;
   if (focused) body.querySelector<HTMLElement>(`.tray-row[data-id="${CSS.escape(focused)}"]`)?.focus();
   resize();
 }

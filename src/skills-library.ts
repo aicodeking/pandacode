@@ -1,3 +1,4 @@
+import { t } from './i18n.ts';
 /* Settings → Tools → Rules & library (issues #15 and #45): rules — import, where each is active per harness
  * and scope — plus the bot library's skills, the drift matrix and safety findings. Everything is native
  * (`skills_*` commands in src-tauri/src/skills.rs); this view only draws and asks. Skills are added in one place,
@@ -142,8 +143,8 @@ export function mountSkillsLibrary(host: HTMLElement, options: SkillsLibraryHost
     ? `<p class="skills-note">In use by ${escape(inUse(item))}. Switch it in <button type="button" class="skills-link" data-section="skills">Skills</button>, or turn it off everywhere to remove it.</p>${turnOffConfirm(item)}` : '';
   function ruleControls(item: SkillItem): string {
     const toggles = harnesses().flatMap(row => scopes().map(scope => {
-      const label = `${harnessName(row.harness)} · ${scope === 'user' ? 'User' : 'Project'}`;
-      return `<label class="skills-toggle"><input type="checkbox" data-harness="${escape(row.harness)}" data-scope="${scope}" ${active(item, row.harness, scope) ? 'checked' : ''} ${busy ? 'disabled' : ''} aria-label="${escape(`${item.name}: ${label}`)}"><span>${escape(label)}</span></label>`;
+      const label = `${harnessName(row.harness)} · ${scope === 'user' ? t('User') : t('Project')}`;
+      return `<label class="skills-toggle"><input type="checkbox" data-harness="${escape(row.harness)}" data-scope="${scope}" ${active(item, row.harness, scope) ? 'checked' : ''} ${busy ? 'disabled' : ''} aria-label="${escape(t`${item.name}: ${label}`)}"><span>${escape(label)}</span></label>`;
     })).join('');
     const confirm = pending?.id === item.id ? `<div class="skills-confirm" role="alert"><span>${escape(`${item.name} has ${item.findings.length} safety finding${item.findings.length === 1 ? '' : 's'}. Activate it for ${harnessName(pending.harness)} anyway?`)}</span><button type="button" class="secondary-button" data-action="acknowledge">Activate anyway</button><button type="button" class="secondary-button" data-action="cancel">Cancel</button></div>` : '';
     return `${confirm}<div class="skills-toggles">${toggles}</div>`;
@@ -154,7 +155,7 @@ export function mountSkillsLibrary(host: HTMLElement, options: SkillsLibraryHost
     const rows = matrix.harnesses, rules = items.filter(item => item.kind === 'rule');
     if (!rows.length || !rules.length) return '<p class="skills-empty">No installed harness found yet, or no rules in the library.</p>';
     const columns = rows.flatMap(row => scopes().map(scope => ({ row, scope })));
-    const head = columns.map(({ row, scope }) => `<th scope="col">${escape(harnessName(row.harness))}<small>${scope === 'user' ? 'User' : 'Project'}${row.prompt ? ' · prompt' : ''}</small></th>`).join('');
+    const head = columns.map(({ row, scope }) => `<th scope="col">${escape(harnessName(row.harness))}<small>${scope === 'user' ? t('User') : t('Project')}${row.prompt ? ' · prompt' : ''}</small></th>`).join('');
     const body = rules.map(item => `<tr><th scope="row">${escape(item.name)}</th>${columns.map(({ row, scope }) => {
       const cell = row.cells.find(c => c.id === item.id && c.scope === scope);
       const status = cell?.status ?? 'off';
@@ -174,7 +175,7 @@ export function mountSkillsLibrary(host: HTMLElement, options: SkillsLibraryHost
       <form class="skills-import" aria-label="Import a rule" novalidate>
         <div class="skills-import-row">
           <label class="skills-field"><span>Source</span><select name="source"><option value="folder" ${source === 'folder' ? 'selected' : ''}>Local file</option><option value="github" ${source === 'github' ? 'selected' : ''}>GitHub repository</option></select></label>
-          ${list.length ? `<label class="skills-field"><span>Project scope</span><select name="project"><option value="">User scope only</option>${list.map(p => `<option value="${escape(p.id)}" ${p.id === projectId ? 'selected' : ''}>${escape(p.name)}</option>`).join('')}</select></label>` : ''}
+          ${list.length ? `<label class="skills-field"><span>${t('Project')} scope</span><select name="project"><option value="">${t('User')} scope only</option>${list.map(p => `<option value="${escape(p.id)}" ${p.id === projectId ? 'selected' : ''}>${escape(p.name)}</option>`).join('')}</select></label>` : ''}
         </div>
         ${source === 'folder'
           ? '<input name="path" aria-label="File path" placeholder="/path/to/rule.md" spellcheck="false" autocomplete="off">'
@@ -202,7 +203,7 @@ export function mountSkillsLibrary(host: HTMLElement, options: SkillsLibraryHost
     if (!input.checked) {
       void run(async () => {
         const change = await options.call<{ kept: string[] }>('skills_deactivate', { id, harness, scope, ...scopeArgs(scope) });
-        return change.kept.length ? `Left ${change.kept.length} edited file${change.kept.length === 1 ? '' : 's'} in place: ${change.kept.join(', ')}` : `${item.name} is off for ${harnessName(harness)}.`;
+        return change.kept.length === 1 ? t`Left 1 edited file in place: ${change.kept.join(', ')}` : change.kept.length ? t`Left ${change.kept.length} edited files in place: ${change.kept.join(', ')}` : t`${item.name} is off for ${harnessName(harness)}.`;
       });
       return;
     }
@@ -216,7 +217,7 @@ export function mountSkillsLibrary(host: HTMLElement, options: SkillsLibraryHost
     return run(async () => {
       await options.call('skills_activate', { id, harness, scope, ...scopeArgs(scope), acknowledge });
       const row = matrix.harnesses.find(r => r.harness === harness);
-      return row?.prompt ? `${harnessName(harness)} has no skill files; PandaCode adds this to its messages.` : `Active for ${harnessName(harness)}.`;
+      return row?.prompt ? t`${harnessName(harness)} has no skill files; PandaCode adds this to its messages.` : t`Active for ${harnessName(harness)}.`;
     });
   }
   function importItem(form: HTMLFormElement): void {
@@ -231,7 +232,7 @@ export function mountSkillsLibrary(host: HTMLElement, options: SkillsLibraryHost
         ? await options.call<SkillItem>('skills_import_folder', { path: text('path'), kind })
         : await options.call<SkillItem>('skills_import_github', { repo: text('repo'), path: text('repoPath'), gitRef: text('ref') || null, kind });
       clearFields = true;
-      return `Imported ${item.name}.${item.findings.length ? ` ${item.findings.length} safety finding${item.findings.length === 1 ? '' : 's'} to review.` : ''}`;
+      return item.findings.length === 1 ? t`Imported ${item.name}. 1 safety finding to review.` : item.findings.length ? t`Imported ${item.name}. ${item.findings.length} safety findings to review.` : t`Imported ${item.name}.`;
     });
   }
 
@@ -255,7 +256,7 @@ export function mountSkillsLibrary(host: HTMLElement, options: SkillsLibraryHost
     const button = (event.target as HTMLElement).closest<HTMLButtonElement>('button[data-action]');
     if (!button) return;
     const id = button.closest<HTMLElement>('.skills-item')?.dataset.id;
-    if (button.dataset.action === 'remove' && id) void run(async () => { await options.call('skills_remove', { id }); return 'Removed.'; });
+    if (button.dataset.action === 'remove' && id) void run(async () => { await options.call('skills_remove', { id }); return t('Removed.'); });
     if (button.dataset.action === 'acknowledge' && pending) void activate(pending.id, pending.harness, pending.scope, true);
     if (button.dataset.action === 'cancel') { pending = null; draw(); }
     if (button.dataset.action === 'turn-off' && id) { turningOff = id; draw(); host.querySelector<HTMLButtonElement>('[data-action="turn-off-confirm"]')?.focus(); }

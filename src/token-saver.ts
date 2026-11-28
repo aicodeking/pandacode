@@ -1,3 +1,4 @@
+import { t } from './i18n.ts';
 /* Token saver: per-thread guidance that makes agents spend fewer tokens. Packs are
  * short, benchmarked or well-understood instructions sent as a folded context block
  * with a message — only when they change, and as an occasional reminder — so every
@@ -20,9 +21,9 @@ export const PACKS: Pack[] = [
   { id: 'rtk', title: 'RTK compression', summary: 'Runs commands through rtk, which compresses their output before the agent reads it.', saves: '60–90% of command output', source: 'rtk-ai/rtk', needs: 'rtk' },
 ];
 export const LEVELS: { id: Level; label: string; hint: string }[] = [
-  { id: 'lite', label: 'Lite', hint: 'Brief, normal grammar' },
-  { id: 'full', label: 'Full', hint: 'Caveman voice' },
-  { id: 'ultra', label: 'Ultra', hint: 'Telegraphic' },
+  { id: 'lite', label: t('Lite'), hint: t('Brief, normal grammar') },
+  { id: 'full', label: t('Full'), hint: t('Caveman voice') },
+  { id: 'ultra', label: t('Ultra'), hint: t('Telegraphic') },
 ];
 
 const CAVEMAN: Record<Level, string> = {

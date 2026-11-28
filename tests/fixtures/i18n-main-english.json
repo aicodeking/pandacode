@@ -1,0 +1,21 @@
+[
+  "Finish running teams before updating an agent.",
+  "Cannot update an agent while a saved team snapshot is malformed JSON.",
+  "The architect team snapshot write did not affect one row.",
+  "The architect team metadata did not clear skip_sync.",
+  "This debug bundle exceeds the 8 MiB export limit.",
+  "Cannot remove this project: a saved architect team snapshot is malformed JSON.",
+  "OpenCode returned no models",
+  "PowerShell (.ps1) scripts cannot be launched directly on Windows. Select the .cmd or .exe launcher instead.",
+  "OpenCode server rejected discovery credentials",
+  "OpenCode server exited during discovery",
+  "Could not reach OpenCode model discovery server",
+  "OpenCode server did not report a valid address",
+  "Write a room message.",
+  "Write a room message under 16,384 characters.",
+  "Mention at most 64 bots.",
+  "This room is deleted. Restore it to post.",
+  "Choose bots that belong to this room.",
+  "This database schema does not support sidebar ordering.",
+  "A trusted host name cannot be empty."
+]
