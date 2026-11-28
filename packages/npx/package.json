@@ -1,6 +1,6 @@
 {
   "name": "pandacode",
-  "version": "0.3.16",
+  "version": "0.3.165",
   "description": "Install PandaCode, the open-source desktop app for coding agents, with npx pandacode.",
   "license": "SEE LICENSE IN LICENSE",
   "type": "module",
