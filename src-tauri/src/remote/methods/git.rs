@@ -704,7 +704,9 @@ impl SwitchBranch {
         if task.worktree_path.is_some() {
             return Err("This task works in its own worktree; its branch stays as it is.".into());
         }
+        crate::providers::end_lingering_in_checkout(&root).await;
         crate::providers::quiesce_spares_in_checkout(&root).await?;
+        crate::checkout_busy::ensure_checkouts_idle(state, std::slice::from_ref(&root), RUNNING).await?;
         crate::blocking(move || {
             let _checkout = checkout;
             let _reservation = reservation;
@@ -1649,6 +1651,99 @@ mod tests {
                 crate::workspace::git_switch(root, branch, trust)
             }).await;
         crate::providers::quiesce(&spare).await.unwrap();
+        assert_eq!(switched.unwrap().current, "next");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn connect_branch_switch_ends_lingering_agent_before_git_runs() {
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "remote::methods::git::tests::connect_branch_switch_ends_lingering_agent_before_git_runs_child",
+                "--exact",
+                "--ignored",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env("PANDACODE_CONNECT_SWITCH_LINGERING_CHILD", "1")
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success() && stdout.contains("1 passed"),
+            "connect switch lingering test failed:\n{stdout}\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    #[ignore = "started by connect_branch_switch_ends_lingering_agent_before_git_runs in its own process"]
+    async fn connect_branch_switch_ends_lingering_agent_before_git_runs_child() {
+        use std::os::unix::fs::PermissionsExt;
+        if std::env::var_os("PANDACODE_CONNECT_SWITCH_LINGERING_CHILD").is_none() {
+            return;
+        }
+        let task = MovingTask::new();
+        fixture_git(&task.main, &["branch", "next"]);
+        let settings_dir = std::env::temp_dir().join(format!(
+            "pandacode-connect-switch-linger-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(&settings_dir).unwrap();
+        let pid_file = settings_dir.join("agent.pid");
+        let exe = settings_dir.join("fake-antigravity");
+        const SCRIPT: &str = r#"#!/bin/sh
+printf '%s\n' "$$" > '__PID_FILE__'
+read -r a
+printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentCapabilities":{"sessionCapabilities":{"close":{}}}}}'
+read -r a
+printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"sessionId":"s","configOptions":[{"id":"mode","category":"mode","type":"select","currentValue":"default","options":[{"value":"default"}]}]}}'
+read -r a
+printf '%s\n' '{"jsonrpc":"2.0","id":3,"result":{"stopReason":"end_turn"}}'
+while read -r a; do case "$a" in *session/close*) break;; esac; done
+printf '%s\n' '{"jsonrpc":"2.0","id":9,"result":{}}'
+exit 0
+"#;
+        let script = SCRIPT.replace("__PID_FILE__", pid_file.to_str().unwrap());
+        std::fs::write(&exe, script).unwrap();
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let settings = json!({ "executablePaths": { "antigravity": exe } });
+        std::fs::write(settings_dir.join("provider-settings.json"), settings.to_string()).unwrap();
+        crate::provider_settings::setup(&settings_dir).unwrap();
+
+        let linger_id = format!("connect-switch-linger-{}", uuid::Uuid::new_v4().simple());
+        let mut cfg = crate::providers::tests::config("antigravity");
+        cfg.session_id = linger_id.clone();
+        cfg.cwd = task.main.clone();
+        let (input, receiver) = tokio::sync::mpsc::unbounded_channel();
+        let sink: crate::providers::Sink = Arc::new(move |_| {
+            let _ = &input;
+        });
+        crate::providers::run(cfg, sink, receiver).await.unwrap();
+
+        let pid: u32 = std::fs::read_to_string(&pid_file)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        assert!(
+            !crate::providers::process_gone_for_test(pid),
+            "the lingering agent must still be running before switch"
+        );
+
+        let agents = task.state.agents.clone();
+        let switched = SwitchBranch { session_id: task.session_id.clone(), branch: "next".into() }
+            .switch(&task.state, Trust::phone(false), move |root, branch, trust| {
+                if !crate::providers::process_gone_for_test(pid) {
+                    return Err("The lingering agent must exit before switching branches.".into());
+                }
+                assert!(crate::checkout_busy::checkout_reserved(&agents, root));
+                crate::workspace::git_switch(root, branch, trust)
+            })
+            .await;
+        crate::providers::end_lingering(&linger_id).await;
+        let _ = std::fs::remove_dir_all(&settings_dir);
         assert_eq!(switched.unwrap().current, "next");
     }
 

@@ -563,14 +563,45 @@ fn harness_command(context: &HarnessContext<'_>, root: &Path) -> Result<CommandB
         cmd.env_remove("ACP_BACKEND");
     }
     if context.provider == "opencode" {
-        let permission = Some(existing("OPENCODE_PERMISSION")).filter(|text| !text.is_empty());
-        for (key, value) in
-            opencode_console_environment(context.mode, &disabled, root, permission.as_deref())
-        {
+        let env = opencode_command_environment(&cmd);
+        let permission = cmd
+            .get_env("OPENCODE_PERMISSION")
+            .and_then(std::ffi::OsStr::to_str)
+            .filter(|text| !text.is_empty())
+            .map(str::to_owned);
+        let inline = cmd
+            .get_env("OPENCODE_CONFIG_CONTENT")
+            .and_then(std::ffi::OsStr::to_str)
+            .filter(|text| !text.is_empty())
+            .map(str::to_owned);
+        for (key, value) in opencode_console_environment(
+            context.mode,
+            &disabled,
+            root,
+            permission.as_deref(),
+            inline.as_deref(),
+            &env,
+        ) {
             cmd.env(key, value);
         }
     }
     Ok(cmd)
+}
+
+/// Effective OpenCode discovery paths on the PTY command after saved provider overrides.
+fn opencode_command_environment(cmd: &CommandBuilder) -> crate::skill_manager::OpenCodeEnv {
+    crate::skill_manager::OpenCodeEnv::from_environment(|name| {
+        cmd.get_env(name).map(std::ffi::OsStr::to_os_string)
+    })
+}
+
+fn opencode_mode_permission(mode: &str) -> serde_json::Value {
+    match mode {
+        "full" => serde_json::json!({"*":"allow"}),
+        "auto" => serde_json::json!({"*":"ask","read":"allow","glob":"allow","grep":"allow","edit":"allow"}),
+        "plan" => serde_json::json!({"*":"deny","read":"allow","glob":"allow","grep":"allow","list":"allow","lsp":"allow","webfetch":"allow","websearch":"allow","external_directory":"ask"}),
+        _ => serde_json::json!({"*":"ask","read":"allow","glob":"allow","grep":"allow"}),
+    }
 }
 
 /// An OpenCode console's skill denies: merged into the inline configuration, and also through
@@ -583,13 +614,33 @@ fn opencode_console_environment(
     disabled: &BTreeSet<String>,
     root: &Path,
     permission: Option<&str>,
+    inline: Option<&str>,
+    env: &crate::skill_manager::OpenCodeEnv,
 ) -> Vec<(&'static str, String)> {
-    let inline = crate::skill_manager::opencode_configuration_at(
-        &crate::providers::opencode_configuration(mode),
-        disabled,
-        root,
-    );
-    let mut environment = vec![("OPENCODE_CONFIG_CONTENT", inline)];
+    let content = if let Some(inline) = inline.filter(|text| !text.trim().is_empty()) {
+        let agents = crate::skill_manager::opencode_agents_at_with_env(disabled, root, env);
+        let launch =
+            crate::skill_manager::opencode_launch_with(inline, permission, disabled, &agents);
+        if launch.enforced {
+            let policy = opencode_mode_permission(mode);
+            crate::skill_manager::opencode_enforcement_with(
+                inline,
+                disabled,
+                &agents,
+                Some(&policy),
+            )
+        } else {
+            launch.content
+        }
+    } else {
+        crate::skill_manager::opencode_configuration_at_with_env(
+            &crate::providers::opencode_configuration(mode),
+            disabled,
+            root,
+            env,
+        )
+    };
+    let mut environment = vec![("OPENCODE_CONFIG_CONTENT", content)];
     if let Some(permission) = crate::skill_manager::opencode_permission(permission, disabled) {
         environment.push(("OPENCODE_PERMISSION", permission));
     }
@@ -2367,10 +2418,17 @@ mod platform_tests {
     fn opencode_console_denies_switched_off_skills_through_inline_config_and_permission() {
         let root = std::env::temp_dir();
         let disabled = BTreeSet::from(["review".to_string()]);
-        let environment: std::collections::BTreeMap<_, _> =
-            opencode_console_environment("default", &disabled, &root, Some(r#"{"bash":"ask"}"#))
-                .into_iter()
-                .collect();
+        let env = crate::skill_manager::OpenCodeEnv::default();
+        let environment: std::collections::BTreeMap<_, _> = opencode_console_environment(
+            "default",
+            &disabled,
+            &root,
+            Some(r#"{"bash":"ask"}"#),
+            None,
+            &env,
+        )
+        .into_iter()
+        .collect();
         let inline: serde_json::Value =
             serde_json::from_str(&environment["OPENCODE_CONFIG_CONTENT"]).unwrap();
         assert_eq!(inline["permission"]["skill"]["review"], "deny");
@@ -2381,9 +2439,105 @@ mod platform_tests {
             r#"{"bash":"ask","skill":{"review":"deny","review *":"deny"},"skill *":{"review":"deny","review *":"deny"}}"#
         );
         // Nothing switched off: no OPENCODE_PERMISSION is added.
-        let environment = opencode_console_environment("default", &BTreeSet::new(), &root, None);
+        let environment =
+            opencode_console_environment("default", &BTreeSet::new(), &root, None, None, &env);
         assert_eq!(environment.len(), 1);
         assert_eq!(environment[0].0, "OPENCODE_CONFIG_CONTENT");
+    }
+
+    #[test]
+    fn opencode_console_honors_provider_discovery_paths_and_inline_config() {
+        let root = std::env::temp_dir().join(format!(
+            "pandacode-opencode-console-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let repo = root.join("repo");
+        let config_file = root.join("provider-opencode.json");
+        let config_dir = root.join("provider-config-dir");
+        let xdg_home = root.join("provider-xdg");
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        std::fs::create_dir_all(config_dir.join("agents")).unwrap();
+        std::fs::create_dir_all(xdg_home.join("opencode/agents")).unwrap();
+        std::fs::write(
+            &config_file,
+            r#"{"agents":{"from-config":{"permissions":[{"action":"*","resource":"*","effect":"allow"}]}}}"#,
+        )
+        .unwrap();
+        std::fs::write(config_dir.join("agents/from-config-dir.md"), "Review").unwrap();
+        std::fs::write(xdg_home.join("opencode/agents/from-xdg.md"), "Review").unwrap();
+
+        let mut cmd = CommandBuilder::new("opencode");
+        cmd.env("OPENCODE_CONFIG", &config_file);
+        cmd.env("OPENCODE_CONFIG_DIR", &config_dir);
+        cmd.env("XDG_CONFIG_HOME", &xdg_home);
+        let env = opencode_command_environment(&cmd);
+        assert_eq!(env.config.as_deref(), Some(config_file.as_path()));
+        assert_eq!(env.config_dir.as_deref(), Some(config_dir.as_path()));
+        assert_eq!(env.xdg_config.as_deref(), Some(xdg_home.as_path()));
+
+        let mut cleared = cmd.clone();
+        cleared.env_remove("OPENCODE_CONFIG");
+        assert_eq!(opencode_command_environment(&cleared).config, None);
+
+        let disabled = BTreeSet::from(["review".to_string()]);
+        let result: std::collections::BTreeMap<_, _> =
+            opencode_console_environment("plan", &disabled, &repo, None, None, &env)
+                .into_iter()
+                .collect();
+        let value: serde_json::Value =
+            serde_json::from_str(&result["OPENCODE_CONFIG_CONTENT"]).unwrap();
+        for agent in ["from-config", "from-config-dir", "from-xdg", "build", "plan"] {
+            let rules = value["agents"][agent]["permissions"]
+                .as_array()
+                .unwrap_or_else(|| panic!("missing V2 permissions for {agent}: {value}"));
+            assert!(
+                rules
+                    .iter()
+                    .any(|r| r["action"] == "skill" && r["resource"] == "review" && r["effect"] == "deny"),
+                "{agent}: {value}"
+            );
+        }
+
+        // Provider-configured OPENCODE_CONFIG_CONTENT is preserved and merged with mode & denies.
+        let provider_inline = r#"{"provider":{"work":{"name":"Work"}}}"#;
+        let merged: std::collections::BTreeMap<_, _> = opencode_console_environment(
+            "plan",
+            &disabled,
+            &repo,
+            None,
+            Some(provider_inline),
+            &env,
+        )
+        .into_iter()
+        .collect();
+        let merged_val: serde_json::Value =
+            serde_json::from_str(&merged["OPENCODE_CONFIG_CONTENT"]).unwrap();
+        assert_eq!(merged_val["provider"]["work"]["name"], "Work");
+        assert_eq!(merged_val["permission"]["*"], "deny");
+        assert!(merged_val["agents"]["from-config"]["permissions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["action"] == "skill" && r["resource"] == "review" && r["effect"] == "deny"));
+
+        // Opaque provider OPENCODE_CONFIG_CONTENT stays verbatim whether or not skills are off.
+        let opaque = r#"{"provider":{"work": broken"#;
+        for switches in [BTreeSet::new(), disabled] {
+            let kept: std::collections::BTreeMap<_, _> = opencode_console_environment(
+                "plan",
+                &switches,
+                &repo,
+                None,
+                Some(opaque),
+                &env,
+            )
+            .into_iter()
+            .collect();
+            assert_eq!(kept["OPENCODE_CONFIG_CONTENT"], opaque);
+            assert_eq!(kept.contains_key("OPENCODE_PERMISSION"), !switches.is_empty());
+        }
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

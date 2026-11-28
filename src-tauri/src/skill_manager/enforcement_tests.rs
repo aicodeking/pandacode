@@ -1017,4 +1017,134 @@ mod tool_grant_tests {
             assert_eq!(&rules[rules.len() - 2..], &expected_denies, "{v2_name}");
         }
     }
+
+    #[test]
+    fn skill_manager_opencode_mixed_v2_disk_and_v1_inline_enforces_and_grants_v2_agents() {
+        let fixture = crate::skill_manager::tests::Fixture::new();
+        let root = fixture.0.join("repo");
+        fs::create_dir_all(root.join(".git")).unwrap();
+        // Disk defines V2 `agents.plan` and `agents.custom-v2`, plus V1-only `agent.legacy-only`.
+        fs::write(
+            root.join("opencode.json"),
+            serde_json::json!({
+                "agent": {
+                    "legacy-only": {"permission": {"*": "allow"}}
+                },
+                "agents": {
+                    "plan": {"permissions": [{"action": "*", "resource": "*", "effect": "allow"}]},
+                    "custom-v2": {"permissions": [{"action": "*", "resource": "*", "effect": "deny"}]}
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let discovered = opencode_all_agents_with_env(Some(&root), &OpenCodeEnv::default());
+        assert!(discovered.has_v2_permissions);
+        assert!(discovered.names.contains("legacy-only"));
+        assert!(discovered.disk_v2_agents.contains("plan"));
+        assert!(discovered.disk_v2_agents.contains("custom-v2"));
+        assert!(!discovered.disk_v2_agents.contains("legacy-only"));
+
+        // Inline uses legacy V1 `agent` for both `plan` (which IS a disk V2 agent) and
+        // `legacy-only` (which is NOT a disk V2 agent).
+        let inline_v1 = serde_json::json!({
+            "agent": {
+                "plan": {"model": "work/plan", "permission": {"*": "allow"}},
+                "legacy-only": {"model": "work/legacy", "permission": {"*": "allow"}}
+            }
+        })
+        .to_string();
+        let disabled = BTreeSet::from(["review".into()]);
+        let expected_denies = [
+            serde_json::json!({"action": "skill", "resource": "review", "effect": "deny"}),
+            serde_json::json!({"action": "skill", "resource": "review *", "effect": "deny"}),
+        ];
+
+        // 1. Skill denies must reach `agents.plan` (because disk defines V2 `agents.plan`, so
+        // OpenCode 2.x ignores `agent.plan`) without shadowing `agent.legacy-only`.
+        let launch = opencode_launch_with(&inline_v1, None, &disabled, &discovered);
+        assert!(launch.enforced);
+        let denied_cfg: serde_json::Value = serde_json::from_str(&launch.content).unwrap();
+        for v2_name in ["plan", "build", "general", "explore", "custom-v2"] {
+            let rules = denied_cfg["agents"][v2_name]["permissions"]
+                .as_array()
+                .unwrap();
+            assert_eq!(&rules[rules.len() - 2..], &expected_denies, "{v2_name}: {}", launch.content);
+        }
+        assert!(
+            denied_cfg["agents"].get("legacy-only").is_none(),
+            "must not shadow legacy-only without disk V2 agents entry: {}",
+            launch.content
+        );
+        assert_eq!(denied_cfg["agent"]["legacy-only"]["permission"]["skill"]["review"], "deny");
+
+        // 2. Bound-tool grants must also reach `agents.plan` while still not shadowing `legacy-only`.
+        let tool = "pandacode_architect_pandacode_explore";
+        let trailing = trailing_key(tool);
+        let (granted_inline, _) = opencode_tool_grants_with(
+            &inline_v1,
+            None,
+            &["pandacode_explore"],
+            &discovered,
+        )
+        .unwrap();
+        let granted_cfg: serde_json::Value = serde_json::from_str(&granted_inline).unwrap();
+        for v2_name in ["plan", "build", "general", "explore", "custom-v2"] {
+            let rules = granted_cfg["agents"][v2_name]["permissions"]
+                .as_array()
+                .unwrap();
+            assert!(
+                rules.iter().any(|r| r["action"] == tool && r["effect"] == "allow"),
+                "{v2_name}: {granted_inline}"
+            );
+            assert!(
+                rules.iter().any(|r| r["action"] == trailing && r["effect"] == "allow"),
+                "{v2_name}: {granted_inline}"
+            );
+        }
+        assert!(
+            granted_cfg["agents"].get("legacy-only").is_none(),
+            "must not shadow legacy-only without disk V2 agents entry: {granted_inline}"
+        );
+        assert_eq!(granted_cfg["agent"]["legacy-only"]["permission"][tool], "allow");
+
+        // 3. Mode policy (`apply_mode_permission`): updates `agents.plan` when disk has V2
+        // `agents.plan`, but does NOT create `agents.plan` when disk has only top-level V2
+        // `permissions` and inline defines legacy `agent.plan`.
+        let mode_policy = serde_json::json!({"*": "deny", "read": "allow"});
+        let with_disk_v2 =
+            opencode_enforcement_with(&inline_v1, &disabled, &discovered, Some(&mode_policy));
+        let with_disk_v2_cfg: serde_json::Value = serde_json::from_str(&with_disk_v2).unwrap();
+        let plan_rules = with_disk_v2_cfg["agents"]["plan"]["permissions"]
+            .as_array()
+            .unwrap();
+        assert_eq!(plan_rules[0]["action"], "*");
+        assert_eq!(plan_rules[0]["effect"], "deny");
+
+        let disk_top_only_agents = OpenCodeAgents {
+            names: ["build", "plan", "general", "explore"]
+                .into_iter()
+                .map(String::from)
+                .collect(),
+            complete: true,
+            has_v2_permissions: true,
+            ..Default::default()
+        };
+        let without_disk_v2_plan = opencode_enforcement_with(
+            &inline_v1,
+            &disabled,
+            &disk_top_only_agents,
+            Some(&mode_policy),
+        );
+        let without_cfg: serde_json::Value =
+            serde_json::from_str(&without_disk_v2_plan).unwrap();
+        assert!(
+            without_cfg["agents"].get("plan").is_none(),
+            "must not shadow inline agent.plan when disk has no agents.plan: {without_disk_v2_plan}"
+        );
+        assert_eq!(without_cfg["agent"]["plan"]["model"], "work/plan");
+        assert_eq!(without_cfg["agent"]["plan"]["permission"]["*"], "deny");
+        assert_eq!(without_cfg["agent"]["plan"]["permission"]["skill"]["review"], "deny");
+        assert!(without_cfg["agents"]["build"]["permissions"].is_array());
+    }
 }

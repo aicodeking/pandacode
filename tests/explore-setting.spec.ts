@@ -25,6 +25,9 @@ test('the local code explorer switch is off by default, names its harnesses and 
   await expect(settings(page)).toBeHidden();
   await openAgents(page);
   await expect(toggle(page)).toBeChecked();
+  await expect(harness(page, 'Claude Code')).toBeChecked();
+  await expect(harness(page, 'Claude Code')).toBeDisabled();
+  await expect(settings(page).locator('.setting-row:has(#explore-claude) .setting-status')).toBeHidden();
   await toggle(page).click();
   await expect(toggle(page)).not.toBeChecked();
 });
@@ -35,13 +38,39 @@ test('an explorer switch that cannot be read shows no value and cannot be flippe
   await expect(toggle(page)).toBeDisabled();
   await expect(toggle(page)).not.toBeChecked();
   await expect(settings(page).getByText('Couldn’t read this setting.')).toBeVisible();
+  const claudeStatus = settings(page).locator('.setting-row:has(#explore-claude) .setting-status');
+  await expect(harness(page, 'Claude Code')).toBeDisabled();
+  await expect(harness(page, 'Claude Code')).not.toBeChecked();
+  await expect(claudeStatus).toBeVisible();
+  await expect(claudeStatus).toHaveText('Included when Local code explorer is on.');
+  await expect(claudeStatus).not.toHaveAttribute('role', 'alert');
 });
 
 test('the explorer switch lists its harnesses: the main switch includes Claude Code and each other harness opt-in saves', async ({ page }) => {
   await page.goto('/');
   await openAgents(page);
+  const claudeStatus = settings(page).locator('.setting-row:has(#explore-claude) .setting-status');
+  await expect(toggle(page)).not.toBeChecked();
+  await expect(harness(page, 'Claude Code')).not.toBeChecked();
+  await expect(harness(page, 'Claude Code')).toBeDisabled();
+  await expect(claudeStatus).toBeVisible();
+  await expect(claudeStatus).toHaveText('Included when Local code explorer is on.');
+  await expect(claudeStatus).not.toHaveAttribute('role', 'alert');
+
+  await toggle(page).click();
+  await expect(toggle(page)).toBeChecked();
   await expect(harness(page, 'Claude Code')).toBeChecked();
   await expect(harness(page, 'Claude Code')).toBeDisabled();
+  await expect(claudeStatus).toBeHidden();
+
+  await toggle(page).click();
+  await expect(toggle(page)).not.toBeChecked();
+  await expect(harness(page, 'Claude Code')).not.toBeChecked();
+  await expect(harness(page, 'Claude Code')).toBeDisabled();
+  await expect(claudeStatus).toBeVisible();
+  await expect(claudeStatus).toHaveText('Included when Local code explorer is on.');
+  await expect(claudeStatus).not.toHaveAttribute('role', 'alert');
+
   for (const name of ['GLM', 'MiMo', 'Alibaba Token Plan', 'Codex', 'Kimi Code', 'OpenCode', 'Pi', 'Oh My Pi', 'Grok Build']) {
     await expect(harness(page, name)).toBeEnabled();
     await expect(harness(page, name)).not.toBeChecked();

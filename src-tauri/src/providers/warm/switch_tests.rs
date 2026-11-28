@@ -587,10 +587,10 @@ fn unreadable_status_backs_off_per_checkout_on_both_clocks() {
     {
         let mut locked = spares(&pool);
         for _ in 1..MISS_BACKOFF_STREAK {
-            locked.record_unreadable_status(key, now, wall);
+            locked.record_unreadable_status(key, false, now, wall);
             assert!(!locked.status_cooling(key, now, wall));
         }
-        locked.record_unreadable_status(key, now, wall);
+        locked.record_unreadable_status(key, false, now, wall);
         let almost = Duration::from_secs(299);
         assert_eq!(CHURN_COOLDOWN, Duration::from_secs(300));
         assert!(locked.status_cooling(key, now + almost, wall + almost));
@@ -628,10 +628,10 @@ async fn status_failures_share_a_counter_across_subfolders_but_not_linked_worktr
     let (now, wall) = (Instant::now(), SystemTime::now());
     {
         let mut locked = spares(&pool);
-        locked.record_unreadable_status(&repo_key, now, wall);
-        locked.record_unreadable_status(&subfolder_key, now, wall);
+        locked.record_unreadable_status(&repo_key, false, now, wall);
+        locked.record_unreadable_status(&subfolder_key, false, now, wall);
         assert!(!locked.status_cooling(&repo_key, now, wall));
-        locked.record_unreadable_status(&repo_key, now, wall);
+        locked.record_unreadable_status(&repo_key, false, now, wall);
         assert_eq!(locked.status_backoff.len(), 1);
         assert!(locked.status_cooling(&repo_key, now, wall));
         assert!(locked.status_cooling(&subfolder_key, now, wall));
@@ -639,4 +639,115 @@ async fn status_failures_share_a_counter_across_subfolders_but_not_linked_worktr
     }
     record_adopted_in(&pool, false, Some(&subfolder)).await;
     assert!(spares(&pool).status_backoff.is_empty());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn spawn_claude_keyed_skips_early_during_status_backoff_without_calling_key_for() {
+    use super::stats::{status_backoff_key, MISS_BACKOFF_STREAK};
+    use std::time::{Instant, SystemTime};
+
+    let _serial = spare_pool_test_lock().lock().await;
+    let _enabled = EnabledOverride::new(true);
+    let session = format!("warm-status-early-skip-{}", uuid::Uuid::new_v4());
+    let dir = std::env::temp_dir().join(&session);
+    let _cleanup = TempDir(dir.clone());
+    std::fs::create_dir_all(&dir).unwrap();
+    let status_key = tokio::task::spawn_blocking({
+        let dir = dir.clone();
+        move || status_backoff_key(&dir)
+    })
+    .await
+    .unwrap();
+    launched(&session);
+    let launch = epoch(&session);
+    let (now, wall) = (Instant::now(), SystemTime::now());
+    let (before_ordinary, before_lead) = {
+        let mut locked = spares(&SPARES);
+        for _ in 0..MISS_BACKOFF_STREAK {
+            locked.record_unreadable_status(&status_key, false, now, wall);
+        }
+        (locked.ordinary.churn_skipped, locked.lead.churn_skipped)
+    };
+
+    let config = RunConfig {
+        session_id: session.clone(),
+        cwd: dir,
+        ..crate::providers::tests::config("claude")
+    };
+    let tools = vec![json!({"type": "function", "name": "pandacode_title"})];
+    let ordinary_result = spawn_claude_keyed(
+        config.clone(),
+        tools.clone(),
+        HashSet::new(),
+        launch,
+        false,
+        |_, _, _, _| panic!("key_for must not run during ordinary status backoff"),
+    )
+    .await;
+    let lead_result = spawn_claude_keyed(
+        config,
+        tools,
+        HashSet::new(),
+        launch,
+        true,
+        |_, _, _, _| panic!("key_for must not run during lead status backoff"),
+    )
+    .await;
+
+    let (after_ordinary, after_lead, stats) = {
+        let mut locked = spares(&SPARES);
+        let stats = serde_json::to_value(WarmStatsSnapshot::of(&locked)).unwrap();
+        let counts = (locked.ordinary.churn_skipped, locked.lead.churn_skipped);
+        locked.status_backoff.remove(&status_key);
+        (counts.0, counts.1, stats)
+    };
+    discard(&session);
+
+    assert!(ordinary_result.unwrap().is_none());
+    assert!(lead_result.unwrap().is_none());
+    assert_eq!(after_ordinary, before_ordinary + 1);
+    assert_eq!(after_lead, before_lead + 1);
+    assert!(stats["ordinary"]["pausedSecs"].as_u64().unwrap() > 0, "{stats}");
+    assert!(stats["lead"]["pausedSecs"].as_u64().unwrap() > 0, "{stats}");
+}
+
+#[test]
+fn warm_spare_stats_report_live_status_backoff_per_affected_pool() {
+    use super::stats::{CHURN_COOLDOWN, MISS_BACKOFF_STREAK};
+    use std::time::{Instant, SystemTime};
+
+    let pool = Pool::default();
+    let live = || serde_json::to_value(WarmStatsSnapshot::of(&spares(&pool))).unwrap();
+    let key = Path::new("status-stats-checkout");
+    let (now, wall) = (Instant::now(), SystemTime::now());
+    {
+        let mut locked = spares(&pool);
+        for _ in 0..MISS_BACKOFF_STREAK {
+            locked.record_unreadable_status(key, false, now, wall);
+        }
+    }
+
+    let stats = live();
+    let ordinary_paused = stats["ordinary"]["pausedSecs"].as_u64().unwrap();
+    assert!((CHURN_COOLDOWN.as_secs() - 5..=CHURN_COOLDOWN.as_secs()).contains(&ordinary_paused), "{stats}");
+    assert_eq!(stats["lead"]["pausedSecs"], 0, "unaffected pool stays unpaused: {stats}");
+
+    {
+        let mut locked = spares(&pool);
+        assert!(locked.record_status_cooling_skip(key, true, now, wall));
+        assert_eq!(locked.lead.churn_skipped, 1);
+        assert_eq!(locked.status_paused_secs(false, now + CHURN_COOLDOWN, wall), 0);
+        assert_eq!(locked.status_paused_secs(false, now, wall + CHURN_COOLDOWN), 0);
+        assert_eq!(locked.status_paused_secs(true, now + CHURN_COOLDOWN, wall), 0);
+        assert_eq!(locked.status_paused_secs(true, now, wall + CHURN_COOLDOWN), 0);
+    }
+
+    let stats = live();
+    let lead_paused = stats["lead"]["pausedSecs"].as_u64().unwrap();
+    assert!((CHURN_COOLDOWN.as_secs() - 5..=CHURN_COOLDOWN.as_secs()).contains(&lead_paused), "{stats}");
+
+    disable_all_from(&pool);
+    let stats = live();
+    assert_eq!(stats["ordinary"]["pausedSecs"], 0, "cleared backoff resets ordinary pause: {stats}");
+    assert_eq!(stats["lead"]["pausedSecs"], 0, "cleared backoff resets lead pause: {stats}");
 }

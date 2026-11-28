@@ -578,21 +578,25 @@ fn skill_manager_opencode_exact_rules_follow_disk_inline_and_environment_order()
         fs::write(cwd.join("opencode.json"), config(tool, "deny")).unwrap();
         let agents = opencode_all_agents_with_env(Some(&cwd), &OpenCodeEnv::default());
         let env_allow = serde_json::json!({(&alias): "allow"}).to_string();
-        for (inline, env, expected) in [
+        for (inline, env, expected_top, expected_plan) in [
             (
                 config("pandacode_architect_*", "allow"),
                 Some(r#"{"*":"allow"}"#),
                 "deny",
+                "deny",
             ),
-            (config(tool, "allow"), None, "allow"),
-            (config(tool, "deny"), Some(env_allow.as_str()), "allow"),
+            (config(tool, "allow"), None, "allow", "allow"),
+            (config(tool, "deny"), Some(env_allow.as_str()), "allow", "deny"),
         ] {
             let (inline, _) =
                 opencode_tool_grants_with(&inline, env, &["pandacode_explore"], &agents).unwrap();
             let config: serde_json::Value = serde_json::from_str(&inline).unwrap();
-            for target in [
-                &config,
-                &config[if native { "agents" } else { "agent" }]["plan"],
+            for (target, expected) in [
+                (&config, expected_top),
+                (
+                    &config[if native { "agents" } else { "agent" }]["plan"],
+                    expected_plan,
+                ),
             ] {
                 let effect = if native {
                     target["permissions"]
@@ -728,4 +732,191 @@ fn skill_manager_opencode_v2_disabled_skills_and_grants_evaluate_cleanly_across_
             "tool_run must stay ungranted on {agent}"
         );
     }
+}
+
+#[test]
+fn skill_manager_opencode_per_agent_rules_take_precedence_over_later_top_level_rules() {
+    let fixture = crate::skill_manager::tests::Fixture::new();
+    let root = fixture.0.join("repo");
+    let cwd = root.join("package");
+    fs::create_dir_all(root.join(".git")).unwrap();
+    fs::create_dir_all(root.join(".opencode/agents")).unwrap();
+    fs::create_dir_all(&cwd).unwrap();
+    let tool = "pandacode_architect_pandacode_explore";
+    let alias = trailing_key(tool);
+    let env_allow = serde_json::json!({(tool): "allow"}).to_string();
+    let env_deny = serde_json::json!({(tool): "deny"}).to_string();
+
+    // 1. Earlier per-agent deny (disk JSON, Markdown, inline) + later top-level allow
+    // (deeper cwd/opencode.json, inline top-level, OPENCODE_PERMISSION) => agents stay deny.
+    fs::write(
+        root.join("opencode.json"),
+        serde_json::json!({
+            "agent": {"disk-denied": {"permission": {(tool): "deny"}}}
+        })
+        .to_string(),
+    )
+    .unwrap();
+    fs::write(
+        root.join(".opencode/agents/md-denied.md"),
+        format!("---\npermission:\n  {tool}: deny\n---\nDeny explore"),
+    )
+    .unwrap();
+    fs::write(
+        cwd.join("opencode.json"),
+        serde_json::json!({"permission": {(tool): "allow"}}).to_string(),
+    )
+    .unwrap();
+    let agents = opencode_all_agents_with_env(Some(&cwd), &OpenCodeEnv::default());
+    let inline_in = serde_json::json!({
+        "permission": {(tool): "allow"},
+        "agent": {"plan": {"permission": {(tool): "deny"}}}
+    })
+    .to_string();
+    let (inline_out, perm_out) = opencode_tool_grants_with(
+        &inline_in,
+        Some(&env_allow),
+        &["pandacode_explore"],
+        &agents,
+    )
+    .unwrap();
+    let cfg: serde_json::Value = serde_json::from_str(&inline_out).unwrap();
+    let perm: serde_json::Value = serde_json::from_str(&perm_out.unwrap()).unwrap();
+    assert_eq!(perm[tool], "allow");
+    assert_eq!(cfg["permission"][tool], "allow");
+    assert_eq!(cfg["agent"]["build"]["permission"][tool], "allow");
+    for denied in ["disk-denied", "md-denied", "plan"] {
+        assert_eq!(cfg["agent"][denied]["permission"][tool], "deny", "{denied}: {inline_out}");
+        assert_eq!(cfg["agent"][denied]["permission"][&alias], "deny", "{denied}: {inline_out}");
+    }
+
+    // 2. Earlier per-agent allow (disk JSON & Markdown) + later top-level deny
+    // (deeper cwd/opencode.json, inline top-level, OPENCODE_PERMISSION) => agents stay allow.
+    fs::write(
+        root.join("opencode.json"),
+        serde_json::json!({
+            "agent": {"disk-allowed": {"permission": {(tool): "allow"}}}
+        })
+        .to_string(),
+    )
+    .unwrap();
+    fs::write(
+        root.join(".opencode/agents/md-allowed.md"),
+        format!("---\npermission:\n  {tool}: allow\n---\nAllow explore"),
+    )
+    .unwrap();
+    fs::write(
+        cwd.join("opencode.json"),
+        serde_json::json!({"permission": {(tool): "deny"}}).to_string(),
+    )
+    .unwrap();
+    let agents = opencode_all_agents_with_env(Some(&cwd), &OpenCodeEnv::default());
+    let inline_in = serde_json::json!({"permission": {(tool): "deny"}}).to_string();
+    let (inline_out, perm_out) = opencode_tool_grants_with(
+        &inline_in,
+        Some(&env_deny),
+        &["pandacode_explore"],
+        &agents,
+    )
+    .unwrap();
+    let cfg: serde_json::Value = serde_json::from_str(&inline_out).unwrap();
+    let perm: serde_json::Value = serde_json::from_str(&perm_out.unwrap()).unwrap();
+    assert_eq!(perm[tool], "deny");
+    assert_eq!(cfg["permission"][tool], "deny");
+    assert_eq!(cfg["agent"]["build"]["permission"][tool], "deny");
+    for allowed in ["disk-allowed", "md-allowed"] {
+        assert_eq!(cfg["agent"][allowed]["permission"][tool], "allow", "{allowed}: {inline_out}");
+        assert_eq!(cfg["agent"][allowed]["permission"][&alias], "allow", "{allowed}: {inline_out}");
+    }
+}
+
+#[test]
+fn skill_manager_opencode_withholding_is_not_cleared_by_later_top_level_allow() {
+    let tool = "pandacode_architect_pandacode_explore";
+    let alias = trailing_key(tool);
+    let env_allow = serde_json::json!({(tool): "allow"}).to_string();
+
+    // 1. Malformed Markdown agent stays withheld even when inline top-level and
+    // OPENCODE_PERMISSION both set an explicit top-level allow.
+    let f1 = crate::skill_manager::tests::Fixture::new();
+    let root1 = f1.0.join("repo");
+    fs::create_dir_all(root1.join(".git")).unwrap();
+    fs::create_dir_all(root1.join(".opencode/agents")).unwrap();
+    fs::write(
+        root1.join(".opencode/agents/malformed.md"),
+        "---\npermission: *opaque\n---\nReview",
+    )
+    .unwrap();
+    let agents1 = opencode_all_agents_with_env(Some(&root1), &OpenCodeEnv::default());
+    let top_allow = serde_json::json!({"permission": {(tool): "allow"}}).to_string();
+    let (out1, _) = opencode_tool_grants_with(
+        &top_allow,
+        Some(&env_allow),
+        &["pandacode_explore"],
+        &agents1,
+    )
+    .unwrap();
+    let cfg1: serde_json::Value = serde_json::from_str(&out1).unwrap();
+    assert_eq!(cfg1["permission"][tool], "allow");
+    assert_eq!(cfg1["agent"]["build"]["permission"][tool], "allow");
+    assert!(cfg1["agent"]["malformed"]["permission"].get(tool).is_none(), "{out1}");
+    assert!(cfg1["agent"]["malformed"]["permission"].get(&alias).is_none(), "{out1}");
+
+    // 2. Unreadable earlier disk opencode.json stays sticky-withheld for agents even when a
+    // later layer sets top-level allow, unless that specific agent has a later explicit exact rule.
+    let f2 = crate::skill_manager::tests::Fixture::new();
+    let root2 = f2.0.join("repo");
+    let cwd2 = root2.join("package");
+    fs::create_dir_all(root2.join(".git")).unwrap();
+    fs::create_dir_all(&cwd2).unwrap();
+    fs::write(root2.join("opencode.json"), r#"{"agent": broken"#).unwrap();
+    fs::write(
+        cwd2.join("opencode.json"),
+        serde_json::json!({"permission": {(tool): "allow"}}).to_string(),
+    )
+    .unwrap();
+    let agents2 = opencode_all_agents_with_env(Some(&cwd2), &OpenCodeEnv::default());
+
+    // Later top-level allow only (cwd + inline + OPENCODE_PERMISSION): top-level gets allow,
+    // but agents stay withheld because root/opencode.json may have denied them per-agent.
+    let (out_top_only, _) = opencode_tool_grants_with(
+        &top_allow,
+        Some(&env_allow),
+        &["pandacode_explore"],
+        &agents2,
+    )
+    .unwrap();
+    let cfg_top_only: serde_json::Value = serde_json::from_str(&out_top_only).unwrap();
+    assert_eq!(cfg_top_only["permission"][tool], "allow");
+    for agent in ["build", "plan"] {
+        assert!(
+            cfg_top_only["agent"][agent]["permission"].get(tool).is_none(),
+            "{agent}: {out_top_only}"
+        );
+        assert!(
+            cfg_top_only["agent"][agent]["permission"].get(&alias).is_none(),
+            "{agent}: {out_top_only}"
+        );
+    }
+
+    // A later explicit per-agent rule for `plan` clears withholding ONLY for `plan`, not `build`.
+    let with_plan_explicit = serde_json::json!({
+        "permission": {(tool): "allow"},
+        "agent": {"plan": {"permission": {(tool): "allow"}}}
+    })
+    .to_string();
+    let (out_with_plan, _) = opencode_tool_grants_with(
+        &with_plan_explicit,
+        Some(&env_allow),
+        &["pandacode_explore"],
+        &agents2,
+    )
+    .unwrap();
+    let cfg_with_plan: serde_json::Value = serde_json::from_str(&out_with_plan).unwrap();
+    assert_eq!(cfg_with_plan["agent"]["plan"]["permission"][tool], "allow");
+    assert_eq!(cfg_with_plan["agent"]["plan"]["permission"][&alias], "allow");
+    assert!(
+        cfg_with_plan["agent"]["build"]["permission"].get(tool).is_none(),
+        "{out_with_plan}"
+    );
 }

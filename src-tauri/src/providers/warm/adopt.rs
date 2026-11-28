@@ -80,13 +80,41 @@ pub(in crate::providers) async fn adopt_for_launch(config: &RunConfig, host: Opt
 /// The switch and the key read files (the key: the task's switches and saved settings), so both
 /// run off the runtime. Every spare is keyed by the working tree's `gitStatus` too (git runs off
 /// the runtime, bounded, beside the walk); an unknown status adopts nothing. Only a launch with a
-/// pooled spare gets here, so a cold launch never runs git. The switch is read again once both
-/// are in (`settle_launch_key`).
+/// pooled spare gets here, so a cold launch never runs git. The switch is checked first so a
+/// headless opt-out never spawns `git status`, and read again once both are in (`settle_launch_key`).
 async fn launch_key(config: &RunConfig, catalog: &[Value]) -> Result<WarmKey, String> {
     let (keyed, catalog) = (config.clone(), catalog.to_vec());
-    let walk = crate::blocking(move || Ok(enabled_now().then(|| key_fields(&keyed, &catalog))));
-    let (walked, git_status) = tokio::join!(walk, git_status_digest(&config.cwd));
-    Ok(settle_launch_key(walked?, git_status, enabled_off_runtime).await)
+    let cwd = config.cwd.clone();
+    launch_key_with(
+        enabled_off_runtime,
+        || crate::blocking(move || Ok(enabled_now().then(|| key_fields(&keyed, &catalog)))),
+        || async move { git_status_digest(&cwd).await },
+        enabled_off_runtime,
+    )
+    .await
+}
+
+async fn launch_key_with<E1, E1Fut, W, WFut, G, GFut, E2, E2Fut>(
+    enabled_before: E1,
+    walk: W,
+    git_status: G,
+    enabled_after: E2,
+) -> Result<WarmKey, String>
+where
+    E1: FnOnce() -> E1Fut,
+    E1Fut: std::future::Future<Output = bool>,
+    W: FnOnce() -> WFut,
+    WFut: std::future::Future<Output = Result<Option<Option<Value>>, String>>,
+    G: FnOnce() -> GFut,
+    GFut: std::future::Future<Output = Option<String>>,
+    E2: FnOnce() -> E2Fut,
+    E2Fut: std::future::Future<Output = bool>,
+{
+    if !enabled_before().await {
+        return Ok(WarmKey::Disabled);
+    }
+    let (walked, git_status) = tokio::join!(walk(), git_status());
+    Ok(settle_launch_key(walked?, git_status, enabled_after).await)
 }
 
 /// Settle the parallel walk and `git status` read, re-checking the opt-in switch once both
@@ -175,5 +203,29 @@ mod tests {
         assert_eq!(settled, WarmKey::Disabled);
         assert!(!read.get(), "a walk with spares off never reads the switch again");
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn opting_out_before_launch_key_skips_walk_and_git_status() {
+        let ran = std::cell::Cell::new(false);
+        let settled = launch_key_with(
+            || async { false },
+            || {
+                ran.set(true);
+                async { Ok(None) }
+            },
+            || {
+                ran.set(true);
+                async { None }
+            },
+            || {
+                ran.set(true);
+                async { false }
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(settled, WarmKey::Disabled);
+        assert!(!ran.get(), "opted-out launch_key must not walk config or spawn git status");
     }
 }

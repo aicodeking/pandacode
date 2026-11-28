@@ -119,6 +119,7 @@ const EXPLORE_HARNESSES: { id: ProviderId; name: string }[] = [
   { id: 'claude', name: 'Claude Code' }, { id: 'glm', name: 'GLM' }, { id: 'mimo', name: 'MiMo' }, { id: 'alibaba', name: 'Alibaba Token Plan' }, { id: 'codex', name: 'Codex' },
   { id: 'kimi', name: 'Kimi Code' }, { id: 'opencode', name: 'OpenCode' }, { id: 'pi', name: 'Pi' }, { id: 'omp', name: 'Oh My Pi' }, { id: 'grok', name: 'Grok Build' },
 ];
+const CLAUDE_EXPLORE_INACTIVE = 'Included when Local code explorer is on.';
 const exploreHarnessRow = ({ id, name }: { id: ProviderId; name: string }) => {
   const hint = id === 'claude' ? 'Included while the switch above is on.'
     : 'Off by default: not measured. Takes effect while the switch above is on.';
@@ -198,8 +199,9 @@ const nativeSwitchSaves = new Map<string, Promise<void>>();
  * run, so it needs nothing from the window; a refused save puts the switch back and says why.
  * An optional \`caption\` fills the status line while no error shows, read once the switch's value
  * is known and after each save (given that value); failing, it shows nothing. With \`refreshMs\`
- * it is also re-read on that interval and when the window becomes visible, while the page is open. */
-function mountNativeSwitch(panel: HTMLElement, { id, name, args = {}, locked = false, caption: readCaption, refreshMs }: { id: string; name: string; hint?: string; args?: Record<string, unknown>; locked?: boolean; caption?: (enabled: boolean) => Promise<string>; refreshMs?: number }): () => void {
+ * it is also re-read on that interval and when the window becomes visible, while the page is open.
+ * An optional \`onValue\` runs with the switch's value once read (false if unreadable) and after each save. */
+function mountNativeSwitch(panel: HTMLElement, { id, name, args = {}, locked = false, caption: readCaption, refreshMs, onValue }: { id: string; name: string; hint?: string; args?: Record<string, unknown>; locked?: boolean; caption?: (enabled: boolean) => Promise<string>; refreshMs?: number; onValue?: (enabled: boolean) => void }): () => void {
   const input = panel.querySelector<HTMLInputElement>(`#${id}`)!;
   let disposed = false;
   // The hint sits behind the title's mark; the row's status line shows an error, else the caption.
@@ -226,9 +228,9 @@ function mountNativeSwitch(panel: HTMLElement, { id, name, args = {}, locked = f
     try {
       await nativeSwitchSaves.get(id);
       const on = await call<boolean>(`${name}_enabled`, args);
-      if (!disposed) { input.checked = on === true; input.disabled = locked; refreshCaption(); }
+      if (!disposed) { input.checked = on === true; input.disabled = locked; refreshCaption(); onValue?.(input.checked); }
     } catch {
-      if (!disposed) say(UNREADABLE);
+      if (!disposed) { say(UNREADABLE); onValue?.(false); }
     } finally {
       if (!disposed) input.removeAttribute('aria-busy');
     }
@@ -246,6 +248,7 @@ function mountNativeSwitch(panel: HTMLElement, { id, name, args = {}, locked = f
       nativeSwitchSaves.delete(id);
       if (disposed) return;
       refreshCaption();
+      onValue?.(input.checked);
       input.disabled = locked;
       input.removeAttribute('aria-busy');
       if (focused && (document.activeElement === document.body || document.activeElement === input)) input.focus({ preventScroll: true });
@@ -615,8 +618,39 @@ export function mountSettings(host: HTMLElement, options: SettingsOptions): Sett
       cleanups.push(mountAboutSettings(panel.querySelector<HTMLElement>('.settings-about')!));
       cleanups.push(mountResourceUsage(panel.querySelector<HTMLElement>('.settings-resources')!));
     }
-    if (id === 'agents') cleanups.push(...NATIVE_SWITCHES.map(row => mountNativeSwitch(panel, row.id === 'warm-spares' ? { ...row, caption: warmStatsLine, refreshMs: warmStatsRefreshMs() } : row)));
-    if (id === 'agents') cleanups.push(...EXPLORE_HARNESSES.map(({ id: provider }) => mountNativeSwitch(panel, { id: `explore-${provider}`, name: 'explore_harness', hint: '', args: { provider }, locked: provider === 'claude' })));
+    if (id === 'agents') {
+      let exploreReady = false;
+      let exploreOn = false;
+      let claudeLoaded = false;
+      let claudeBackendOn = false;
+      const claudeInput = panel.querySelector<HTMLInputElement>('#explore-claude')!;
+      const claudeStatus = claudeInput.closest('.setting-row')!.querySelector<HTMLElement>('.setting-status')!;
+      // Claude Code stays disabled and mirrors the master explorer switch so off defaults don't show a checked row below an unchecked master.
+      const syncClaude = () => {
+        if (disposed || !claudeLoaded) return;
+        claudeInput.checked = exploreOn && claudeBackendOn;
+        const note = exploreReady && !exploreOn ? CLAUDE_EXPLORE_INACTIVE : '';
+        claudeStatus.textContent = note;
+        claudeStatus.hidden = !note;
+        claudeStatus.removeAttribute('role');
+      };
+      cleanups.push(...NATIVE_SWITCHES.map(row => mountNativeSwitch(panel,
+        row.id === 'warm-spares' ? { ...row, caption: warmStatsLine, refreshMs: warmStatsRefreshMs() }
+          : row.id === 'explore-tool' ? { ...row, onValue: enabled => { exploreReady = true; exploreOn = enabled; syncClaude(); } }
+            : row)));
+      claudeInput.setAttribute('aria-busy', 'true');
+      void (async () => {
+        try {
+          const on = await call<boolean>('explore_harness_enabled', { provider: 'claude' });
+          if (!disposed) { claudeLoaded = true; claudeBackendOn = on === true; syncClaude(); }
+        } catch {
+          if (!disposed) { claudeStatus.textContent = UNREADABLE; claudeStatus.hidden = false; claudeStatus.removeAttribute('role'); }
+        } finally {
+          if (!disposed) claudeInput.removeAttribute('aria-busy');
+        }
+      })();
+      cleanups.push(...EXPLORE_HARNESSES.filter(({ id: provider }) => provider !== 'claude').map(({ id: provider }) => mountNativeSwitch(panel, { id: `explore-${provider}`, name: 'explore_harness', hint: '', args: { provider } })));
+    }
     if (id === 'agents' && !discovered) void refresh();
     for (const slot of panel.querySelectorAll<HTMLElement>('[data-embed]')) {
       const mount = () => {

@@ -2537,6 +2537,10 @@ async fn launch_operation_admitted(
     // The run's own input, for a team worker request that must stop this run and no other.
     let own_input = tx.downgrade();
     let stopped = Arc::new(AtomicBool::new(false));
+    let (worker_skills, worker_trim) = {
+        let app = app.clone();
+        blocking(move || Ok((architect::worker_skills_on(&app), architect::worker_trim_on(&app)))).await?
+    };
     let PreparedRun {
         mut config,
         restore_stage,
@@ -2567,8 +2571,8 @@ async fn launch_operation_admitted(
             team: team_admission,
             cloud_attach,
             kind,
-            worker_skills: architect::worker_skills_on(&app),
-            worker_trim: architect::worker_trim_on(&app),
+            worker_skills,
+            worker_trim,
         },
     )?;
     if !cloud_attach && turn_message_id > 0 && (!attachment_ids.is_empty() || attachment_text.contains("(moodboard ID: ")) {
@@ -3854,6 +3858,7 @@ async fn switch_branch_with(
     trust: workspace::Trust,
     switch: impl FnOnce(&std::path::Path, &str, workspace::Trust) -> Result<workspace::BranchList> + Send + 'static,
 ) -> Result<workspace::BranchList> {
+    const BUSY: &str = "Wait for the active operation in this folder to finish before switching branches.";
     let project_id = project_id.to_owned();
     let session_id = session_id.map(str::to_owned);
     let (root, reservation) = reserve_current_desktop_checkout(
@@ -3867,16 +3872,132 @@ async fn switch_branch_with(
             }
             store.workspace_root(&project_id, session_id.as_deref())
         },
-        "Wait for the active operation in this folder to finish before switching branches.",
+        BUSY,
         "This task's checkout changed while preparing to switch branches. Try again.",
     )
     .await?;
+    providers::end_lingering_in_checkout(&root).await;
     providers::quiesce_spares_in_checkout(&root).await?;
+    checkout_busy::ensure_checkouts_idle(state, std::slice::from_ref(&root), BUSY).await?;
     blocking(move || {
         let _reservation = reservation;
         switch(&root, &branch, trust)
     })
     .await
+}
+
+#[cfg(all(test, unix))]
+mod switch_branch_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    const LINGERING_CHILD_ENV: &str = "PANDACODE_DESKTOP_SWITCH_LINGERING_CHILD";
+
+    #[test]
+    fn desktop_switch_branch_ends_lingering_agent_before_git_runs() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "switch_branch_tests::desktop_switch_branch_ends_lingering_agent_before_git_runs_child",
+                "--exact",
+                "--ignored",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env(LINGERING_CHILD_ENV, "1")
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success() && stdout.contains("1 passed"),
+            "desktop switch lingering test failed:\n{stdout}\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "started by desktop_switch_branch_ends_lingering_agent_before_git_runs in its own process"]
+    async fn desktop_switch_branch_ends_lingering_agent_before_git_runs_child() {
+        if std::env::var_os(LINGERING_CHILD_ENV).is_none() {
+            return;
+        }
+        let checkout = checkout_busy::test_support::Checkout::new();
+        let settings_dir = std::env::temp_dir().join(format!(
+            "pandacode-desktop-switch-linger-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(&settings_dir).unwrap();
+        let pid_file = settings_dir.join("agent.pid");
+        let exe = settings_dir.join("fake-antigravity");
+        const SCRIPT: &str = r#"#!/bin/sh
+printf '%s\n' "$$" > '__PID_FILE__'
+read -r a
+printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentCapabilities":{"sessionCapabilities":{"close":{}}}}}'
+read -r a
+printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"sessionId":"s","configOptions":[{"id":"mode","category":"mode","type":"select","currentValue":"default","options":[{"value":"default"}]}]}}'
+read -r a
+printf '%s\n' '{"jsonrpc":"2.0","id":3,"result":{"stopReason":"end_turn"}}'
+while read -r a; do case "$a" in *session/close*) break;; esac; done
+printf '%s\n' '{"jsonrpc":"2.0","id":9,"result":{}}'
+exit 0
+"#;
+        let script = SCRIPT.replace("__PID_FILE__", pid_file.to_str().unwrap());
+        std::fs::write(&exe, script).unwrap();
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let settings = serde_json::json!({ "executablePaths": { "antigravity": exe } });
+        std::fs::write(settings_dir.join("provider-settings.json"), settings.to_string()).unwrap();
+        provider_settings::setup(&settings_dir).unwrap();
+
+        let linger_id = format!("desktop-switch-linger-{}", uuid::Uuid::new_v4().simple());
+        let mut cfg = providers::tests::config("antigravity");
+        cfg.session_id = linger_id.clone();
+        cfg.cwd = checkout.pkg_b.clone();
+        let (input, receiver) = unbounded_channel();
+        let sink: providers::Sink = Arc::new(move |_| {
+            let _ = &input;
+        });
+        providers::run(cfg, sink, receiver).await.unwrap();
+
+        let pid: u32 = std::fs::read_to_string(&pid_file)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        assert!(
+            !providers::process_gone_for_test(pid),
+            "the lingering agent must still be running before switch"
+        );
+
+        let state = AppState {
+            store: Arc::new(Mutex::new(Store::open(std::path::Path::new(":memory:")).unwrap())),
+            agents: Default::default(),
+            terminals: Default::default(),
+            shutdown: Default::default(),
+        };
+        let project = state.store.lock().unwrap().add_project(&checkout.pkg_a).unwrap();
+        let agents = state.agents.clone();
+        let switched = switch_branch_with(
+            &state,
+            &project.id,
+            None,
+            "next".into(),
+            workspace::Trust::Desktop,
+            move |root, branch, _| {
+                if !providers::process_gone_for_test(pid) {
+                    return Err("The lingering agent must exit before switching branches.".into());
+                }
+                assert!(checkout_busy::checkout_reserved(&agents, root));
+                Ok(workspace::BranchList {
+                    current: branch.into(),
+                    branches: vec![branch.into()],
+                    default_branch: String::new(),
+                })
+            },
+        )
+        .await;
+        providers::end_lingering(&linger_id).await;
+        let _ = std::fs::remove_dir_all(&settings_dir);
+        assert_eq!(switched.unwrap().current, "next");
+    }
 }
 
 #[tauri::command]

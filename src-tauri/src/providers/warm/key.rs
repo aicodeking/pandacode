@@ -488,19 +488,33 @@ fn walk_config_dir(
                 continue;
             }
         };
-        // A symlink is stamped by its target, so editing the target counts. A symlinked folder
-        // is walked only when its target was not visited yet, so a link loop cannot recurse.
+        // A symlink is stamped by its target metadata plus its link text and canonical target,
+        // so editing the target or retargeting the link to an equal-size, equal-mtime file
+        // counts (even on Windows where `metadata_stamp` has no inode identity). A symlinked
+        // folder is walked only when its target was not visited yet, so a link loop cannot recurse.
         let symlink = link.file_type().is_symlink();
         let target = if symlink { std::fs::metadata(&path).ok() } else { None };
-        entries.push((child.clone(), metadata_stamp(target.as_ref().unwrap_or(&link))));
+        let canonical = if symlink { path.canonicalize().ok() } else { None };
+        let stamp = metadata_stamp(target.as_ref().unwrap_or(&link));
+        let stamp = if symlink {
+            let link_target = std::fs::read_link(&path).ok();
+            json!([
+                stamp,
+                link_target.as_deref().map(Path::to_string_lossy),
+                canonical.as_deref().map(Path::to_string_lossy),
+            ])
+        } else {
+            stamp
+        };
+        entries.push((child.clone(), stamp));
         let is_dir = target.as_ref().map_or(link.is_dir(), std::fs::Metadata::is_dir);
         if !is_dir || depth >= CONFIG_WALK_DEPTH {
             continue;
         }
-        let canonical = path.canonicalize();
+        let canonical = if symlink { canonical } else { path.canonicalize().ok() };
         let descend = match canonical {
-            Ok(canonical) => visited.insert(canonical) || !symlink,
-            Err(_) => !symlink,
+            Some(canonical) => visited.insert(canonical) || !symlink,
+            None => !symlink,
         };
         if descend && !walk_config_dir(&path, &child, depth + 1, entries, visited) {
             return false;
@@ -658,4 +672,58 @@ pub(super) fn miss(alive: bool, spare_key: &str, key: &str, expired: bool) -> Op
 /// The names (never values) of the warm-key fields that differ.
 fn changed_fields<'a>(spare: &serde_json::Map<String, Value>, next: &'a serde_json::Map<String, Value>) -> Vec<&'a str> {
     next.iter().filter(|(field, value)| spare.get(*field) != Some(value)).map(|(field, _)| field.as_str()).collect()
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::super::test_support::TempDir;
+    use super::*;
+
+    #[test]
+    fn retargeting_a_symlink_in_a_config_dir_changes_config_dir_stamp() {
+        use std::os::unix::fs::symlink;
+
+        let root = std::env::temp_dir().join(format!("warm-dir-symlink-{}", uuid::Uuid::new_v4()));
+        let _cleanup = TempDir(root.clone());
+        let rules = root.join("rules");
+        std::fs::create_dir_all(&rules).unwrap();
+        let first = root.join("first.md");
+        let second = root.join("second.md");
+        std::fs::write(&first, "same rule\n").unwrap();
+        std::fs::write(&second, "same rule\n").unwrap();
+        let fixed = std::time::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        std::fs::File::options().write(true).open(&first).unwrap().set_modified(fixed).unwrap();
+        std::fs::File::options().write(true).open(&second).unwrap().set_modified(fixed).unwrap();
+        let first_meta = std::fs::metadata(&first).unwrap();
+        let second_meta = std::fs::metadata(&second).unwrap();
+        assert_eq!(first_meta.len(), second_meta.len());
+        assert_eq!(first_meta.modified().unwrap(), second_meta.modified().unwrap());
+
+        let link = rules.join("active.md");
+        symlink(&first, &link).unwrap();
+        let first_stamp = config_dir_stamp(&rules).unwrap();
+        std::fs::remove_file(&link).unwrap();
+        symlink(&second, &link).unwrap();
+        let second_stamp = config_dir_stamp(&rules).unwrap();
+
+        assert_ne!(first_stamp, second_stamp);
+        let entry_stamp = |dir_stamp: &Value| {
+            dir_stamp
+                .as_array()
+                .unwrap()
+                .iter()
+                .find_map(|item| (item.get(0).and_then(Value::as_str) == Some("active.md")).then(|| item.get(1).unwrap()))
+                .unwrap()
+                .as_array()
+                .unwrap()
+                .clone()
+        };
+        let first_entry = entry_stamp(&first_stamp);
+        let second_entry = entry_stamp(&second_stamp);
+        assert_eq!(first_entry.len(), 3);
+        assert_eq!(second_entry.len(), 3);
+        assert_eq!(first_entry[1].as_str(), Some(first.to_string_lossy().as_ref()));
+        assert_eq!(second_entry[1].as_str(), Some(second.to_string_lossy().as_ref()));
+        assert_ne!(first_entry[2], second_entry[2]);
+    }
 }

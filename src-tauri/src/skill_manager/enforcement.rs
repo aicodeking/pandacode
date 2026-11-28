@@ -105,12 +105,28 @@ use opencode_config::*;
 /// Denies for the built-in agents and every agent defined in config or agent files for `cwd`.
 /// Consoles have no reminder channel, so an incomplete agent list is only logged there; the
 /// Skills page reports that state as asked/none (`opencode_unlisted_agents`).
+#[allow(dead_code)]
 pub(crate) fn opencode_configuration_at(
     text: &str,
     disabled: &BTreeSet<String>,
     cwd: &Path,
 ) -> String {
-    let agents = opencode_agents_at(disabled, cwd);
+    opencode_configuration_at_with_env(
+        text,
+        disabled,
+        cwd,
+        &OpenCodeEnv::from_environment(|name| std::env::var_os(name)),
+    )
+}
+
+/// Denies for built-in and discovered agents using the launch's effective discovery environment.
+pub(crate) fn opencode_configuration_at_with_env(
+    text: &str,
+    disabled: &BTreeSet<String>,
+    cwd: &Path,
+    env: &OpenCodeEnv,
+) -> String {
+    let agents = opencode_agents_at_with_env(disabled, cwd, env);
     // The console already has a generated legacy mode. Its project scan can discover V2
     // even when the inline text supplied by the mode wrapper contains only V1 fields.
     if let Some((mut config, tokens)) = agents
@@ -120,7 +136,23 @@ pub(crate) fn opencode_configuration_at(
     {
         let schema = OpenCodeSchema::detect(&config);
         if !schema.use_v2_permissions && !schema.use_v2_agents {
-            apply_native_mode(&mut config);
+            let skip_v2_agents: BTreeSet<String> = match config.get("agent") {
+                Some(Json::Object(v1_agents)) => v1_agents
+                    .0
+                    .iter()
+                    .filter_map(|(name, value)| match value {
+                        Json::Object(obj)
+                            if obj.0.iter().any(|(field, _)| field != "permission")
+                                && !agents.disk_v2_agents.contains(name) =>
+                        {
+                            Some(name.clone())
+                        }
+                        _ => None,
+                    })
+                    .collect(),
+                _ => BTreeSet::new(),
+            };
+            apply_native_mode(&mut config, &skip_v2_agents);
             let names = deny_names(disabled);
             if !names.is_empty() {
                 config = deny_everywhere(config, &names, &agents);
@@ -136,6 +168,7 @@ pub(crate) fn opencode_configuration_at(
 #[derive(Clone, Debug, Default)]
 pub(crate) struct OpenCodeAgents {
     names: BTreeSet<String>,
+    disk_v2_agents: BTreeSet<String>,
     pub(crate) complete: bool,
     has_v2_permissions: bool,
     tool_rules: OpenCodeToolRules,
@@ -157,6 +190,7 @@ pub(crate) fn opencode_all_agents_with_env(cwd: Option<&Path>, env: &OpenCodeEnv
     );
     OpenCodeAgents {
         names: agents.names,
+        disk_v2_agents: agents.disk_v2_agents,
         complete: agents.complete,
         has_v2_permissions: agents.has_v2_permissions,
         tool_rules: agents.tool_rules,
@@ -239,20 +273,13 @@ enum ToolGrant {
 
 #[derive(Clone, Debug, Default)]
 struct ExactToolRules {
-    // The trailing action alias shares the same entry.
-    tools: BTreeMap<String, ExactTool>,
-    withheld_at: Option<usize>,
-}
-
-#[derive(Clone, Debug, Default)]
-struct ExactTool {
-    layer: usize,
-    // False is an allow, true a deny.
-    resources: BTreeMap<String, bool>,
+    // The trailing action alias shares the same entry; false is allow, true is deny.
+    tools: BTreeMap<String, BTreeMap<String, bool>>,
+    withheld: bool,
 }
 
 impl ExactToolRules {
-    fn record(&mut self, action: &str, resource: &str, effect: &str, layer: usize) {
+    fn record(&mut self, action: &str, resource: &str, effect: &str) {
         let Some(name) = exact_tool_name(action) else {
             return;
         };
@@ -261,27 +288,26 @@ impl ExactToolRules {
             "deny" => true,
             _ => return,
         };
-        let tool = self.tools.entry(name.to_owned()).or_default();
-        tool.layer = layer;
+        let resources = self.tools.entry(name.to_owned()).or_default();
         if resource == "*" {
-            tool.resources.clear();
+            resources.clear();
         }
-        tool.resources.insert(resource.to_owned(), deny);
+        resources.insert(resource.to_owned(), deny);
     }
 
-    fn collect_v1(&mut self, permission: &Object, layer: usize) {
+    fn collect_v1(&mut self, permission: &Object) {
         for (action, value) in &permission.0 {
             match value {
                 Json::Other(value) => {
                     if let Some(effect) = value.as_str() {
-                        self.record(action, "*", effect, layer);
+                        self.record(action, "*", effect);
                     }
                 }
                 Json::Object(resources) => {
                     for (resource, value) in &resources.0 {
                         if let Json::Other(value) = value {
                             if let Some(effect) = value.as_str() {
-                                self.record(action, resource, effect, layer);
+                                self.record(action, resource, effect);
                             }
                         }
                     }
@@ -290,9 +316,9 @@ impl ExactToolRules {
         }
     }
 
-    fn collect_permissions(&mut self, config: &Object, layer: usize) {
+    fn collect_permissions(&mut self, config: &Object) {
         if let Some(Json::Object(permission)) = config.get("permission") {
-            self.collect_v1(permission, layer);
+            self.collect_v1(permission);
         }
         if let Some(Json::Other(serde_json::Value::Array(permissions))) = config.get("permissions")
         {
@@ -302,19 +328,19 @@ impl ExactToolRules {
                     rule["resource"].as_str(),
                     rule["effect"].as_str(),
                 ) {
-                    self.record(action, resource, effect, layer);
+                    self.record(action, resource, effect);
                 }
             }
         }
     }
 
-    fn withhold(&mut self, layer: usize) {
+    fn withhold(&mut self) {
         self.tools.clear();
-        self.withheld_at = Some(layer);
+        self.withheld = true;
     }
 
-    fn decision(&self, tool: &str) -> Option<(usize, ToolGrant)> {
-        if let Some(ExactTool { layer, resources }) = self.tools.get(tool) {
+    fn decision(&self, tool: &str) -> Option<ToolGrant> {
+        if let Some(resources) = self.tools.get(tool) {
             let denied = resources.values().any(|deny| *deny);
             let whole = resources.get("*").copied();
             let decision = match whole {
@@ -323,25 +349,24 @@ impl ExactToolRules {
                 _ if denied => Some(ToolGrant::Withhold),
                 _ => None,
             };
-            if let Some(decision) = decision {
-                return Some((*layer, decision));
+            if decision.is_some() {
+                return decision;
             }
         }
-        self.withheld_at.map(|layer| (layer, ToolGrant::Withhold))
+        self.withheld.then_some(ToolGrant::Withhold)
     }
 }
 
 #[derive(Clone, Debug, Default)]
 pub(super) struct OpenCodeToolRules {
-    layer: usize,
     global: ExactToolRules,
     agents: BTreeMap<String, ExactToolRules>,
+    config_withheld: bool,
 }
 
 impl OpenCodeToolRules {
     fn collect_config(&mut self, config: &Object) {
-        self.layer += 1;
-        self.global.collect_permissions(config, self.layer);
+        self.global.collect_permissions(config);
         for key in ["mode", "agent", "agents"] {
             if let Some(Json::Object(agents)) = config.get(key) {
                 for (name, agent) in &agents.0 {
@@ -349,7 +374,7 @@ impl OpenCodeToolRules {
                         self.agents
                             .entry(name.clone())
                             .or_default()
-                            .collect_permissions(agent, self.layer);
+                            .collect_permissions(agent);
                     }
                 }
             }
@@ -361,34 +386,42 @@ impl OpenCodeToolRules {
         name: &str,
         rules: Option<Vec<(String, String, String)>>,
     ) {
-        self.layer += 1;
         let scope = self.agents.entry(name.to_owned()).or_default();
         if let Some(rules) = rules {
             for (action, resource, effect) in rules {
-                scope.record(&action, &resource, &effect, self.layer);
+                scope.record(&action, &resource, &effect);
             }
         } else {
-            scope.withhold(self.layer);
+            scope.withhold();
         }
     }
 
     pub(super) fn withhold_config(&mut self) {
-        self.layer += 1;
-        self.global.withhold(self.layer);
+        self.global.withhold();
         self.agents.clear();
+        self.config_withheld = true;
     }
 
+    /// OpenCode evaluates all top-level rules across every layer (including `OPENCODE_PERMISSION`)
+    /// before all per-agent rules. Any explicit per-agent rule or Markdown withhold always beats
+    /// top-level rules; an unreadable earlier config withholds agents that have no later explicit
+    /// per-agent rule, because that config may have carried a per-agent deny.
     fn effect(&self, tool: &str, agent: Option<&str>) -> Option<&'static str> {
-        let global = self.global.decision(tool);
-        let agent = agent.and_then(|name| self.agents.get(name)?.decision(tool));
-        let effective = global
-            .into_iter()
-            .chain(agent)
-            .max_by_key(|(layer, _)| *layer);
+        let effective = if let Some(name) = agent {
+            if let Some(decision) = self.agents.get(name).and_then(|rules| rules.decision(tool)) {
+                Some(decision)
+            } else if self.config_withheld {
+                Some(ToolGrant::Withhold)
+            } else {
+                self.global.decision(tool)
+            }
+        } else {
+            self.global.decision(tool)
+        };
         match effective {
-            None | Some((_, ToolGrant::Allow)) => Some("allow"),
-            Some((_, ToolGrant::Deny)) => Some("deny"),
-            Some((_, ToolGrant::Withhold)) => None,
+            None | Some(ToolGrant::Allow) => Some("allow"),
+            Some(ToolGrant::Deny) => Some("deny"),
+            Some(ToolGrant::Withhold) => None,
         }
     }
 }
@@ -399,6 +432,7 @@ pub(super) fn discover_opencode_config(
     add: &mut impl FnMut(Option<&str>),
     tool_rules: &mut OpenCodeToolRules,
     has_v2_permissions: &mut bool,
+    disk_v2_agents: &mut BTreeSet<String>,
 ) {
     let (scrubbed, tokens) = scrub_opencode_tokens(text);
     let Ok(config) = serde_json::from_str::<Object>(&crate::vsix_themes::strip_jsonc(&scrubbed))
@@ -414,7 +448,11 @@ pub(super) fn discover_opencode_config(
         match config.get(key) {
             Some(Json::Object(agents)) => {
                 for (name, _) in &agents.0 {
-                    add((!tokens.contains_sentinel_str(name)).then_some(name.as_str()));
+                    let usable = !tokens.contains_sentinel_str(name);
+                    add(usable.then_some(name.as_str()));
+                    if key == "agents" && usable {
+                        disk_v2_agents.insert(name.clone());
+                    }
                 }
             }
             Some(Json::Other(value)) if tokens.is_sentinel_value(value) => add(None),
@@ -427,7 +465,21 @@ fn mode_permission_exception(action: &str) -> bool {
     exact_tool_name(action).is_some() || matches!(action, "skill" | "skill *")
 }
 
-fn apply_mode_permission(config: &mut Object, policy: &serde_json::Value, native: bool) {
+fn apply_mode_permission(
+    config: &mut Object,
+    policy: &serde_json::Value,
+    native: bool,
+    discovered: &OpenCodeAgents,
+) {
+    let skip_v2_agents: BTreeSet<String> = match config.get("agent") {
+        Some(Json::Object(agents)) => agents
+            .0
+            .iter()
+            .filter(|(k, _)| !discovered.disk_v2_agents.contains(k.as_str()))
+            .map(|(k, _)| k.clone())
+            .collect(),
+        _ => BTreeSet::new(),
+    };
     let apply_v1 = |target: &mut Object| {
         let mut permission: Object =
             serde_json::from_value(policy.clone()).expect("OpenCode mode permission");
@@ -446,11 +498,11 @@ fn apply_mode_permission(config: &mut Object, policy: &serde_json::Value, native
         apply_v1(agents.child(name).object(false));
     }
     if native {
-        apply_native_mode(config);
+        apply_native_mode(config, &skip_v2_agents);
     }
 }
 
-fn apply_native_mode(config: &mut Object) {
+fn apply_native_mode(config: &mut Object, skip_v2_agents: &BTreeSet<String>) {
     let translate = |target: &Object| {
         let mut permissions = Vec::new();
         if let Some(Json::Object(old)) = target.get("permission") {
@@ -495,11 +547,23 @@ fn apply_native_mode(config: &mut Object) {
     };
     let permissions = translate(config);
     apply(config, permissions);
-    let legacy = config.child("agent").object(false);
-    let primary = ["build", "plan"].map(|name| (name, translate(legacy.child(name).object(false))));
-    let agents = config.child("agents").object(false);
-    for (name, permissions) in primary {
-        apply(agents.child(name).object(false), permissions);
+    let existing_v2: BTreeSet<String> = match config.get("agents") {
+        Some(Json::Object(agents)) => agents.0.iter().map(|(k, _)| k.clone()).collect(),
+        _ => BTreeSet::new(),
+    };
+    let primary: Vec<_> = {
+        let legacy = config.child("agent").object(false);
+        ["build", "plan"]
+            .into_iter()
+            .filter(|name| !skip_v2_agents.contains(*name) || existing_v2.contains(*name))
+            .map(|name| (name, translate(legacy.child(name).object(false))))
+            .collect()
+    };
+    if !primary.is_empty() {
+        let agents = config.child("agents").object(false);
+        for (name, permissions) in primary {
+            apply(agents.child(name).object(false), permissions);
+        }
     }
 }
 
@@ -580,8 +644,7 @@ fn grant_permission_env(
     create_if_missing: bool,
 ) -> Option<String> {
     let mut rules = parse_permission_env(permission, create_if_missing)?;
-    tool_rules.layer += 1;
-    tool_rules.global.collect_v1(&rules, tool_rules.layer);
+    tool_rules.global.collect_v1(&rules);
     grant_v1_permissions(&mut rules, served_tool_rules(served, tool_rules, None));
     Some(serde_json::to_string(&rules).expect("OpenCode permission"))
 }
@@ -644,15 +707,20 @@ pub(crate) fn opencode_tool_grants_with(
         _ => BTreeSet::new(),
     };
     if use_v2_agents {
-        let agents = inline.child("agents").object(false);
-        for name in &target_agents {
-            if !v1_agent_names.contains(*name) {
-                agents.child(name);
+        let to_add: Vec<&str> = target_agents
+            .iter()
+            .copied()
+            .filter(|name| !v1_agent_names.contains(*name) || agents.disk_v2_agents.contains(*name))
+            .collect();
+        if !to_add.is_empty() || inline.get("agents").is_some() {
+            let v2_agents = inline.child("agents").object(false);
+            for name in to_add {
+                v2_agents.child(name);
             }
-        }
-        for (name, agent) in &mut agents.0 {
-            if let Json::Object(agent) = agent {
-                grant_v2_permissions(agent, served_tool_rules(served, &tool_rules, Some(name)));
+            for (name, agent) in &mut v2_agents.0 {
+                if let Json::Object(agent) = agent {
+                    grant_v2_permissions(agent, served_tool_rules(served, &tool_rules, Some(name)));
+                }
             }
         }
     }
@@ -808,15 +876,23 @@ fn deny_everywhere(
         _ => BTreeSet::new(),
     };
     if use_v2_agents {
-        let agents = config.child("agents").object(false);
-        for name in &discovered.names {
-            if !v1_agent_names.contains(name) {
+        let to_add: Vec<&str> = discovered
+            .names
+            .iter()
+            .map(String::as_str)
+            .filter(|name| {
+                !v1_agent_names.contains(*name) || discovered.disk_v2_agents.contains(*name)
+            })
+            .collect();
+        if !to_add.is_empty() || config.get("agents").is_some() {
+            let agents = config.child("agents").object(false);
+            for name in to_add {
                 agents.child(name);
             }
-        }
-        for (_, agent) in &mut agents.0 {
-            if let Json::Object(agent) = agent {
-                deny_v2_permissions(agent, names);
+            for (_, agent) in &mut agents.0 {
+                if let Json::Object(agent) = agent {
+                    deny_v2_permissions(agent, names);
+                }
             }
         }
     }
@@ -834,8 +910,9 @@ fn deny_everywhere(
     config
 }
 
-/// For PandaCode's own configuration text, which always parses. Text that somehow doesn't is
-/// replaced by the denies alone (logged): a deny is never dropped.
+/// Merges mode permissions and skill denies into `OPENCODE_CONFIG_CONTENT`. When `disabled` has
+/// no deniable names and the inline text cannot be read, the text is preserved verbatim (logged);
+/// when skill denies are active, unreadable text is replaced by the denies so no deny is dropped.
 fn opencode_configuration_with(
     text: &str,
     disabled: &BTreeSet<String>,
@@ -846,16 +923,23 @@ fn opencode_configuration_with(
     if names.is_empty() && mode_permission.is_none() {
         return text.into();
     }
-    let (mut config, tokens) = parse_inline(text, !names.is_empty()).unwrap_or_else(|| {
-        if mode_permission.is_none() {
-            eprintln!("Warning: PandaCode's OpenCode configuration could not be read; launching with skill denies only.");
+    let (mut config, tokens) = match parse_inline(text, !names.is_empty()) {
+        Some(parsed) => parsed,
+        None if names.is_empty() => {
+            eprintln!("Warning: OpenCode's inline configuration (OPENCODE_CONFIG_CONTENT) could not be read; it is passed on unchanged.");
+            return text.into();
         }
-        (Object::default(), OpenCodeTokens::default())
-    });
+        None => {
+            if mode_permission.is_none() {
+                eprintln!("Warning: PandaCode's OpenCode configuration could not be read; launching with skill denies only.");
+            }
+            (Object::default(), OpenCodeTokens::default())
+        }
+    };
     if let Some(policy) = mode_permission {
         let schema = OpenCodeSchema::detect(&config);
         let native = agents.has_v2_permissions || schema.use_v2_permissions || schema.use_v2_agents;
-        apply_mode_permission(&mut config, policy, native);
+        apply_mode_permission(&mut config, policy, native, agents);
     }
     if !names.is_empty() {
         config = deny_everywhere(config, &names, agents);

@@ -24,6 +24,7 @@ const MAX_DEPTH: usize = 8;
 /// agent limit or a folder's file budget ran out, or a defined agent's name could not be used.
 pub(super) struct Agents {
     pub(super) names: BTreeSet<String>,
+    pub(super) disk_v2_agents: BTreeSet<String>,
     pub(super) complete: bool,
     pub(super) tool_rules: OpenCodeToolRules,
     pub(super) has_v2_permissions: bool,
@@ -33,6 +34,7 @@ pub(super) struct Agents {
 struct Permissions {
     tools: OpenCodeToolRules,
     native: bool,
+    disk_v2_agents: BTreeSet<String>,
 }
 
 /// Effective launch paths: `None` also represents an explicit environment removal.
@@ -122,6 +124,7 @@ pub(super) fn agents_with_env(
     }
     Agents {
         names,
+        disk_v2_agents: permissions.disk_v2_agents,
         complete,
         tool_rules: permissions.tools,
         has_v2_permissions: permissions.native,
@@ -201,7 +204,13 @@ fn markdown_agents(
 
 fn config_agents(file: &Path, add: &mut impl FnMut(Option<&str>), permissions: &mut Permissions) {
     if let Some(text) = read_text(file) {
-        discover_opencode_config(&text, add, &mut permissions.tools, &mut permissions.native);
+        discover_opencode_config(
+            &text,
+            add,
+            &mut permissions.tools,
+            &mut permissions.native,
+            &mut permissions.disk_v2_agents,
+        );
     } else if !matches!(fs::symlink_metadata(file), Err(error) if error.kind() == std::io::ErrorKind::NotFound)
     {
         add(None);

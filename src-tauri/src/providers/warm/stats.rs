@@ -83,11 +83,53 @@ pub(super) const MISS_BACKOFF_STREAK: u32 = 3;
 /// Bound the number of checkouts we remember across tasks.
 const STATUS_BACKOFF_LIMIT: usize = 64;
 
+/// What is left of an active dual-clock cooldown: the shorter of both clocks' remainders, or
+/// `None` with none set or once either clock has reached its deadline.
+fn cooldown_remaining(
+    until: Option<Instant>,
+    until_wall: Option<SystemTime>,
+    now: Instant,
+    now_wall: SystemTime,
+) -> Option<Duration> {
+    let monotonic = until.map(|until| until.checked_duration_since(now).filter(|left| !left.is_zero()));
+    let wall = until_wall.map(|until| until.duration_since(now_wall).ok().filter(|left| !left.is_zero()));
+    match (monotonic, wall) {
+        (None, None) => None,
+        (Some(left), None) | (None, Some(left)) => left,
+        (Some(monotonic), Some(wall)) => monotonic.zip(wall).map(|(monotonic, wall)| monotonic.min(wall)),
+    }
+}
+
+/// Whole seconds left of a non-zero remaining duration, rounded up (at least 1 while it lasts).
+fn ceil_secs(left: Duration) -> u64 {
+    left.as_secs() + u64::from(left.subsec_nanos() > 0)
+}
+
 #[derive(Default)]
 pub(super) struct StatusBackoff {
     consecutive_failures: u32,
+    ordinary: bool,
+    lead: bool,
     cooldown_until: Option<Instant>,
     cooldown_until_wall: Option<SystemTime>,
+}
+
+impl StatusBackoff {
+    fn mark(&mut self, lead: bool) {
+        if lead {
+            self.lead = true;
+        } else {
+            self.ordinary = true;
+        }
+    }
+
+    fn affects(&self, lead: bool) -> bool {
+        if lead { self.lead } else { self.ordinary }
+    }
+
+    fn remaining(&self, now: Instant, now_wall: SystemTime) -> Option<Duration> {
+        cooldown_remaining(self.cooldown_until, self.cooldown_until_wall, now, now_wall)
+    }
 }
 
 /// Use the nearest checkout's own root, including for a linked worktree. Call this off the
@@ -100,25 +142,55 @@ pub(super) fn status_backoff_key(cwd: &Path) -> PathBuf {
 
 impl Spares {
     /// Let either clock end the cooldown, including sleep on platforms where Instant stops.
+    #[cfg(test)]
     pub(super) fn status_cooling(&self, key: &Path, now: Instant, now_wall: SystemTime) -> bool {
-        self.status_backoff.get(key).is_some_and(|status| {
-            status.cooldown_until.is_some_and(|until| now < until)
-                && status.cooldown_until_wall.is_some_and(|until| now_wall < until)
-        })
+        self.status_backoff.get(key).is_some_and(|status| status.remaining(now, now_wall).is_some())
     }
 
-    pub(super) fn record_unreadable_status(&mut self, key: &Path, now: Instant, now_wall: SystemTime) {
+    /// If `key` is currently cooling down after unreadable `git status` probes, mark `lead` on
+    /// the backoff entry, count the skipped start in `churn_skipped`, and return `true`.
+    pub(super) fn record_status_cooling_skip(&mut self, key: &Path, lead: bool, now: Instant, now_wall: SystemTime) -> bool {
+        let Some(status) = self.status_backoff.get_mut(key) else {
+            return false;
+        };
+        if status.remaining(now, now_wall).is_none() {
+            return false;
+        }
+        status.mark(lead);
+        self.stats_mut(lead).churn_skipped += 1;
+        true
+    }
+
+    pub(super) fn record_unreadable_status(&mut self, key: &Path, lead: bool, now: Instant, now_wall: SystemTime) {
         if self.status_backoff.len() >= STATUS_BACKOFF_LIMIT && !self.status_backoff.contains_key(key) {
             if let Some(evicted) = self.status_backoff.keys().next().cloned() {
                 self.status_backoff.remove(&evicted);
             }
         }
         let status = self.status_backoff.entry(key.to_path_buf()).or_default();
+        if (status.cooldown_until.is_some() || status.cooldown_until_wall.is_some())
+            && status.remaining(now, now_wall).is_none()
+        {
+            status.ordinary = false;
+            status.lead = false;
+        }
+        status.mark(lead);
         status.consecutive_failures = status.consecutive_failures.saturating_add(1);
         if status.consecutive_failures >= MISS_BACKOFF_STREAK {
             status.cooldown_until = now.checked_add(CHURN_COOLDOWN);
             status.cooldown_until_wall = now_wall.checked_add(CHURN_COOLDOWN);
         }
+    }
+
+    /// Whole seconds left of the longest active `git status` backoff affecting `lead`, else 0.
+    pub(super) fn status_paused_secs(&self, lead: bool, now: Instant, now_wall: SystemTime) -> u64 {
+        self.status_backoff
+            .values()
+            .filter(|status| status.affects(lead))
+            .filter_map(|status| status.remaining(now, now_wall))
+            .map(ceil_secs)
+            .max()
+            .unwrap_or(0)
     }
 }
 
@@ -191,13 +263,7 @@ impl PoolChurn {
     /// What is left of an active backoff: the shorter of both clocks' remainders, or `None` with
     /// none set or once either clock has reached its deadline.
     fn remaining(&self, now: Instant, now_wall: SystemTime) -> Option<Duration> {
-        let monotonic = self.churn_cooldown_until.map(|until| until.checked_duration_since(now).filter(|left| !left.is_zero()));
-        let wall = self.churn_cooldown_until_wall.map(|until| until.duration_since(now_wall).ok().filter(|left| !left.is_zero()));
-        match (monotonic, wall) {
-            (None, None) => None,
-            (Some(left), None) | (None, Some(left)) => left,
-            (Some(monotonic), Some(wall)) => monotonic.zip(wall).map(|(monotonic, wall)| monotonic.min(wall)),
-        }
+        cooldown_remaining(self.churn_cooldown_until, self.churn_cooldown_until_wall, now, now_wall)
     }
 
     /// Whether a start is skipped now. A lapsed backoff (on either clock) clears, so the pool
@@ -221,7 +287,7 @@ impl PoolChurn {
 
     /// Whole seconds left of an active backoff, rounded up (at least 1 while it lasts), else 0.
     pub(super) fn paused_secs(&self, now: Instant, now_wall: SystemTime) -> u64 {
-        self.remaining(now, now_wall).map_or(0, |left| left.as_secs() + u64::from(left.subsec_nanos() > 0))
+        self.remaining(now, now_wall).map_or(0, ceil_secs)
     }
 }
 
@@ -406,7 +472,7 @@ pub(crate) struct WarmPoolStatsSnapshot {
     memory_skipped: u64,
     /// Spares pooled right now, idle and waiting for their follow-up.
     idle_now: u64,
-    /// Whole seconds left of the pool's churn backoff (0 when it starts spares).
+    /// Whole seconds left of the pool's churn or status backoff (0 when it starts spares).
     paused_secs: u64,
 }
 
@@ -431,7 +497,10 @@ impl WarmPoolStatsSnapshot {
             churn_skipped: s.churn_skipped,
             memory_skipped: s.memory_skipped,
             idle_now: u64::try_from(idle_now).unwrap_or(u64::MAX),
-            paused_secs: locked.churn(lead).paused_secs(now, now_wall),
+            paused_secs: locked
+                .churn(lead)
+                .paused_secs(now, now_wall)
+                .max(locked.status_paused_secs(lead, now, now_wall)),
         }
     }
 }

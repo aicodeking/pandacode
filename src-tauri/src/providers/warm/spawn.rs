@@ -343,11 +343,13 @@ pub(super) async fn spawn_claude_process(config: RunConfig, tools: Vec<Value>, a
     .await
 }
 
-/// The spare's process once `key_for` has given its prepared launch's warm-key fields. A launch
-/// with no key (its Claude config folder cannot be known, `key_fields_with_disabled`) is declined
-/// first: no secret is read, no executable searched for, no tool server or process started. Every
-/// spare's `gitStatus` (ordinary and `lead`) is read only once the previous turn has exited, right
-/// before the spawn; an unreadable status starts none.
+/// The spare's process once `key_for` has given its prepared launch's warm-key fields. A checkout
+/// cooling down after unreadable `git status` probes returns first, before any config walk, secret
+/// read, executable search, tool server or process. A launch with no key (its Claude config folder
+/// cannot be known, `key_fields_with_disabled`) is declined next, likewise before reading secrets,
+/// searching for executables, or binding a tool server. Every spare's `gitStatus` (ordinary and
+/// `lead`) is read once the previous turn has exited (`spawn_claude_process`), right before the
+/// spawn; an unreadable status starts none.
 pub(super) async fn spawn_claude_keyed(
     mut config: RunConfig,
     tools: Vec<Value>,
@@ -359,34 +361,101 @@ pub(super) async fn spawn_claude_keyed(
     config.cwd = external_path(&config.cwd);
     // Read before the switch is: a switch-off after that read moves it (`disable_all`).
     let discard_epoch = spares(&SPARES).discard_epoch;
-    // Switches, settings and the reminder's skill scan are read off the runtime.
+    let status_key = {
+        let cwd = config.cwd.clone();
+        crate::blocking(move || Ok(status_backoff_key(&cwd))).await?
+    };
+    {
+        let mut pool = spares(&SPARES);
+        if pool.discard_epoch != discard_epoch {
+            return Ok(None);
+        }
+        if pool.record_status_cooling_skip(&status_key, lead, Instant::now(), SystemTime::now()) {
+            return Ok(None);
+        }
+    }
+    // Switches, settings, skill scan, connection secrets and executable lookup run off the runtime.
     let catalog = tools.clone();
-    let (config, fields, disabled, stdio) = crate::blocking(move || {
+    let prepared_launch = crate::blocking(move || {
         let disabled = crate::skill_manager::disabled_for(&config.session_id);
         let config = prepared(config, &disabled);
         let stdio = mcp_host::stdio_servers(&config.session_id);
-        let fields = key_for(&config, &catalog, &disabled, &stdio);
-        Ok((config, fields, disabled, stdio))
+        let Some(fields) = key_for(&config, &catalog, &disabled, &stdio) else {
+            return Ok(None);
+        };
+        let connection = crate::connections::for_task(&config.session_id, &config.provider)
+            .map(|connection| crate::connections::launch(&connection))
+            .transpose()?;
+        let path = connection
+            .as_ref()
+            .and_then(|connection| connection.executable.clone())
+            .or_else(|| executable(&config.provider))
+            .ok_or_else(|| "Claude Code is not installed".to_string())?;
+        let mut command = command(&path)?;
+        crate::provider_settings::apply_environment(&config.provider, &mut command);
+        configure_command_with_skills(&mut command, &config, &disabled);
+        if let Some(connection) = &connection {
+            connection.apply(&mut command);
+        }
+        Ok(Some((config, fields, stdio, command)))
     })
     .await?;
-    let Some(fields) = fields else {
+    let Some((config, fields, stdio, mut command)) = prepared_launch else {
         eprintln!("No warm Claude agent: its config folder cannot be known.");
         return Ok(None);
     };
-    let connection = crate::connections::for_task(&config.session_id, &config.provider)
-        .map(|connection| crate::connections::launch(&connection))
-        .transpose()?;
-    let path = connection
-        .as_ref()
-        .and_then(|connection| connection.executable.clone())
-        .or_else(|| executable(&config.provider))
-        .ok_or("Claude Code is not installed")?;
-    let mut command = command(&path)?;
-    crate::provider_settings::apply_environment(&config.provider, &mut command);
-    configure_command_with_skills(&mut command, &config, &disabled);
-    if let Some(connection) = &connection {
-        connection.apply(&mut command);
+    // Re-check before spawning `git status`: a switch-off, quit, newer launch or concurrent
+    // checkout status backoff while preparing cancels before probing Git or binding a port.
+    if launch == 0
+        || epoch(&config.session_id) != launch
+        || quitting()
+        || !enabled_off_runtime().await
+    {
+        eprintln!("{NOT_PREPARED}");
+        return Ok(None);
     }
+    {
+        let mut pool = spares(&SPARES);
+        if pool.discard_epoch != discard_epoch {
+            return Ok(None);
+        }
+        if pool.record_status_cooling_skip(&status_key, lead, Instant::now(), SystemTime::now()) {
+            return Ok(None);
+        }
+    }
+    // Claude Code snapshots `gitStatus` at spawn, so every spare's is read now, after the exit
+    // wait in `spawn_claude_process` during which the exiting turn or the user may still have
+    // changed the working tree. The opt-in is read again once the status is in: removing
+    // `warm-spares-on` on a headless host while `git status` runs moves no `discard_epoch`, so it
+    // is caught here, before binding a tool server or calling `spawn_when_current`.
+    let status = gate_git_status(git_status_digest(&config.cwd), enabled_off_runtime).await;
+    {
+        let mut pool = spares(&SPARES);
+        // A read still in flight when spares were switched off cannot restore its backoff.
+        if pool.discard_epoch != discard_epoch {
+            return Ok(None);
+        }
+        match &status {
+            StatusGate::Ready(_) => { pool.status_backoff.remove(&status_key); }
+            StatusGate::Unreadable => pool.record_unreadable_status(&status_key, lead, Instant::now(), SystemTime::now()),
+            StatusGate::Disabled => {}
+        }
+    }
+    let git_status = match status {
+        StatusGate::Ready(git_status) => git_status,
+        StatusGate::Disabled => {
+            eprintln!("{NOT_PREPARED}");
+            return Ok(None);
+        }
+        StatusGate::Unreadable => {
+            if lead {
+                eprintln!("No warm Claude agent for the team lead: its git status cannot be read.");
+            } else {
+                eprintln!("No warm Claude agent: its git status cannot be read.");
+            }
+            return Ok(None);
+        }
+    };
     let server = if tools.is_empty() {
         None
     } else {
@@ -411,61 +480,6 @@ pub(super) async fn spawn_claude_keyed(
         .kill_on_drop(true);
     #[cfg(unix)]
     command.process_group(0);
-    // The turn it follows may still be exiting; resuming before then could read a half-flushed
-    // session. The switch is read off the runtime once it has; a switch-off after that read moves
-    // `discard_epoch`, compared synchronously at the last moment before the spawn.
-    let exited = await_exit_patiently(&config.session_id).await.is_ok() && enabled_off_runtime().await;
-    if !exited {
-        eprintln!("{NOT_PREPARED}");
-        return Ok(None);
-    }
-    // Claude Code snapshots `gitStatus` at spawn, so every spare's is read now, after the exit
-    // wait during which the exiting turn or the user may still have changed the working tree.
-    // The opt-in is read again once the status is in: removing `warm-spares-on` on a headless
-    // host while `git status` runs moves no `discard_epoch`, so it is caught here, before
-    // `spawn_when_current`.
-    let status_key = {
-        let cwd = config.cwd.clone();
-        crate::blocking(move || Ok(status_backoff_key(&cwd))).await?
-    };
-    {
-        let mut pool = spares(&SPARES);
-        if pool.discard_epoch != discard_epoch {
-            return Ok(None);
-        }
-        if pool.status_cooling(&status_key, Instant::now(), SystemTime::now()) {
-            pool.stats_mut(lead).churn_skipped += 1;
-            return Ok(None);
-        }
-    }
-    let status = gate_git_status(git_status_digest(&config.cwd), enabled_off_runtime).await;
-    {
-        let mut pool = spares(&SPARES);
-        // A read still in flight when spares were switched off cannot restore its backoff.
-        if pool.discard_epoch != discard_epoch {
-            return Ok(None);
-        }
-        match &status {
-            StatusGate::Ready(_) => { pool.status_backoff.remove(&status_key); }
-            StatusGate::Unreadable => pool.record_unreadable_status(&status_key, Instant::now(), SystemTime::now()),
-            StatusGate::Disabled => {}
-        }
-    }
-    let git_status = match status {
-        StatusGate::Ready(git_status) => git_status,
-        StatusGate::Disabled => {
-            eprintln!("{NOT_PREPARED}");
-            return Ok(None);
-        }
-        StatusGate::Unreadable => {
-            if lead {
-                eprintln!("No warm Claude agent for the team lead: its git status cannot be read.");
-            } else {
-                eprintln!("No warm Claude agent: its git status cannot be read.");
-            }
-            return Ok(None);
-        }
-    };
     let key = with_git_status(fields, Some(&git_status));
     // Launch, switch-off and quit are checked again after the status read, as the spawn registers.
     let stopped = || quitting() || spares(&SPARES).discard_epoch != discard_epoch;

@@ -707,4 +707,55 @@ mod tests {
         }
         std::fs::remove_dir_all(root).unwrap();
     }
+
+    #[test]
+    fn opencode_opaque_inline_config_is_preserved_when_no_skills_are_disabled() {
+        let disabled = std::collections::BTreeSet::new();
+        let names = HashSet::from([EXPLORE_TOOL.into()]);
+        for opaque in [
+            r#"{"provider":{"work": broken"#,
+            r#"{"permission":{env:PERM},"mcp":{"x":{}}}"#,
+            r#"{"agents":{file:./agents.json}}"#,
+        ] {
+            for mode in ["ask", "auto", "plan", "full"] {
+                let mut cfg = config("opencode");
+                cfg.mode = mode.into();
+                let mut command = Command::new("opencode");
+                command.env("OPENCODE_CONFIG_CONTENT", opaque);
+                command.env("OPENCODE_PERMISSION", r#"{"bash":"ask"}"#);
+                enforce_opencode_after_connection(
+                    &mut command,
+                    &mut cfg,
+                    &disabled,
+                    &Default::default(),
+                );
+                assert_eq!(
+                    env_of(&command, "OPENCODE_CONFIG_CONTENT"),
+                    opaque,
+                    "{mode}: opaque inline must be preserved verbatim when disabled is empty"
+                );
+                assert_eq!(
+                    env_of(&command, "OPENCODE_PERMISSION"),
+                    r#"{"bash":"ask"}"#,
+                    "{mode}: existing OPENCODE_PERMISSION must stay untouched"
+                );
+                assert!(cfg.instructions.is_empty(), "{mode}: no reminder when nothing disabled");
+
+                // Bound-tool grants still keep the opaque inline config verbatim and route via OPENCODE_PERMISSION.
+                allow_opencode_tools(
+                    &mut command,
+                    &cfg,
+                    true,
+                    &names,
+                    Some(&Default::default()),
+                );
+                assert_eq!(env_of(&command, "OPENCODE_CONFIG_CONTENT"), opaque);
+                let permission: Value =
+                    serde_json::from_str(&env_of(&command, "OPENCODE_PERMISSION")).unwrap();
+                assert_eq!(permission["bash"], "ask");
+                assert_eq!(permission["pandacode_architect_pandacode_explore"], "allow");
+                assert_eq!(permission["pandacode_architect_pandacode_explore *"], "allow");
+            }
+        }
+    }
 }

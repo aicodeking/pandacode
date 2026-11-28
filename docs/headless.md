@@ -61,6 +61,18 @@ background. It is read at each launch, so it takes effect at once without a rebu
 or restart; an unreadable marker fails closed to inline exit. Delete it to restore
 background reaping.
 
+Team worker tool settings use two markers in the same app data directory, both read at
+each launch:
+
+- `worker-trim-on` (off by default, matching Settings → Agents → **Trim worker tools**):
+  create an empty `worker-trim-on` file to trim team worker tools on Claude-family
+  launches; delete it to turn the trim off again. An unreadable marker keeps the
+  default (off).
+- `worker-skills-off` (on by default, matching Settings → Agents → **Workers can use
+  skills**): create an empty `worker-skills-off` file to remove `Skill` from Claude,
+  GLM, MiMo and Alibaba Token Plan team workers; delete it to restore `Skill`. An
+  unreadable marker keeps the default (on).
+
 Agent-made tools follow the same `custom-tools-on` switch as the desktop.
 Creating or deleting the marker takes effect on the next run. While off,
 PandaCode refuses calls to agent-made tools that a resumed conversation still holds.

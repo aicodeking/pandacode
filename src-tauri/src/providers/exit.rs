@@ -177,7 +177,8 @@ pub(crate) async fn await_exits_in_checkout_patiently(folder: &Path) -> Result<(
 }
 
 /// Wait before starting a saved tool so retries cannot overlap a canceled process. Other
-/// active tool calls may run in parallel. Checkout mutations use the full checkout wait.
+/// active tool calls may run in parallel; clean sibling turn-end reaps are awaited without
+/// hurrying their natural flush window. Checkout mutations use the full checkout wait.
 pub(crate) async fn await_checkout_before_tool(folder: &Path) -> Result<(), String> {
     wait_in(exit_registry(), folder, EXIT_HARD_CAP, true, WaitScope::BeforeTool).await
 }
@@ -194,7 +195,7 @@ async fn wait_in(registry: &Registry, folder: &Path, cap: Duration, hurry: bool,
         let mut resolved = None;
         let mut waited: Vec<tokio::sync::watch::Receiver<()>> = Vec::new();
         loop {
-            let snapshot: Vec<(String, PathBuf, tokio::sync::watch::Receiver<()>)> = registry
+            let snapshot: Vec<_> = registry
                 .lock()
                 .unwrap_or_else(|p| p.into_inner())
                 .iter()
@@ -206,7 +207,8 @@ async fn wait_in(registry: &Registry, folder: &Path, cap: Duration, hurry: bool,
                     if waited.iter().any(|done| done.same_channel(&entry.exiting)) {
                         return None;
                     }
-                    entry.cwd.as_ref().map(|cwd| (id.clone(), cwd.clone(), entry.exiting.clone()))
+                    let hurry_entry = hurry && (scope != WaitScope::BeforeTool || entry.call_stopped.is_some());
+                    entry.cwd.as_ref().map(|cwd| (id.clone(), cwd.clone(), entry.exiting.clone(), hurry_entry))
                 })
                 .collect();
             if snapshot.is_empty() {
@@ -224,7 +226,7 @@ async fn wait_in(registry: &Registry, folder: &Path, cap: Duration, hurry: bool,
                 });
                 let matching = snapshot
                     .into_iter()
-                    .filter(|(_, cwd, _)| {
+                    .filter(|(_, cwd, _, _)| {
                         if scope != WaitScope::Folder {
                             path_in_checkout_identity(cwd, &target_resolved)
                         } else {
@@ -241,12 +243,12 @@ async fn wait_in(registry: &Registry, folder: &Path, cap: Duration, hurry: bool,
             if matching.is_empty() {
                 return Ok(());
             }
-            if hurry {
-                for (session_id, _, _) in &matching {
+            for (session_id, _, _, hurry_entry) in &matching {
+                if *hurry_entry {
                     hurry_session(session_id);
                 }
             }
-            for (_, _, mut exiting) in matching {
+            for (_, _, mut exiting, _) in matching {
                 // Sender closure is the reaper's completion signal.
                 let _ = exiting.changed().await;
                 waited.push(exiting);
@@ -832,5 +834,130 @@ Start-Sleep -Seconds 30
         drop(hold_other);
         await_exit(&other_id).await.unwrap();
         let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[tokio::test]
+    async fn before_tool_waits_for_clean_reap_without_hurrying_it_but_still_hurries_canceled_tool() {
+        let scratch = Scratch::new("before-tool-hurry");
+        let clean_id = unique("clean-reap");
+        let canceled_id = unique("canceled-tool");
+        let active_id = unique("active-tool");
+
+        let (clean_done, clean_exiting) = tokio::sync::watch::channel(());
+        let (canceled_done, canceled_exiting) = tokio::sync::watch::channel(());
+        let (_active_done, active_exiting) = tokio::sync::watch::channel(());
+
+        let (clean_hurry_tx, clean_hurry_rx) = tokio::sync::watch::channel(false);
+        let (canceled_hurry_tx, mut canceled_hurry_rx) = tokio::sync::watch::channel(false);
+        let (active_hurry_tx, active_hurry_rx) = tokio::sync::watch::channel(false);
+        {
+            let mut all = hurries().lock().unwrap_or_else(|p| p.into_inner());
+            all.insert(clean_id.clone(), vec![Arc::new(clean_hurry_tx)]);
+            all.insert(canceled_id.clone(), vec![Arc::new(canceled_hurry_tx)]);
+            all.insert(active_id.clone(), vec![Arc::new(active_hurry_tx)]);
+        }
+
+        let registry = Arc::new(Registry::default());
+        {
+            let mut entries = registry.lock().unwrap_or_else(|p| p.into_inner());
+            entries.insert(
+                clean_id.clone(),
+                vec![ExitEntry {
+                    exiting: clean_exiting,
+                    cwd: Some(scratch.0.clone()),
+                    call_stopped: None,
+                }],
+            );
+            entries.insert(
+                canceled_id.clone(),
+                vec![ExitEntry {
+                    exiting: canceled_exiting,
+                    cwd: Some(scratch.0.clone()),
+                    call_stopped: Some(Arc::new(AtomicBool::new(true))),
+                }],
+            );
+            entries.insert(
+                active_id.clone(),
+                vec![ExitEntry {
+                    exiting: active_exiting,
+                    cwd: Some(scratch.0.clone()),
+                    call_stopped: Some(Arc::new(AtomicBool::new(false))),
+                }],
+            );
+        }
+
+        let waiter = tokio::spawn({
+            let registry = registry.clone();
+            let folder = scratch.0.clone();
+            async move {
+                wait_in(&registry, &folder, Duration::from_secs(5), true, WaitScope::BeforeTool).await
+            }
+        });
+
+        tokio::time::timeout(Duration::from_secs(2), canceled_hurry_rx.wait_for(|&hurried| hurried))
+            .await
+            .expect("BeforeTool must hurry a canceled saved tool")
+            .unwrap();
+        assert!(!*clean_hurry_rx.borrow(), "BeforeTool must not hurry a clean sibling background reap");
+        assert!(!*active_hurry_rx.borrow(), "BeforeTool must skip and not hurry an active saved tool");
+        assert!(!waiter.is_finished(), "BeforeTool must wait for both the canceled tool and clean reap");
+
+        drop(canceled_done);
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        assert!(!waiter.is_finished(), "BeforeTool must still wait for the clean sibling background reap");
+        assert!(!*clean_hurry_rx.borrow(), "clean sibling reap must stay unhurried after canceled tool finishes");
+
+        drop(clean_done);
+        tokio::time::timeout(Duration::from_secs(2), waiter)
+            .await
+            .expect("BeforeTool should finish once clean reap and canceled tool exit")
+            .unwrap()
+            .unwrap();
+        assert!(!*clean_hurry_rx.borrow(), "clean sibling reap was never hurried");
+        assert!(!*active_hurry_rx.borrow(), "active tool was never hurried");
+
+        // WaitScope::Checkout with hurry=true must still hurry clean background reaps.
+        let (checkout_clean_done, checkout_clean_exiting) = tokio::sync::watch::channel(());
+        let checkout_clean_id = unique("checkout-clean-reap");
+        let (checkout_hurry_tx, mut checkout_hurry_rx) = tokio::sync::watch::channel(false);
+        hurries()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(checkout_clean_id.clone(), vec![Arc::new(checkout_hurry_tx)]);
+        let checkout_registry = Arc::new(Registry::default());
+        checkout_registry
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(
+                checkout_clean_id.clone(),
+                vec![ExitEntry {
+                    exiting: checkout_clean_exiting,
+                    cwd: Some(scratch.0.clone()),
+                    call_stopped: None,
+                }],
+            );
+        let checkout_waiter = tokio::spawn({
+            let registry = checkout_registry.clone();
+            let folder = scratch.0.clone();
+            async move {
+                wait_in(&registry, &folder, Duration::from_secs(5), true, WaitScope::Checkout).await
+            }
+        });
+        tokio::time::timeout(Duration::from_secs(2), checkout_hurry_rx.wait_for(|&hurried| hurried))
+            .await
+            .expect("Checkout wait with hurry=true must still hurry a clean background reap")
+            .unwrap();
+        drop(checkout_clean_done);
+        tokio::time::timeout(Duration::from_secs(2), checkout_waiter)
+            .await
+            .expect("Checkout wait should finish once the clean reap exits")
+            .unwrap()
+            .unwrap();
+
+        let mut all = hurries().lock().unwrap_or_else(|p| p.into_inner());
+        all.remove(&clean_id);
+        all.remove(&canceled_id);
+        all.remove(&active_id);
+        all.remove(&checkout_clean_id);
     }
 }
