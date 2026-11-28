@@ -976,3 +976,103 @@ fn an_unreadable_team_refuses_the_turn_without_promoting_its_request_or_keeping_
     let (is_team, request) = gateway::claim_turn(&f.store, &bot, &task.id, "Message from Scout:\n\ndo it").unwrap();
     assert_eq!((is_team, request), (false, Some(shared_channels::Running::Message("m".into()))));
 }
+#[test]
+fn a_bridge_channel_is_created_with_its_own_token() {
+    let f = fixture();
+    let bot = bot(&f);
+    let bridge = channels::ChannelInput { kind: "bridge".into(), label: "Signal".into(), ..Default::default() };
+    let channel = channels::add(&f.store, &bot.id, &bridge).unwrap();
+    assert_eq!(channel.kind, "bridge");
+    assert_eq!(channel.secrets, vec!["token".to_owned()], "the token is minted, not supplied");
+    // The listing names the secret but never carries its value.
+    let serialized = serde_json::to_string(&channels::list(&f.store, &bot.id).unwrap()).unwrap();
+    assert!(!serialized.contains(&crate::bots::secrets::get(&channel.id, "token").unwrap()), "a listing never leaks the bridge token");
+    // A bridge needs no remote service to verify and takes the shared server's transport.
+    let kind = channels::kind("bridge").expect("registered");
+    assert!(matches!(kind.transport, channels::Transport::Webhook));
+}
+
+#[test]
+fn a_retried_bridge_event_is_accepted_once() {
+    let f = fixture();
+    let bot = bot(&f);
+    let bridge = channels::ChannelInput { kind: "bridge".into(), label: "Signal".into(), ..Default::default() };
+    let channel = channels::add(&f.store, &bot.id, &bridge).unwrap();
+    assert!(first_bridge_delivery(&f.store, &channel.id, "evt-1"), "the first delivery is new");
+    assert!(!first_bridge_delivery(&f.store, &channel.id, "evt-1"), "a retry is a duplicate");
+    assert!(first_bridge_delivery(&f.store, &channel.id, "evt-2"), "a different event still passes");
+}
+
+/// Mirrors `bridge::first_delivery` against the fixture store, so the dedupe rule is pinned
+/// without needing a bridge token round trip.
+fn first_bridge_delivery(store: &Store, channel_id: &str, event_id: &str) -> bool {
+    let now = crate::storage::now();
+    store
+        .db
+        .execute("INSERT OR IGNORE INTO bot_bridge_events(channel_id,event_id,accepted_at) VALUES(?1,?2,?3)", rusqlite::params![channel_id, event_id, now])
+        .unwrap()
+        == 1
+}
+
+#[test]
+fn the_channel_kind_constraint_is_relaxed_once_and_keeps_rows() {
+    let store = Store::open(std::path::Path::new(":memory:")).unwrap();
+    // A database from a build that still had the original five-value constraint.
+    store.db.execute_batch("DROP TABLE IF EXISTS bot_channels;").unwrap();
+    store
+        .db
+        .execute_batch(
+            "CREATE TABLE bot_channels(
+               id TEXT PRIMARY KEY,
+               bot_id TEXT NOT NULL,
+               kind TEXT NOT NULL CHECK(kind IN ('web','telegram','slack','discord','whatsapp')),
+               label TEXT NOT NULL DEFAULT '',
+               config TEXT NOT NULL DEFAULT '{}',
+               enabled INTEGER NOT NULL DEFAULT 1,
+               status TEXT NOT NULL DEFAULT '',
+               secret_names TEXT NOT NULL DEFAULT '[]',
+               web_token TEXT,
+               created_at INTEGER NOT NULL);
+             INSERT INTO bot_channels(id,bot_id,kind,label,created_at) VALUES('c1','b1','telegram','Phone',1);",
+        )
+        .unwrap();
+    // The old constraint refuses a bridge, which is the bug this migration exists to fix.
+    assert!(store.db.execute("INSERT INTO bot_channels(id,bot_id,kind,created_at) VALUES('c2','b1','bridge',2)", []).is_err());
+    upgrade_schema(&store.db).unwrap();
+    // The existing row survived and a bridge is now accepted.
+    let kept: String = store.db.query_row("SELECT kind FROM bot_channels WHERE id='c1'", [], |r| r.get(0)).unwrap();
+    assert_eq!(kept, "telegram");
+    store.db.execute("INSERT INTO bot_channels(id,bot_id,kind,created_at) VALUES('c2','b1','bridge',2)", []).unwrap();
+    // Running it again is a no-op rather than a second rebuild.
+    upgrade_schema(&store.db).unwrap();
+    assert_eq!(store.db.query_row("SELECT COUNT(*) FROM bot_channels", [], |r| r.get::<_, i64>(0)).unwrap(), 2);
+}
+
+#[test]
+fn bridge_replies_are_bounded_per_channel() {
+    let f = fixture();
+    let bot = bot(&f);
+    let bridge = channels::ChannelInput { kind: "bridge".into(), label: "Signal".into(), ..Default::default() };
+    let channel = channels::add(&f.store, &bot.id, &bridge).unwrap();
+    for n in 0..(channels::bridge::QUEUE + 25) {
+        f.store
+            .db
+            .execute("INSERT INTO bot_bridge_replies(channel_id,thread,text,created_at) VALUES(?1,'t',?2,?3)", rusqlite::params![channel.id, format!("r{n}"), n])
+            .unwrap();
+        let keep_from = f
+            .store
+            .db
+            .query_row(
+                "SELECT COALESCE(MIN(id),0) FROM (SELECT id FROM bot_bridge_replies WHERE channel_id=?1 ORDER BY id DESC LIMIT ?2)",
+                rusqlite::params![channel.id, channels::bridge::QUEUE],
+                |r| r.get::<_, i64>(0),
+            )
+            .unwrap();
+        f.store.db.execute("DELETE FROM bot_bridge_replies WHERE channel_id=?1 AND id<?2", rusqlite::params![channel.id, keep_from]).unwrap();
+    }
+    let kept: i64 = f.store.db.query_row("SELECT COUNT(*) FROM bot_bridge_replies WHERE channel_id=?1", [&channel.id], |r| r.get(0)).unwrap();
+    assert_eq!(kept, channels::bridge::QUEUE, "old replies are pruned, newest kept");
+    let newest: String = f.store.db.query_row("SELECT text FROM bot_bridge_replies WHERE channel_id=?1 ORDER BY id DESC LIMIT 1", [&channel.id], |r| r.get(0)).unwrap();
+    assert_eq!(newest, format!("r{}", channels::bridge::QUEUE + 24));
+}
+

@@ -4,7 +4,7 @@
 //! DNS rebinding); webhook routes are verified by Meta's signature instead, so they
 //! can sit behind a tunnel such as cloudflared or Tailscale Funnel.
 
-use super::{web, whatsapp};
+use super::{bridge, web, whatsapp};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU16, Ordering};
 use std::time::Duration;
@@ -173,6 +173,8 @@ async fn route(app: &tauri::AppHandle, request: Request) -> Response {
         ["chat", channel] => web::page(channel),
         ["api", "chat", channel, action] => web::api(app, channel, action, &request).await,
         ["whatsapp", channel] => whatsapp::webhook(app, channel, &request).await,
+        ["api", "bridge", channel, "messages"] => bridge::messages(app, channel, &request).await,
+        ["api", "bridge", channel, "events"] => bridge::events(app, channel, &request).await,
         ["assets", "md4c.js"] => Response::markdown_engine(),
         [""] => Response::text(200, "PandaCode bots are running on this computer."),
         _ => Response::text(404, "Not found."),

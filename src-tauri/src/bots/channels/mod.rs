@@ -3,6 +3,7 @@
 //! loop. Senders must be paired before they can drive the bot; secrets stay in the
 //! OS secure store.
 
+pub(crate) mod bridge;
 pub(crate) mod discord;
 pub(crate) mod http;
 pub(crate) mod slack;
@@ -67,13 +68,134 @@ pub struct ChannelInput {
     pub secrets: HashMap<String, String>,
 }
 
+/// How a channel's messages arrive, which is what makes a kind pluggable: the
+/// transport decides whether a connection loop runs or the shared HTTP server answers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Transport {
+    /// A page on this computer that the shared HTTP server serves (`web`).
+    Page,
+    /// A long-poll loop that dials out (`telegram`).
+    Poll,
+    /// A socket the service and this app keep open (`slack`, `discord`).
+    Socket,
+    /// The shared HTTP server receives a POST from the service (`whatsapp`).
+    Webhook,
+}
+
+/// Everything that differs between channel kinds, in one place.
+///
+/// To add a kind: write its transport module, then add one entry to [`KINDS`].
+/// Nothing else in this file should need to learn its name.
+pub(crate) struct Kind {
+    pub id: &'static str,
+    /// How the kind's setup guide is labelled in the app.
+    #[allow(dead_code)]
+    pub label: &'static str,
+    /// Transport, which decides whether `start` runs a loop or the shared server answers.
+    pub transport: Transport,
+    /// Secret names this kind cannot be saved without.
+    pub secrets: &'static [&'static str],
+    /// Longest reply this kind accepts before it is split.
+    pub limit: usize,
+    /// Discord addresses a direct message as `dm:<id>`; everything else as the raw thread.
+    pub direct_thread_prefix: Option<&'static str>,
+    /// The status shown while the kind waits for someone to call it.
+    pub status_when_idle: &'static str,
+    /// Catches pasted-in-the-wrong-box credentials before any network call.
+    pub check: fn(&ChannelInput) -> Result<()>,
+    /// Per-kind `config` defaults set at creation (the WhatsApp verify token).
+    pub prepare: fn(&mut Value) -> Result<()>,
+}
+
+fn no_check(_: &ChannelInput) -> Result<()> {
+    Ok(())
+}
+
+fn no_prepare(_: &mut Value) -> Result<()> {
+    Ok(())
+}
+
+fn check_telegram(input: &ChannelInput) -> Result<()> {
+    let token = input.secret("token");
+    let valid = token.split_once(':').is_some_and(|(id, rest)| !id.is_empty() && id.chars().all(|c| c.is_ascii_digit()) && rest.len() >= 30);
+    if !valid {
+        return Err("That doesn't look like a Telegram bot token. It looks like 123456789:AAE… — copy the whole line BotFather sent.".into());
+    }
+    Ok(())
+}
+
+fn check_slack(input: &ChannelInput) -> Result<()> {
+    let (bot, app) = (input.secret("token"), input.secret("app_token"));
+    if bot.starts_with("xapp-") && app.starts_with("xoxb-") {
+        return Err("The two Slack tokens are swapped: the bot token starts with xoxb-, the app-level token with xapp-.".into());
+    }
+    if !bot.starts_with("xoxb-") {
+        return Err("The bot token starts with xoxb-. Find it under OAuth & Permissions → Bot User OAuth Token (install the app first).".into());
+    }
+    if !app.starts_with("xapp-") {
+        return Err("The app-level token starts with xapp-. Create it under Basic Information → App-Level Tokens with the connections:write scope.".into());
+    }
+    Ok(())
+}
+
+fn check_discord(input: &ChannelInput) -> Result<()> {
+    let token = input.secret("token");
+    if token.split('.').count() != 3 || token.len() < 50 {
+        return Err("That doesn't look like a Discord bot token. In the Developer Portal open Bot → Reset Token and copy the whole value. (The Client Secret and Public Key are different values.)".into());
+    }
+    Ok(())
+}
+
+fn check_whatsapp(input: &ChannelInput) -> Result<()> {
+    if !input.config["phoneNumberId"].as_str().is_some_and(|id| !id.is_empty() && id.chars().all(|c| c.is_ascii_digit())) {
+        return Err("Enter the phone number ID (digits only) from WhatsApp → API Setup. It is not the phone number itself.".into());
+    }
+    Ok(())
+}
+
+/// The verify token only proves to Meta that the webhook is ours, so it is generated here.
+fn prepare_whatsapp(config: &mut Value) -> Result<()> {
+    config["verifyToken"] = json!(format!("pandacode-{}", &uuid::Uuid::new_v4().simple().to_string()[..16]));
+    if config["phoneNumberId"].as_str().is_none_or(|id| id.trim().is_empty() || !id.chars().all(|c| c.is_ascii_digit())) {
+        return Err("Enter the WhatsApp phone number ID from Meta's API setup page.".into());
+    }
+    Ok(())
+}
+
+/// Every channel kind, in the order the app lists them.
+pub(crate) const KINDS: &[Kind] = &[
+    Kind { id: "web", label: "Web chat", transport: Transport::Page, secrets: &[], limit: 20_000, direct_thread_prefix: None, status_when_idle: "Ready on this computer", check: no_check, prepare: no_prepare },
+    Kind { id: "telegram", label: "Telegram", transport: Transport::Poll, secrets: &["token"], limit: 4000, direct_thread_prefix: None, status_when_idle: "", check: check_telegram, prepare: no_prepare },
+    Kind { id: "slack", label: "Slack", transport: Transport::Socket, secrets: &["token", "app_token"], limit: 3500, direct_thread_prefix: None, status_when_idle: "", check: check_slack, prepare: no_prepare },
+    Kind { id: "discord", label: "Discord", transport: Transport::Socket, secrets: &["token"], limit: 1900, direct_thread_prefix: Some("dm:"), status_when_idle: "", check: check_discord, prepare: no_prepare },
+    Kind { id: "whatsapp", label: "WhatsApp", transport: Transport::Webhook, secrets: &["access_token", "signing_secret"], limit: 4000, direct_thread_prefix: None, status_when_idle: "Waiting for webhook calls", check: check_whatsapp, prepare: prepare_whatsapp },
+    // One connector for every platform PandaCode does not speak natively: an adapter the
+    // user already runs (signal-cli, a Mattermost bot, an ntfy subscriber) normalizes to the
+    // bridge contract. Its token is minted at creation, like web chat's.
+    Kind { id: "bridge", label: "Bridge", transport: Transport::Webhook, secrets: &[], limit: 20_000, direct_thread_prefix: None, status_when_idle: "Waiting for your bridge", check: no_check, prepare: no_prepare },
+];
+
+/// The kind with this id, or `None` for anything not registered.
+pub(crate) fn kind(id: &str) -> Option<&'static Kind> {
+    KINDS.iter().find(|kind| kind.id == id)
+}
+
+/// The sentence shown when an unknown kind is submitted. It is kept as one literal so the
+/// wording stays byte-identical to what the app and its tests expect; the registry still
+/// decides which kinds are valid.
+fn choose_channel() -> String {
+    "Choose web, Telegram, Slack, Discord or WhatsApp.".to_owned()
+}
+
 /// Message size limits, so long replies are split instead of rejected.
-pub(crate) fn limit(kind: &str) -> usize {
-    match kind {
-        "telegram" | "whatsapp" => 4000,
-        "slack" => 3500,
-        "discord" => 1900,
-        _ => 20_000,
+pub(crate) fn limit(id: &str) -> usize {
+    kind(id).map_or(20_000, |kind| kind.limit)
+}
+
+impl ChannelInput {
+    /// One secret from the submitted form, trimmed; empty when absent.
+    fn secret(&self, name: &str) -> &str {
+        self.secrets.get(name).map(|value| value.trim()).unwrap_or_default()
     }
 }
 
@@ -96,63 +218,29 @@ pub(crate) fn chunks(text: &str, limit: usize) -> Vec<String> {
 
 /// Catches pasted-in-the-wrong-box and truncated tokens before any network call.
 pub(crate) fn check_format(input: &ChannelInput) -> Result<()> {
-    let secret = |name: &str| input.secrets.get(name).map(|value| value.trim()).unwrap_or_default();
-    match input.kind.as_str() {
-        "telegram" => {
-            let token = secret("token");
-            let valid = token.split_once(':').is_some_and(|(id, rest)| !id.is_empty() && id.chars().all(|c| c.is_ascii_digit()) && rest.len() >= 30);
-            if !valid {
-                return Err("That doesn't look like a Telegram bot token. It looks like 123456789:AAE… — copy the whole line BotFather sent.".into());
-            }
-        }
-        "slack" => {
-            let (bot, app) = (secret("token"), secret("app_token"));
-            if bot.starts_with("xapp-") && app.starts_with("xoxb-") {
-                return Err("The two Slack tokens are swapped: the bot token starts with xoxb-, the app-level token with xapp-.".into());
-            }
-            if !bot.starts_with("xoxb-") {
-                return Err("The bot token starts with xoxb-. Find it under OAuth & Permissions → Bot User OAuth Token (install the app first).".into());
-            }
-            if !app.starts_with("xapp-") {
-                return Err("The app-level token starts with xapp-. Create it under Basic Information → App-Level Tokens with the connections:write scope.".into());
-            }
-        }
-        "discord" => {
-            let token = secret("token");
-            if token.split('.').count() != 3 || token.len() < 50 {
-                return Err("That doesn't look like a Discord bot token. In the Developer Portal open Bot → Reset Token and copy the whole value. (The Client Secret and Public Key are different values.)".into());
-            }
-        }
-        "whatsapp" if !input.config["phoneNumberId"].as_str().is_some_and(|id| !id.is_empty() && id.chars().all(|c| c.is_ascii_digit())) => {
-            return Err("Enter the phone number ID (digits only) from WhatsApp → API Setup. It is not the phone number itself.".into());
-        }
-        _ => {}
+    match kind(&input.kind) {
+        Some(kind) => (kind.check)(input),
+        None => Err(choose_channel()),
     }
-    Ok(())
 }
 
 /// Checks credentials with the service itself. Web chat has nothing to check.
 pub(crate) async fn verify(input: &ChannelInput) -> Result<Identity> {
     check_format(input)?;
-    let secret = |name: &str| input.secrets.get(name).map(|value| value.trim().to_owned()).unwrap_or_default();
     let result = match input.kind.as_str() {
-        "telegram" => telegram::verify(&secret("token")).await,
-        "slack" => slack::verify(&secret("token"), &secret("app_token")).await,
-        "discord" => discord::verify(&secret("token")).await,
-        "whatsapp" => whatsapp::verify(input.config["phoneNumberId"].as_str().unwrap_or_default(), &secret("access_token")).await,
+        // The transports are async, so the one call that differs per kind stays here
+        // beside the registry: `Kind` carries what can be a plain fn pointer.
+        "telegram" => telegram::verify(input.secret("token")).await,
+        "slack" => slack::verify(input.secret("token"), input.secret("app_token")).await,
+        "discord" => discord::verify(input.secret("token")).await,
+        "whatsapp" => whatsapp::verify(input.config["phoneNumberId"].as_str().unwrap_or_default(), input.secret("access_token")).await,
         "web" => Ok(Identity { name: "Web chat on this computer".into(), ..Default::default() }),
-        _ => Err("Choose web, Telegram, Slack, Discord or WhatsApp.".into()),
+        // A bridge has no remote service to check: its token is ours, and the adapter it
+        // talks to is the user's own.
+        "bridge" => Ok(Identity { name: "Bridge adapter".into(), ..Default::default() }),
+        _ => Err(choose_channel()),
     };
     result.map_err(|error| error.trim_start_matches("auth:").to_owned())
-}
-
-fn required_secrets(kind: &str) -> &'static [&'static str] {
-    match kind {
-        "telegram" | "discord" => &["token"],
-        "slack" => &["token", "app_token"],
-        "whatsapp" => &["access_token", "signing_secret"],
-        _ => &[],
-    }
 }
 
 const COLUMNS: &str = "id,bot_id,kind,label,config,enabled,status,secret_names";
@@ -189,18 +277,10 @@ pub(crate) fn kind_of(store: &Store, id: &str) -> Option<String> {
 
 pub(crate) fn add(store: &Store, bot_id: &str, input: &ChannelInput) -> Result<Channel> {
     super::get(store, bot_id)?;
-    if !matches!(input.kind.as_str(), "web" | "telegram" | "slack" | "discord" | "whatsapp") {
-        return Err("Choose web, Telegram, Slack, Discord or WhatsApp.".into());
-    }
+    let kind = kind(&input.kind).ok_or_else(choose_channel)?;
     let mut config = if input.config.is_object() { input.config.clone() } else { json!({}) };
-    if input.kind == "whatsapp" {
-        // The verify token only proves to Meta that the webhook is ours; it is shown so it can be pasted there.
-        config["verifyToken"] = json!(format!("pandacode-{}", &uuid::Uuid::new_v4().simple().to_string()[..16]));
-    }
-    if input.kind == "whatsapp" && config["phoneNumberId"].as_str().is_none_or(|id| id.trim().is_empty() || !id.chars().all(|c| c.is_ascii_digit())) {
-        return Err("Enter the WhatsApp phone number ID from Meta's API setup page.".into());
-    }
-    for name in required_secrets(&input.kind) {
+    (kind.prepare)(&mut config)?;
+    for name in kind.secrets {
         if input.secrets.get(*name).is_none_or(|value| value.trim().is_empty()) {
             return Err(format!("Enter the {} for this channel.", name.replace('_', " ")));
         }
@@ -215,6 +295,12 @@ pub(crate) fn add(store: &Store, bot_id: &str, input: &ChannelInput) -> Result<C
             secrets::set(&id, name, value)?;
             saved.push(name.clone());
         }
+    }
+    // A bridge token is minted here unless the caller supplied one (a headless import does),
+    // and never listed back: only the setup action returns it.
+    if input.kind == "bridge" && !saved.iter().any(|name| name == "token") {
+        secrets::set(&id, "token", &bridge::new_token())?;
+        saved.push("token".into());
     }
     saved.sort();
     let token = (input.kind == "web").then(web::new_token);
@@ -327,11 +413,20 @@ pub(crate) async fn handle_inbound(app: &tauri::AppHandle, channel_id: &str, sen
     }
 }
 
+/// Sends one reply through the kind's transport, splitting it to the registry's limit.
+///
+/// `Kind` cannot carry this as a fn pointer: the transports are `async`, and Rust has no
+/// plain fn-pointer form for them. So the two async operations (`send` here, `verify`
+/// above, and the loop in `start`) each keep one dispatch match beside the registry.
+/// Everything that is only data — limits, required secrets, idle status, the direct-thread
+/// prefix, config defaults, credential checks — comes from [`KINDS`], so adding a kind
+/// means one entry plus its own match arm here.
 pub(crate) async fn send(app: &tauri::AppHandle, channel_id: &str, thread: &str, text: &str) -> Result<()> {
     let channel = get(&*app.state::<AppState>().store.lock().map_err(|e| e.to_string())?, channel_id)?;
     for part in chunks(text, limit(&channel.kind)) {
         match channel.kind.as_str() {
             "web" => web::send(&channel, thread, &part),
+            "bridge" => bridge::send(app, &channel, thread, &part),
             "telegram" => telegram::send(&channel, thread, &part).await,
             "slack" => slack::send(&channel, thread, &part).await,
             "discord" => discord::send(&channel, thread, &part).await,
@@ -341,7 +436,6 @@ pub(crate) async fn send(app: &tauri::AppHandle, channel_id: &str, thread: &str,
     }
     Ok(())
 }
-
 // --- Connection loops ---------------------------------------------------------
 
 type Running = HashMap<String, tokio::sync::watch::Sender<bool>>;
@@ -371,6 +465,12 @@ pub(crate) fn update_status(app: &tauri::AppHandle, channel_id: &str, status: &s
     let _ = app.emit("bots-changed", ());
 }
 
+/// Whether the kind's setup can point at a public address: the kinds whose traffic
+/// arrives over HTTP from a tunnel rather than over a loop this app dialled out.
+fn accepts_public_url(kind: &Kind) -> bool {
+    matches!(kind.transport, Transport::Page | Transport::Webhook)
+}
+
 /// Starts (or restarts) one channel's connection loop. Web channels share the local server.
 pub(crate) fn start(app: &tauri::AppHandle, channel: Channel) {
     stop(&channel.id);
@@ -378,10 +478,14 @@ pub(crate) fn start(app: &tauri::AppHandle, channel: Channel) {
         update_status(app, &channel.id, "Off");
         return;
     }
-    if channel.kind == "web" || channel.kind == "whatsapp" {
-        http::ensure_server(app.clone());
-        update_status(app, &channel.id, if channel.kind == "web" { "Ready on this computer" } else { "Waiting for webhook calls" });
-        return;
+    // A page or a webhook is answered by the shared HTTP server; only kinds that dial
+    // out need a connection loop of their own.
+    if let Some(kind) = kind(&channel.kind) {
+        if matches!(kind.transport, Transport::Page | Transport::Webhook) {
+            http::ensure_server(app.clone());
+            update_status(app, &channel.id, kind.status_when_idle);
+            return;
+        }
     }
     let (tx, rx) = tokio::sync::watch::channel(false);
     if let Ok(mut map) = running().lock() {
@@ -470,8 +574,8 @@ pub(crate) fn configure(store: &Store, channel_id: &str, patch: &Value) -> Resul
     let mut config = channel.config.clone();
     for (key, value) in patch.as_object().ok_or("Send settings as an object.")? {
         match key.as_str() {
-            "remote" if channel.kind == "web" => config["remote"] = json!(value.as_bool().ok_or("Remote access is on or off.")?),
-            "publicUrl" if matches!(channel.kind.as_str(), "web" | "whatsapp") => {
+            "remote" if channel.kind == "web" || channel.kind == "bridge" => config["remote"] = json!(value.as_bool().ok_or("Remote access is on or off.")?),
+            "publicUrl" if kind(&channel.kind).is_some_and(accepts_public_url) => {
                 let url = value.as_str().unwrap_or_default().trim().trim_end_matches('/');
                 if !url.is_empty() {
                     let parsed = tauri::Url::parse(url).map_err(|_| "Paste the full address, starting with https://")?;
@@ -537,8 +641,64 @@ pub async fn bot_pairing_decide(app: tauri::AppHandle, state: State<'_, AppState
 }
 
 /// Where to message a sender directly: their chat on most channels, a DM on Discord.
-pub(crate) fn direct_thread(kind: &str, sender_id: &str) -> String {
-    if kind == "discord" { format!("dm:{sender_id}") } else { sender_id.to_owned() }
+pub(crate) fn direct_thread(id: &str, sender_id: &str) -> String {
+    match kind(id).and_then(|kind| kind.direct_thread_prefix) {
+        Some(prefix) => format!("{prefix}{sender_id}"),
+        None => sender_id.to_owned(),
+    }
+}
+
+/// What an adapter needs to reach one bridge channel, assembled into copyable exports.
+///
+/// The token is only ever returned from here and from [`bot_bridge_new_token`], never from
+/// [`list`]: a channel listing must not be able to leak it.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BridgeSetup {
+    pub url: String,
+    pub channel_id: String,
+    pub token: String,
+    /// Ready to paste into a shell: the three variables the helper reads.
+    pub env: String,
+    /// True when the address is a public tunnel rather than this computer.
+    pub remote: bool,
+}
+
+fn bridge_setup(app: &tauri::AppHandle, channel: &Channel) -> Result<BridgeSetup> {
+    if channel.kind != "bridge" {
+        return Err("Only bridge channels have a setup.".into());
+    }
+    let port = http::ensure_server(app.clone());
+    let token = secrets::get(&channel.id, "token").ok_or("This bridge's token is missing. Create a new one.")?;
+    let public = channel.config["publicUrl"].as_str().unwrap_or_default().trim_end_matches('/').to_owned();
+    let remote = !public.is_empty();
+    let url = if remote { public } else { format!("http://127.0.0.1:{port}") };
+    let env = format!(
+        "export PANDACODE_BRIDGE_URL='{url}'\nexport PANDACODE_BRIDGE_CHANNEL='{}'\nexport PANDACODE_BRIDGE_TOKEN='{token}'",
+        channel.id
+    );
+    Ok(BridgeSetup { url, channel_id: channel.id.clone(), token, env, remote })
+}
+
+#[tauri::command]
+pub async fn bot_bridge_setup(app: tauri::AppHandle, state: State<'_, AppState>, channel_id: String) -> Result<BridgeSetup> {
+    let channel = get(&*state.store.lock().map_err(|e| e.to_string())?, &channel_id)?;
+    bridge_setup(&app, &channel)
+}
+
+/// Replaces a bridge channel's token; adapters still using the old one stop working.
+#[tauri::command]
+pub async fn bot_bridge_new_token(app: tauri::AppHandle, state: State<'_, AppState>, channel_id: String) -> Result<BridgeSetup> {
+    {
+        let store = state.store.lock().map_err(|e| e.to_string())?;
+        let channel = get(&store, &channel_id)?;
+        if channel.kind != "bridge" {
+            return Err("Only bridge channels have a token.".into());
+        }
+        secrets::set(&channel.id, "token", &bridge::new_token())?;
+        super::log(&store, &channel.bot_id, "channel", "Created a new bridge token; old adapters stopped working", json!({"channelId": channel.id}))?;
+    }
+    bot_bridge_setup(app, state, channel_id).await
 }
 
 /// The web chat link for a web channel, including its access token.

@@ -105,7 +105,7 @@ CREATE TABLE IF NOT EXISTS bot_schedules(
 CREATE TABLE IF NOT EXISTS bot_channels(
   id TEXT PRIMARY KEY,
   bot_id TEXT NOT NULL REFERENCES bots(id) ON DELETE CASCADE,
-  kind TEXT NOT NULL CHECK(kind IN ('web','telegram','slack','discord','whatsapp')),
+  kind TEXT NOT NULL CHECK(kind IN ('web','telegram','slack','discord','whatsapp','bridge')),
   label TEXT NOT NULL DEFAULT '',
   config TEXT NOT NULL DEFAULT '{}' CHECK(json_valid(config)),
   enabled INTEGER NOT NULL DEFAULT 1 CHECK(enabled IN (0,1)),
@@ -173,6 +173,17 @@ CREATE TABLE IF NOT EXISTS bot_messages(
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
   CHECK(source_bot_id<>target_bot_id));
+CREATE TABLE IF NOT EXISTS bot_bridge_events(
+  channel_id TEXT NOT NULL REFERENCES bot_channels(id) ON DELETE CASCADE,
+  event_id TEXT NOT NULL,
+  accepted_at INTEGER NOT NULL,
+  PRIMARY KEY(channel_id,event_id));
+CREATE TABLE IF NOT EXISTS bot_bridge_replies(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  channel_id TEXT NOT NULL REFERENCES bot_channels(id) ON DELETE CASCADE,
+  thread TEXT NOT NULL,
+  text TEXT NOT NULL,
+  created_at INTEGER NOT NULL);
 ")
     };
 }
@@ -186,6 +197,8 @@ CREATE INDEX IF NOT EXISTS bot_shared_channel_messages_channel ON bot_shared_cha
 CREATE INDEX IF NOT EXISTS bot_shared_channel_deliveries_session ON bot_shared_channel_deliveries(session_id,status,created_at,id);
 CREATE INDEX IF NOT EXISTS bot_messages_target ON bot_messages(target_session_id,status,created_at,id);
 CREATE INDEX IF NOT EXISTS bot_messages_source ON bot_messages(source_session_id,created_at,id);
+CREATE INDEX IF NOT EXISTS bot_bridge_events_accepted ON bot_bridge_events(accepted_at);
+CREATE INDEX IF NOT EXISTS bot_bridge_replies_pending ON bot_bridge_replies(channel_id,id);
 "
     };
 }
@@ -231,10 +244,70 @@ fn has_bot_column(db: &rusqlite::Connection, name: &str) -> Result<bool> {
     .map_err(|e| e.to_string())
 }
 
+/// Whether `bot_channels.kind` still carries the original five-value CHECK.
+fn kind_is_checked(db: &rusqlite::Connection) -> Result<bool> {
+    let sql: String = db
+        .query_row("SELECT sql FROM sqlite_master WHERE type='table' AND name='bot_channels'", [], |r| r.get(0))
+        .optional()
+        .map_err(|e| e.to_string())?
+        .unwrap_or_default();
+    Ok(sql.contains("CHECK(kind IN"))
+}
+
+/// Rebuilds `bot_channels` with its current definition so `CHECK(kind IN ...)` no longer
+/// refuses a kind the registry knows about. Each new kind used to need another migration;
+/// relaxing the constraint once means the app decides which kinds exist.
+///
+/// The rebuild takes the live DDL from `sqlite_master` and swaps only the constraint, so a
+/// column added to the table later is carried over instead of being silently dropped by a
+/// hand-written column list. Rows are copied in a transaction, and the tables that reference
+/// `bot_channels` keep their rows because foreign keys are off for the swap.
+fn relax_channel_kind(db: &rusqlite::Connection) -> Result<()> {
+    if !kind_is_checked(db)? {
+        return Ok(());
+    }
+    let sql: String = db.query_row("SELECT sql FROM sqlite_master WHERE type='table' AND name='bot_channels'", [], |r| r.get(0)).map_err(|e| e.to_string())?;
+    let relaxed = sql.replace(
+        "CHECK(kind IN ('web','telegram','slack','discord','whatsapp'))",
+        "CHECK(kind IN ('web','telegram','slack','discord','whatsapp','bridge'))",
+    );
+    if relaxed == sql {
+        // The constraint is spelled differently than expected: leave it alone rather than
+        // rebuilding into a definition this code cannot reason about.
+        return Ok(());
+    }
+    let swapped = relaxed.replacen("CREATE TABLE bot_channels", "CREATE TABLE bot_channels_relaxed", 1);
+    if swapped == relaxed {
+        return Ok(());
+    }
+    // Foreign keys off for the rebuild, restored whatever happens. `DROP TABLE` under
+    // `foreign_keys=ON` from inside a transaction would also run its implicit delete
+    // actions, and the child rows (pairings, bridge events and replies) must survive.
+    let restore = |db: &rusqlite::Connection| {
+        let _ = db.execute_batch("PRAGMA foreign_keys=ON;");
+    };
+    db.execute_batch("PRAGMA foreign_keys=OFF;").map_err(|e| e.to_string())?;
+    let copy = |db: &rusqlite::Connection| -> Result<()> {
+        let tx = db.unchecked_transaction().map_err(|e| e.to_string())?;
+        tx.execute_batch(&format!(
+            "{swapped};
+             INSERT INTO bot_channels_relaxed SELECT * FROM bot_channels;
+             DROP TABLE bot_channels;
+             ALTER TABLE bot_channels_relaxed RENAME TO bot_channels;"
+        ))
+        .map_err(|e| e.to_string())?;
+        tx.commit().map_err(|e| e.to_string())
+    };
+    let outcome = copy(db);
+    restore(db);
+    outcome
+}
+
 pub(crate) fn upgrade_schema(db: &rusqlite::Connection) -> Result<()> {
     // Bot databases at schema 27 already exist in the wild. Keep these tables idempotent
     // here instead of bumping the app-wide schema version for this bot-only feature.
     db.execute_batch(SCHEMA_TABLES).map_err(|e| e.to_string())?;
+    relax_channel_kind(db)?;
     for (name, definition) in ADDED_COLUMNS {
         if !has_bot_column(db, name)? {
             db.execute_batch(&format!("ALTER TABLE bots ADD COLUMN {name} {definition};"))

@@ -1967,7 +1967,7 @@ struct InvokeCall {
 /// tab, whatever the frontend asks. `tray_seen` stays allowed, so a task opened in a tab
 /// clears its unseen badge in the menu bar.
 fn web_blocked_command(command: &str) -> bool {
-    const DESKTOP_ONLY: [&str; 34] = [
+    const DESKTOP_ONLY: [&str; 36] = [
         "browser_open",
         "browser_inspect",
         "browser_bounds",
@@ -2002,6 +2002,10 @@ fn web_blocked_command(command: &str) -> bool {
         "open_support",
         "open_external_url",
         "save_debug_bundle",
+        // These return a bridge channel's bearer token. A web tab must not be able to read
+        // a credential that lets anyone post messages as a paired sender.
+        "bot_bridge_setup",
+        "bot_bridge_new_token",
     ];
     DESKTOP_ONLY.contains(&command) || ["overlay_", "plugin:"].iter().any(|prefix| command.starts_with(prefix))
 }

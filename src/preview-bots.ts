@@ -1,6 +1,7 @@
 /** Browser preview for bots: in-memory sample data, no network, no channels. Native builds use src-tauri/src/bots. */
 import type { Activity, Bot, BotDetail, BotInput, Channel, FailoverAsk, Memory, Pairing, Rule, Schedule, Thread } from './bots';
 import type { Project, Session } from './types';
+import { KINDS } from './bots-connect';
 import type { SharedChannelDetail, SharedChannelMessage, SharedChannelSummary } from './bot-shared-channels';
 
 export interface PreviewBotsHost {
@@ -76,6 +77,8 @@ function previewIdentity(input: any): { name: string; link: string | null; invit
       if (!/^\d+$/.test(String(input?.config?.phoneNumberId ?? ''))) throw new Error('Enter the phone number ID (digits only) from WhatsApp → API Setup. It is not the phone number itself.');
       return { name: 'Preview Business (+1 555 0100)', link: 'https://wa.me/15550100', invite: null, warnings: [] };
     case 'web': return { name: 'Web chat on this computer', link: null, invite: null, warnings: [] };
+    // A bridge has no remote service to check: its token is ours and the adapter is local.
+    case 'bridge': return { name: 'Bridge adapter', link: null, invite: null, warnings: [] };
     default: throw new Error('Choose web, Telegram, Slack, Discord or WhatsApp.');
   }
 }
@@ -339,12 +342,13 @@ export async function invokeBots<T>(command: string, args: Record<string, any>, 
     case 'bot_channel_add': {
       const entry = store(args.botId); const input = args.input ?? {};
       const identity = previewIdentity(input);
-      if (!['web', 'telegram', 'slack', 'discord', 'whatsapp'].includes(input.kind)) throw new Error('Choose web, Telegram, Slack, Discord or WhatsApp.');
-      const required: Record<string, string[]> = { telegram: ['token'], discord: ['token'], slack: ['token', 'app_token'], whatsapp: ['access_token', 'signing_secret'], web: [] };
+      if (!KINDS.some(item => item.id === input.kind)) throw new Error('Choose web, Telegram, Slack, Discord or WhatsApp.');
+      // The same registry the setup guides use, so the mock asks for exactly what the UI does.
+      const required: Record<string, string[]> = Object.fromEntries(KINDS.map(item => [item.id, item.secrets]));
       if (input.kind === 'whatsapp' && !/^\d+$/.test(String(input.config?.phoneNumberId ?? ''))) throw new Error("Enter the WhatsApp phone number ID from Meta's API setup page.");
       for (const name of required[input.kind]) if (!String(input.secrets?.[name] ?? '').trim()) throw new Error(`Enter the ${name.replace('_', ' ')} for this channel.`);
       const config = { ...(input.config ?? {}), identity, ...(input.kind === 'whatsapp' ? { verifyToken: 'pandacode-preview0123456789' } : {}) };
-      const channel: Channel = { id: crypto.randomUUID(), botId: entry.bot.id, kind: input.kind, label: String(input.label ?? '').trim(), config, enabled: true, status: input.kind === 'web' ? 'Ready on this computer' : 'Preview · not connected', secrets: required[input.kind] };
+      const channel: Channel = { id: crypto.randomUUID(), botId: entry.bot.id, kind: input.kind, label: String(input.label ?? '').trim(), config, enabled: true, status: input.kind === 'web' ? 'Ready on this computer' : input.kind === 'bridge' ? 'Waiting for your bridge' : 'Preview · not connected', secrets: input.kind === 'bridge' ? ['token'] : required[input.kind] };
       entry.channels.push(channel); log(entry, 'channel', `Added a ${input.kind} channel`); result = channel; changed();
       simulatePairing(host, entry, channel); break;
     }
@@ -355,6 +359,23 @@ export async function invokeBots<T>(command: string, args: Record<string, any>, 
       if (!['approved', 'blocked', 'removed'].includes(args.decision)) throw new Error('Approve, block or remove the sender.');
       entry.pairings = args.decision === 'removed' ? entry.pairings.filter(item => !(item.channelId === args.channelId && item.senderId === args.senderId)) : entry.pairings.map(item => item.channelId === args.channelId && item.senderId === args.senderId ? { ...item, status: args.decision } : item);
       log(entry, 'pairing', `Sender ${args.decision}`); changed(); break;
+    }
+    case 'bot_bridge_setup': {
+      const [, channel] = channelOf(args.channelId);
+      if (channel.kind !== 'bridge') throw new Error('Only bridge channels have a setup.');
+      const url = String(channel.config.publicUrl ?? '') || 'http://127.0.0.1:47321';
+      const token = `preview-${channel.id.slice(0, 8)}`;
+      result = { url, channelId: channel.id, token, env: `export PANDACODE_BRIDGE_URL='${url}'\nexport PANDACODE_BRIDGE_CHANNEL='${channel.id}'\nexport PANDACODE_BRIDGE_TOKEN='${token}'`, remote: Boolean(channel.config.publicUrl) };
+      break;
+    }
+    case 'bot_bridge_new_token': {
+      const [entry, channel] = channelOf(args.channelId);
+      if (channel.kind !== 'bridge') throw new Error('Only bridge channels have a token.');
+      log(entry, 'channel', 'Created a new bridge token; old adapters stopped working'); changed();
+      const url = String(channel.config.publicUrl ?? '') || 'http://127.0.0.1:47321';
+      const token = `preview-${crypto.randomUUID().slice(0, 8)}`;
+      result = { url, channelId: channel.id, token, env: `export PANDACODE_BRIDGE_URL='${url}'\nexport PANDACODE_BRIDGE_CHANNEL='${channel.id}'\nexport PANDACODE_BRIDGE_TOKEN='${token}'`, remote: Boolean(channel.config.publicUrl) };
+      break;
     }
     case 'bot_web_new_link': { const [entry, channel] = channelOf(args.channelId); if (channel.kind !== 'web') throw new Error('Only web channels have a chat link.'); log(entry, 'channel', 'Created a new web chat link; old links stopped working'); changed(); result = `http://127.0.0.1:47321/chat/${channel.id}#preview-token-${crypto.randomUUID().slice(0, 8)}`; break; }
     case 'bot_web_link': { const [, channel] = channelOf(args.channelId); if (channel.kind !== 'web') throw new Error('Only web channels have a chat link.'); result = `http://127.0.0.1:47321/chat/${channel.id}#preview-token`; break; }

@@ -33,7 +33,9 @@ export interface BotInput {
 }
 export interface Memory { id: string; content: string; source: 'user' | 'bot'; createdAt: number; }
 export interface Schedule { id: string; botId: string; title: string; prompt: string; kind: 'once' | 'interval' | 'daily' | 'weekdays'; intervalMinutes: number | null; timeOfDay: string | null; nextRunAt: number | null; lastRunAt: number | null; enabled: boolean; createdBy: 'user' | 'bot'; createdAt: number; }
-export type ChannelKind = 'web' | 'telegram' | 'slack' | 'discord' | 'whatsapp';
+/** The channel kinds the app can set up. Derived from the setup registry so the type and
+ * the guides cannot drift apart; `bots-connect.ts` holds the single source. */
+export type ChannelKind = 'web' | 'telegram' | 'slack' | 'discord' | 'whatsapp' | 'bridge';
 export interface Channel { id: string; botId: string; kind: ChannelKind; label: string; config: Record<string, unknown>; enabled: boolean; status: string; secrets: string[]; }
 export interface Pairing { channelId: string; senderId: string; senderName: string; status: 'pending' | 'approved' | 'blocked'; code: string; createdAt: number; }
 export interface Thread { channelId: string; externalId: string; sessionId: string; updatedAt: number; }

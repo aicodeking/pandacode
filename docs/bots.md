@@ -72,6 +72,29 @@ Adding a channel is a guided flow (`src/bots-connect.ts`): numbered steps with b
 | Slack | Socket Mode WebSocket. | **Create Slack app** opens Slack with a manifest that already has the scopes (`app_mentions:read`, `chat:write`, `im:history`, `im:read`, `im:write`, `users:read`), events (`app_mention`, `message.im`) and Socket Mode. You install it and paste the `xoxb-` and `xapp-` tokens; Test checks both (`auth.test`, `apps.connections.open`). |
 | Discord | Gateway WebSocket. | Opens the Developer Portal, checks the token, generates the **Add to a server** invite with the right permissions, and warns when the Message Content intent is off. |
 | WhatsApp | Cloud API webhook at `/whatsapp/<channel id>`, checked with `X-Hub-Signature-256` and the app secret. | Checks the phone number ID and token against the Graph API, then walks through the tunnel (`cloudflared tunnel --url http://127.0.0.1:47321` or `tailscale funnel --bg 47321`), builds the callback URL from the address you paste, and shows the generated verify token (kept in the channel settings: it only proves the webhook is ours) with copy buttons. The status turns to "Webhook verified" when Meta checks it. |
+| Bridge | `POST /api/bridge/<channel id>/messages` in, `GET …/events` for replies; a per-channel bearer token. | Mints the token, then **Show setup and copy exports** copies `PANDACODE_BRIDGE_URL`, `…_CHANNEL` and `…_TOKEN` for an adapter you run. **New token** revokes the old one. |
+
+### The bridge
+
+A bridge is one connector for every chat platform PandaCode does not implement natively. Rather than embedding each protocol, PandaCode publishes a tiny normalized contract and an adapter the user already has — `signal-cli`, a Mattermost bot, an `ntfy` subscriber, a `curl` one-liner — carries messages across. PandaCode therefore gains connectors without gaining dependencies or attack surface.
+
+A message in is one POST:
+
+```json
+{"eventId":"mm:post:abc123","senderId":"mm:user-42","senderName":"Ada","thread":"mm:chan-9:root-55","text":"What changed?"}
+```
+
+`eventId` is optional but recommended: a repeat answers `200 {"ok":true,"duplicate":true}` and starts nothing, so a sender retrying after a timeout cannot run the work twice. `senderId` and `thread` are required (an unanswerable message is refused), and `text` is the message. The call goes through the same pairing path as every chat channel, so an unknown sender is asked for a four-digit code; the bearer token authenticates the adapter, not the person it names. A reply is pulled:
+
+```json
+{"events":[{"id":804,"thread":"mm:chan-9:root-55","text":"The cache timeout is 15 minutes.","at":1795872000000}],"cursor":804,"oldest":790,"truncated":false}
+```
+
+Delivery is at least once: save the cursor only after the platform accepted the reply. Replies are queued in `bot_bridge_replies`, bounded to 1,000 per channel and pruned oldest-first; a cursor that fell behind a prune comes back with `truncated: true` rather than silently skipping. The queue is persisted, so an adapter survives a restart. Status codes: 202 accepted, 200 duplicate, 400 missing a field, 401 bad token, 403 remote access off or a non-loopback Host, 404 unknown channel, 413 too large, 429 over 30 messages a minute.
+
+`examples/pandacode-bridge.sh` is the reference adapter client: plain POSIX `sh` and `curl`, with `send`, `receive` and `listen` (one reply JSON per line, ready to pipe into a platform-specific sender). Nothing in PandaCode embeds the platform's protocol; the adapter owns that and its credentials.
+
+A Signal adapter, for example, is a `jq` filter on `signal-cli`'s output piped into `send --json`, and `listen` piped into `signal-cli send`. A Mattermost outgoing webhook maps `post_id`/`user_id`/`channel_id`/`text` onto the same four fields and `listen` posts back with the bot token. ntfy, Zulip, Google Chat, Teams, email, Matrix, IRC, XMPP and Twilio use the identical pattern with different field names. Keep one bridge channel per trust boundary: the token holder can assert any *already-approved* sender id, so a shared token should not span two audiences.
 
 **WhatsApp: webhook verified, dashboard tests arrive, live messages do not.** The WhatsApp Business Account (WABA) is probably not subscribed to your Meta app. Subscribe it once with `POST https://graph.facebook.com/v22.0/<WABA_ID>/subscribed_apps`, sending your access token as `Authorization: Bearer <token>`. The WABA ID is on the app's WhatsApp API Setup page.
 
@@ -88,8 +111,8 @@ Bot-to-bot work is available through the `bot_message_bot(to, text)` tool in a b
 | Area | Files |
 | --- | --- |
 | Data, commands, hooks | `src-tauri/src/bots.rs` (schema 25; `bots.soul` in 28; `bots.skills`, `bots.mcp`, `bot_tasks` in 29; later bot columns and shared-channel tables via `bots::upgrade()`), `src-tauri/src/skills/scoped.rs`, `bots/brief.rs`, `bots/gateway.rs`, `bots/guard.rs`, `bots/schedule.rs`, `bots/secrets.rs`, `bots/tools.rs`, `bots/shared_channels.rs`, `bots/failover.rs` |
-| Channels | `src-tauri/src/bots/channels/{mod,http,web,telegram,slack,discord,whatsapp}.rs` |
-| Hooks in `lib.rs` | `bots::start` at setup, `bots::approval_requested` in the event sink, `bots::run_finished` after `done`, `bots::tools::with_bot` in the tool host chain |
+| Channels | `src-tauri/src/bots/channels/{mod,http,web,telegram,slack,discord,whatsapp,bridge}.rs` (one `KINDS` entry per kind; the bridge owns the generic adapter contract) |
+| Bridge helper | `examples/pandacode-bridge.sh` (POSIX `sh` + `curl`: `send`, `receive`, `listen`) || Hooks in `lib.rs` | `bots::start` at setup, `bots::approval_requested` in the event sink, `bots::run_finished` after `done`, `bots::tools::with_bot` in the tool host chain |
 | UI | `src/bots.ts`, `src/bots-panels.ts`, `src/bots.css`, `src/sidebar-bots.ts`, `src/bot-thread.ts`, `src/bot-shared-channels.ts`, preview mock `src/preview-bots.ts`, tests `tests/bots*.spec.ts` |
 | Other clients | Connect methods `rooms.list`, `rooms.messages` and `rooms.post` (`src-tauri/src/remote/methods/rooms.rs`, [remote access](remote-access.md)) let a paired phone list, read and post to shared channels; posting wakes bots, so it needs a Full grant and Full access for remote tasks, as `bot.message` does. The mobile app's calls are in `mobile/src/connect/api/rooms.ts`. The local web chat page has no room view; rooms are otherwise desktop-only. |
 

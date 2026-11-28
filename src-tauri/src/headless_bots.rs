@@ -304,6 +304,15 @@ pub(crate) fn run_import(app: &tauri::AppHandle, path: &Path) {
                 links.push(format!("http://127.0.0.1:{port}/chat/{}#{token}", channel.id));
             }
         }
+        if channel.kind == "bridge" {
+            // The imported bridge's token is the environment variable the file named, so it
+            // is not reprinted; the endpoint and channel id are, so an adapter can be wired
+            // up without opening the app.
+            let port = channels::http::ensure_server(app.clone());
+            if port != 0 {
+                println!("Bridge: PANDACODE_BRIDGE_URL=http://127.0.0.1:{port} PANDACODE_BRIDGE_CHANNEL={}", channel.id);
+            }
+        }
     }
     for link in links {
         println!("Web chat: {link}");
