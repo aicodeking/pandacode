@@ -15,6 +15,7 @@ mod agent_usage_providers;
 mod memory;
 #[cfg(target_os = "macos")]
 mod app_menu;
+mod app_restart;
 mod app_updates;
 mod appearance;
 mod architect;
@@ -4823,7 +4824,7 @@ fn on_run_event(app: &tauri::AppHandle, event: tauri::RunEvent) {
         let cloud: HashSet<String> = state.store.lock().ok().and_then(|store| cloud_agents::active_runs(&store).ok()).unwrap_or_default().into_iter().collect();
         let local = lock_agents(&state.agents).map(|a| a.keys().filter(|id| !cloud.contains(*id)).count()).unwrap_or(0);
         let shutting_down = state.shutdown.load(Ordering::SeqCst) != 0;
-        if quit_guard::should_confirm_quit(local, headless::active(), quit_guard::confirmed(), shutting_down, code == Some(tauri::RESTART_EXIT_CODE)) {
+        if quit_guard::should_confirm_quit(local, headless::active(), quit_guard::confirmed(), shutting_down, code == Some(tauri::RESTART_EXIT_CODE) || app_restart::restart_requested()) {
             api.prevent_exit();
             quit_guard::ask(app, local);
             return;
@@ -4891,6 +4892,14 @@ fn on_run_event(app: &tauri::AppHandle, event: tauri::RunEvent) {
         app.state::<vm::Vms>().shutdown();
         cloud::aws_screen::close(None);
         providers::shutdown_all();
+        // An update relaunch: reopen the bundle after this process is gone and without
+        // `-n`, so the Dock reuses the existing tile instead of adding another (tauri#16449).
+        #[cfg(target_os = "macos")]
+        if app_restart::restart_requested() {
+            if let Err(error) = app_restart::relaunch_after_exit() {
+                eprintln!("Could not schedule the update relaunch: {error}");
+            }
+        }
     }
 }
 
@@ -4982,6 +4991,7 @@ pub(crate) fn main_invoke_handler(invoke: tauri::ipc::Invoke<tauri::Wry>) -> boo
         crash_guard::commands::crash_report_reveal,
         sessions_missing,
         app_updates::app_update_install_supported,
+        app_restart::restart_app,
         agent_updates::check_agent_updates,
         agent_updates::update_agent,
         moodboards::list_moodboards,
