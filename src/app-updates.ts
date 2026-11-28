@@ -108,7 +108,9 @@ export function startAppUpdates(host: UpdatesHost): AppUpdates {
       await localSign();
       await pending.install();
       await localSign();
-      await (await import('@tauri-apps/plugin-process')).relaunch();
+      // Restart through our own command: Tauri's macOS relaunch opens the bundle with
+      // `open -n`, which leaves the old Dock tile and adds a duplicate on every update.
+      await call('restart_app');
     } catch (cause) { set({ kind: 'error', message: message(cause) }); }
   }
 
