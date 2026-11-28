@@ -35,13 +35,24 @@ export function openProjectPicker(options: ProjectPickerOptions): () => void {
   let pending = false;
   let closed = false;
   let positionFrame = 0;
+  let pressingAnchor = false, clearPressTimer = 0;
+  const clearPressingAnchor = (): void => { clearTimeout(clearPressTimer); clearPressTimer = 0; pressingAnchor = false; };
+  const onPointerUp = (event: PointerEvent): void => {
+    if (event.pointerType === 'touch') { clearTimeout(clearPressTimer); clearPressTimer = window.setTimeout(clearPressingAnchor, 0); }
+    else clearPressingAnchor();
+  };
 
   function close(returnFocus = true): void {
     if (closed) return;
     closed = true;
+    clearPressingAnchor();
     cancelAnimationFrame(positionFrame);
     document.removeEventListener('pointerdown', onOutside, true);
+    document.removeEventListener('pointerup', onPointerUp, true);
+    document.removeEventListener('pointercancel', clearPressingAnchor, true);
+    document.removeEventListener('focusin', onFocusIn, true);
     document.removeEventListener('keydown', onEscape, true);
+    window.removeEventListener('blur', clearPressingAnchor);
     window.removeEventListener('resize', schedulePosition);
     window.removeEventListener('scroll', schedulePosition, true);
     window.visualViewport?.removeEventListener('resize', schedulePosition);
@@ -132,7 +143,18 @@ export function openProjectPicker(options: ProjectPickerOptions): () => void {
   }
   function onOutside(event: PointerEvent): void {
     const target = event.target as Node | null;
-    if (target && !panel.contains(target) && !anchor.contains(target)) close(false);
+    if (target && anchor.contains(target)) {
+      if (event.button === 0) { clearTimeout(clearPressTimer); clearPressTimer = 0; pressingAnchor = true; }
+      else close(false);
+      return;
+    }
+    clearPressingAnchor();
+    if (target && !panel.contains(target)) close(false);
+  }
+  function onFocusIn(event: FocusEvent): void {
+    if (pressingAnchor) return;
+    const next = event.target;
+    if (next instanceof Node && !panel.contains(next) && !anchor.contains(next)) close(false);
   }
   function onEscape(event: KeyboardEvent): void {
     if (event.key !== 'Escape') return;
@@ -180,16 +202,24 @@ export function openProjectPicker(options: ProjectPickerOptions): () => void {
     }
   });
   panel.addEventListener('focusout', event => {
-    if (event.relatedTarget && !panel.contains(event.relatedTarget as Node)) close(false);
+    // Keep the menu open when a press focuses its trigger (or a focusable ancestor in WebKit) before click toggles it.
+    if (pressingAnchor) return;
+    const next = event.relatedTarget;
+    if (next instanceof Node && !panel.contains(next) && !anchor.contains(next)) close(false);
   });
 
   anchor.setAttribute('aria-expanded', 'true');
   document.body.append(panel);
   renderChoices();
+  if (closed) return () => {};
   showPopover(panel, anchor);
   search.focus({ preventScroll: true });
   document.addEventListener('pointerdown', onOutside, true);
+  document.addEventListener('pointerup', onPointerUp, true);
+  document.addEventListener('pointercancel', clearPressingAnchor, true);
+  document.addEventListener('focusin', onFocusIn, true);
   document.addEventListener('keydown', onEscape, true);
+  window.addEventListener('blur', clearPressingAnchor);
   window.addEventListener('resize', schedulePosition);
   window.addEventListener('scroll', schedulePosition, true);
   window.visualViewport?.addEventListener('resize', schedulePosition);

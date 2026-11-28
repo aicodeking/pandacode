@@ -1,12 +1,14 @@
 # Attachments and mockups
 
-The **+** button in the message box opens one menu for everything a message can
+The paperclip button in the message box opens one menu for everything a message can
 carry besides text:
 
 - **Attach files…** — images, PDFs and documents from anywhere on disk.
 - **Attach a folder…** — a folder path plus a short listing of what is inside.
 - **Project files** — the Files tab, for source context from the checkout.
 - **Sketch a mockup…** — draw a wireframe and attach it as an image.
+
+Click the paperclip again to close the menu.
 
 Images can also be **pasted** into the message box or **dropped** anywhere on the
 window (the composer lights up while you drag), and files and folders can be

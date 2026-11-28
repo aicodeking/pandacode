@@ -17,7 +17,7 @@ interface VoiceSettingsState {
   configuration?: VoiceConfiguration; editingId?: string; confirmingId?: string;
   provider: VoiceProvider; model: string; keyDestination: string;
   revision: number; editorVersion: number; selectionVersion: number;
-  mutations: Promise<unknown>; pending: Set<string>; closeMenu?: () => void;
+  mutations: Promise<unknown>; pending: Set<string>; closeMenu?: () => void; menuAnchor?: HTMLElement;
 }
 
 const SERVICES = '<section class="voice-services" aria-labelledby="voice-services-title"><h3 class="voice-card-title" id="voice-services-title">Speech services</h3>'
@@ -269,19 +269,25 @@ class VoiceSettingsView {
     }
   }
   private openProviderMenu(anchor: HTMLButtonElement): void {
+    const same = this.state.menuAnchor === anchor;
     this.state.closeMenu?.();
+    if (same) return;
     const items = VOICE_PRESETS.map(item => ({ id: item.provider, label: item.name, selected: item.provider === this.state.provider }));
+    this.state.menuAnchor = anchor;
     this.state.closeMenu = openChoiceMenu({
-      anchor, title: 'Speech provider', items, onClose: () => { this.state.closeMenu = undefined; }, onSelect: id => this.chooseProvider(id),
+      anchor, title: 'Speech provider', items, onClose: () => { this.state.closeMenu = undefined; this.state.menuAnchor = undefined; }, onSelect: id => this.chooseProvider(id),
     });
   }
   private openModelMenu(anchor: HTMLButtonElement): void {
     const { state, ui } = this;
+    const same = state.menuAnchor === anchor;
     state.closeMenu?.();
+    if (same) return;
     const presets = presetFor(state.provider).models.map(id => ({ id, label: id, selected: ui.custom.hidden && id === state.model }));
+    state.menuAnchor = anchor;
     state.closeMenu = openChoiceMenu({
       anchor, title: 'Speech model', items: [...presets, { id: '__custom__', label: 'Custom model ID…', selected: !ui.custom.hidden }],
-      onClose: () => { state.closeMenu = undefined; },
+      onClose: () => { state.closeMenu = undefined; state.menuAnchor = undefined; },
       onSelect: id => {
         state.revision++;
         this.modelChoice(id === '__custom__' ? ui.custom.hidden ? '' : ui.field('model').value : id, id === '__custom__');

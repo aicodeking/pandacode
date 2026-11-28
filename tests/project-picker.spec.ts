@@ -23,6 +23,41 @@ async function openNewTask(page: Page) {
 
 const projectPicker = (page: Page) => page.getByRole('dialog', { name: 'Choose project', exact: true });
 
+test('project picker toggles closed when clicking its trigger again', async ({ page }) => {
+  await openNewTask(page);
+  const trigger = page.locator('#welcome-project');
+  const picker = projectPicker(page);
+
+  await trigger.click();
+  await expect(picker).toBeVisible();
+  await expect(trigger).toHaveAttribute('aria-expanded', 'true');
+  await trigger.click();
+  await expect(picker).toHaveCount(0);
+  await expect(trigger).toHaveAttribute('aria-expanded', 'false');
+
+  await trigger.click();
+  await expect(picker).toBeVisible();
+  await page.getByRole('textbox', { name: 'Message your coding agent' }).focus();
+  await expect(picker).toHaveCount(0);
+
+  // Cancelled press on trigger must not strand the picker open once focus moves away.
+  await trigger.click();
+  await expect(picker).toBeVisible();
+  const box = (await trigger.boundingBox())!;
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(box.x + box.width + 60, box.y + box.height + 60);
+  await page.mouse.up();
+  await page.getByRole('textbox', { name: 'Message your coding agent' }).focus();
+  await expect(picker).toHaveCount(0);
+
+  // Non-primary press on trigger closes the picker.
+  await trigger.click();
+  await expect(picker).toBeVisible();
+  await trigger.click({ button: 'right' });
+  await expect(picker).toHaveCount(0);
+});
+
 test('cancelling removal keeps the project, confirming removes it from the project picker', async ({ page }) => {
   await openNewTask(page);
   await page.locator('#welcome-project').click();

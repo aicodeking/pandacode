@@ -121,6 +121,8 @@ test('/wake 30m schedules a wake-up from the prompt', async ({ page }) => {
   await page.keyboard.press('Escape');
   await page.keyboard.press('Enter');
   await expect(page.getByRole('dialog', { name: 'Wake this thread later' })).toBeVisible();
+  await prompt(page).click();
+  await expect(page.getByRole('dialog', { name: 'Wake this thread later' })).toHaveCount(0);
 });
 
 test('the sidebar row menu schedules a wake-up for that thread', async ({ page }) => {
@@ -161,8 +163,14 @@ test('quick add creates a once wake-up', async ({ page }) => {
 });
 
 test('quick add shows errors inline and closes on Escape', async ({ page }) => {
-  await strip(page).getByRole('button', { name: 'Wake this thread later' }).click();
+  const trigger = strip(page).getByRole('button', { name: 'Wake this thread later' });
   const popover = page.getByRole('dialog', { name: 'Wake this thread later' });
+  await trigger.click();
+  await expect(popover).toBeVisible();
+  await trigger.click();
+  await expect(popover).toHaveCount(0);
+
+  await trigger.click();
   await popover.getByRole('textbox', { name: 'Message' }).fill('');
   await popover.getByRole('button', { name: 'Schedule', exact: true }).click();
   await expect(popover.getByRole('alert')).toContainText('A schedule needs a message');

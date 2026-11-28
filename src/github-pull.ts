@@ -73,8 +73,10 @@ export function createPullView(host: PullHost) {
   const diffs = new Map<string, Promise<PullDiff>>();
   let mounted: { key: string; session: Session; root: HTMLElement; section: Section; viewers: Map<string, DiffViewerController>; request: number; merge: 'idle' | 'confirm' | 'merging'; method: MergeMethod; checks: boolean } | undefined;
   let requests = 0;
+  let closeMergeMenu: (() => void) | undefined;
 
   function dispose(): void {
+    closeMergeMenu?.(); closeMergeMenu = undefined;
     mounted?.viewers.forEach(viewer => viewer.dispose());
     mounted = undefined;
   }
@@ -225,6 +227,7 @@ export function createPullView(host: PullHost) {
     trackSegment(tabs, tabs.querySelector<HTMLElement>('[aria-selected="true"]'));
     const content = await sectionHtml(view, detail);
     if (mounted !== view || view.section !== section) return;
+    closeMergeMenu?.(); closeMergeMenu = undefined;
     view.viewers.forEach(viewer => viewer.dispose()); view.viewers.clear();
     panel.innerHTML = content;
   }
@@ -232,6 +235,7 @@ export function createPullView(host: PullHost) {
   async function render(view: NonNullable<typeof mounted>, detail: PullDetail): Promise<void> {
     const content = await sectionHtml(view, detail);
     if (mounted !== view) return;
+    closeMergeMenu?.(); closeMergeMenu = undefined;
     view.viewers.forEach(viewer => viewer.dispose()); view.viewers.clear();
     const tab = (id: Section, label: string, count?: number) => `<button role="tab" data-pull-action="section" data-section="${id}" aria-selected="${view.section === id}"${count === undefined ? '' : ` title="${escape(`${label}: ${count}`)}"`}>${label}</button>`;
     view.root.innerHTML = `${header(detail)}<div class="pull-tabs ds-seg" role="tablist" aria-label="Pull request sections">${tab('overview', 'Summary')}${tab('commits', 'Commits', detail.commits.length)}${tab('files', 'Files', detail.files.length)}</div><div class="pull-content" role="tabpanel">${content}</div>`;
@@ -267,7 +271,7 @@ export function createPullView(host: PullHost) {
       case 'open': if (target.dataset.url) await host.openUrl(target.dataset.url); break;
       case 'unlink': await host.unlink(view.session); break;
       case 'merge-start': if (detail) { view.merge = 'confirm'; await render(view, detail); view.root.querySelector<HTMLElement>('[data-pull-action="merge-cancel"]')?.focus(); } break;
-      case 'merge-method': { const { openChoiceMenu } = await import('./choice-menu'); if (mounted !== view || !target.isConnected) break; openChoiceMenu({ anchor: target, title: 'Merge method', items: (Object.keys(MERGE_LABEL) as MergeMethod[]).map(method => ({ id: method, label: MERGE_LABEL[method], icon: 'merge', selected: method === view.method })), onSelect: async id => { view.method = id as MergeMethod; if (detail && mounted === view) { await render(view, detail); view.root.querySelector<HTMLElement>('[data-pull-action="merge-method"]')?.focus(); } }, onClose: () => { if (target.isConnected) target.focus(); } }); break; }
+      case 'merge-method': { if (closeMergeMenu) { closeMergeMenu(); break; } const { openChoiceMenu } = await import('./choice-menu'); if (mounted !== view || !target.isConnected || closeMergeMenu) break; closeMergeMenu = openChoiceMenu({ anchor: target, title: 'Merge method', items: (Object.keys(MERGE_LABEL) as MergeMethod[]).map(method => ({ id: method, label: MERGE_LABEL[method], icon: 'merge', selected: method === view.method })), onSelect: async id => { view.method = id as MergeMethod; if (detail && mounted === view) { await render(view, detail); view.root.querySelector<HTMLElement>('[data-pull-action="merge-method"]')?.focus(); } }, onClose: () => { closeMergeMenu = undefined; } }); break; }
       case 'merge-cancel': if (detail) { view.merge = 'idle'; await render(view, detail); view.root.querySelector<HTMLElement>('[data-pull-action="merge-start"]')?.focus(); } break;
       case 'merge-confirm': await merge(view); break;
       case 'section': if (detail && target.dataset.section !== view.section) { view.section = target.dataset.section as Section; await showSection(view, detail); } break;

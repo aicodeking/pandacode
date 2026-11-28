@@ -62,6 +62,12 @@ export function openChoiceMenu(options: ChoiceMenuOptions): () => void {
   const originalControls = anchor.getAttribute('aria-controls');
   const anchorId = anchor.id;
   let closed = false, pending = false, positionFrame = 0;
+  let pressingAnchor = false, clearPressTimer = 0;
+  const clearPressingAnchor = (): void => { clearTimeout(clearPressTimer); clearPressTimer = 0; pressingAnchor = false; };
+  const onPointerUp = (event: PointerEvent): void => {
+    if (event.pointerType === 'touch') { clearTimeout(clearPressTimer); clearPressTimer = window.setTimeout(clearPressingAnchor, 0); }
+    else clearPressingAnchor();
+  };
   let active = -1;
   let typed = '', typedAt = 0;
 
@@ -70,9 +76,14 @@ export function openChoiceMenu(options: ChoiceMenuOptions): () => void {
     const focused = document.activeElement;
     const restoreFocus = returnFocus && (panel.contains(focused) || focused === document.body);
     closed = true;
+    clearPressingAnchor();
     cancelAnimationFrame(positionFrame);
     document.removeEventListener('pointerdown', onOutside, true);
+    document.removeEventListener('pointerup', onPointerUp, true);
+    document.removeEventListener('pointercancel', clearPressingAnchor, true);
+    document.removeEventListener('focusin', onFocusIn, true);
     document.removeEventListener('keydown', onEscape, true);
+    window.removeEventListener('blur', clearPressingAnchor);
     window.removeEventListener('resize', schedulePosition);
     window.removeEventListener('scroll', schedulePosition, true);
     window.visualViewport?.removeEventListener('resize', schedulePosition);
@@ -194,7 +205,18 @@ export function openChoiceMenu(options: ChoiceMenuOptions): () => void {
   }
   function onOutside(event: PointerEvent): void {
     const target = event.target;
-    if (target instanceof Node && !panel.contains(target) && !anchor.contains(target)) close(false);
+    if (target instanceof Node && anchor.contains(target)) {
+      if (event.button === 0) { clearTimeout(clearPressTimer); clearPressTimer = 0; pressingAnchor = true; }
+      else close(false);
+      return;
+    }
+    clearPressingAnchor();
+    if (target instanceof Node && !panel.contains(target)) close(false);
+  }
+  function onFocusIn(event: FocusEvent): void {
+    if (pressingAnchor) return;
+    const next = event.target;
+    if (next instanceof Node && !panel.contains(next) && !anchor.contains(next)) close(false);
   }
   function onEscape(event: KeyboardEvent): void {
     if (event.key !== 'Escape') return;
@@ -253,19 +275,27 @@ export function openChoiceMenu(options: ChoiceMenuOptions): () => void {
     // Enter and Space retain native button activation.
   });
   panel.addEventListener('focusout', event => {
-    if (event.relatedTarget instanceof Node && !panel.contains(event.relatedTarget)) close(false);
+    // Keep the menu open when a press focuses its trigger (or a focusable ancestor in WebKit) before click toggles it.
+    if (pressingAnchor) return;
+    const next = event.relatedTarget;
+    if (next instanceof Node && !panel.contains(next) && !anchor.contains(next)) close(false);
   });
 
   anchor.setAttribute('aria-expanded', 'true');
   anchor.setAttribute('aria-controls', panel.id);
   (anchor.closest('dialog[open]') ?? document.body).append(panel);
   renderChoices();
+  if (closed) return () => {};
   showPopover(panel, anchor);
   if (search) search.focus({ preventScroll: true });
   else if (active >= 0 && buttons[active] && !buttons[active].disabled) focusItem(active);
   else panel.focus({ preventScroll: true });
   document.addEventListener('pointerdown', onOutside, true);
+  document.addEventListener('pointerup', onPointerUp, true);
+  document.addEventListener('pointercancel', clearPressingAnchor, true);
+  document.addEventListener('focusin', onFocusIn, true);
   document.addEventListener('keydown', onEscape, true);
+  window.addEventListener('blur', clearPressingAnchor);
   window.addEventListener('resize', schedulePosition);
   window.addEventListener('scroll', schedulePosition, true);
   window.visualViewport?.addEventListener('resize', schedulePosition);

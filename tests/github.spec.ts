@@ -279,6 +279,14 @@ test('a linked open pull request merges from its inspector tab after choosing a 
   await dialog.locator('[data-pull-number="130"]').click();
   const view = page.locator('#inspector .pull-view');
   await expect(view.locator('.pull-state')).toHaveText('Open');
+  const mergeMethod = view.getByRole('button', { name: 'Choose merge method', exact: true });
+  const mergeMenu = page.getByRole('dialog', { name: 'Merge method', exact: true });
+  await mergeMethod.click();
+  await expect(mergeMenu).toHaveCount(1);
+  await expect(mergeMethod).toHaveAttribute('aria-expanded', 'true');
+  await mergeMethod.click();
+  await expect(mergeMenu).toHaveCount(0);
+  await expect(mergeMethod).toHaveAttribute('aria-expanded', 'false');
   await view.getByRole('button', { name: 'Merge: Squash and merge', exact: true }).click();
   // Nothing reaches GitHub until the method is confirmed; Cancel backs out.
   const confirm = view.getByRole('group', { name: 'Merge pull request #130' });

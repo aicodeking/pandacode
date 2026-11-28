@@ -2386,12 +2386,14 @@ function renderNavigation(): void {
   nav.setAttribute('aria-busy', String(orderingBusy));
   const menuTrigger = choiceMenuAnchor ?? pendingMenuOpen?.anchor;
   const retainedRow = menuTrigger && nav.contains(menuTrigger) && menuTrigger.matches('.task-item') ? menuTrigger : null;
+  const retainedMore = menuTrigger && nav.contains(menuTrigger) && menuTrigger.matches('.task-more') ? menuTrigger : null;
   const focused = nav.contains(document.activeElement) ? document.activeElement as HTMLElement : null;
   const focusSelector = focused?.dataset.id ? `[data-id="${CSS.escape(focused.dataset.id)}"]` : focused?.dataset.action ? `[data-action="${CSS.escape(focused.dataset.action)}"]${focused.dataset.project ? `[data-project="${CSS.escape(focused.dataset.project)}"]` : ''}${focused.dataset.section ? `[data-section="${CSS.escape(focused.dataset.section)}"]` : ''}${focused.dataset.task ? `[data-task="${CSS.escape(focused.dataset.task)}"]` : ''}` : '';
   const pinnedGroup = pinned.length ? `<section class="task-group pinned-group" data-thread-group="pinned" aria-label="Pinned tasks">${heading('pinned', 'Pinned', pinned.length)}<div class="task-list">${pinned.map(s => row(s, !single, true)).join('')}</div></section>` : '';
   const empty = filtering ? '<div class="no-tasks sidebar-no-match">No tasks match</div>' : '';
   // Morph rather than replace: unchanged rows keep their nodes, so nothing flickers.
   // Rows sit one level deeper than before (.task-row around .task-item), so morph one level deeper.
+  retainedMore?.remove();
   morph(nav, !userProjects().length && !chats.length && !pinned.length && !sectioned ? (projectsListed ? '<div class="sidebar-empty">Open a project to get started.</div>' : '')
     : `${pinnedGroup}${section('active', 'Active', 'Active tasks', sections.active.length, () => sections.active.map(s => row(s, !single)).join(''))}${section('review', 'Finished', 'Finished tasks', sections.review.length, () => { const { rows, more } = capped('review', sections.review, sidebarSort.perProject); return rows.map(s => row(s, !single, manual)).join('') + more; })}${chatGroup}${tasksGroup}${projectList}${filtering && !matching.length ? empty : ''}${completedSection}`, 6);
   if (retainedRow) {
@@ -2403,6 +2405,14 @@ function renderNavigation(): void {
       retainedRow.dataset.pinned = replacement.dataset.pinned; retainedRow.dataset.reorderable = replacement.dataset.reorderable;
       if (replacement.hasAttribute('aria-current')) retainedRow.setAttribute('aria-current', 'page'); else retainedRow.removeAttribute('aria-current');
       replacement.replaceWith(retainedRow);
+      nav.dispatchEvent(new Event('scroll'));
+    } else closeChoiceMenu();
+  }
+  if (retainedMore) {
+    const replacement = nav.querySelector<HTMLElement>(`.task-more[data-task="${CSS.escape(retainedMore.dataset.task!)}"]`);
+    if (replacement) {
+      retainedMore.setAttribute('aria-label', replacement.getAttribute('aria-label') ?? 'Task actions');
+      replacement.replaceWith(retainedMore);
       nav.dispatchEvent(new Event('scroll'));
     } else closeChoiceMenu();
   }
@@ -7922,14 +7932,14 @@ function sidebarTaskAction(kind: 'complete' | 'reopen' | 'delete', id: string): 
     }));
   }
 }
-async function showSidebarTaskMenu(anchor: HTMLElement, point?: { x: number; y: number }): Promise<void> {
-  const id = anchor.dataset.id!, task = state.sessions.find(item => item.id === id);
+async function showSidebarTaskMenu(row: HTMLElement, point?: { x: number; y: number }, anchor: HTMLElement = row): Promise<void> {
+  const id = row.dataset.id!, task = state.sessions.find(item => item.id === id);
   if (!task) return;
-  const ids = threadGroupRows(anchor).map(row => row.dataset.id!), index = ids.indexOf(id);
-  const group = anchor.closest<HTMLElement>('[data-thread-group]')?.dataset.threadGroup ?? '';
+  const ids = threadGroupRows(row).map(item => item.dataset.id!), index = ids.indexOf(id);
+  const group = row.closest<HTMLElement>('[data-thread-group]')?.dataset.threadGroup ?? '';
   // Active and Settled keep their own order: no Move up/down there.
   const movable = !['active', 'completed'].includes(group);
-  const fixed = anchor.dataset.reorderable !== 'true', busy = isRunning(id) || configuringSession(id), done = taskStage(task) === 'completed';
+  const fixed = row.dataset.reorderable !== 'true', busy = isRunning(id) || configuringSession(id), done = taskStage(task) === 'completed';
   const unread = unreviewed?.has(id) ?? false, path = task.worktreePath ?? state.projects.find(p => p.id === task.projectId)?.path ?? '';
   const branch = task.worktreeBranch ?? '';
   await showChoices(anchor, { title: 'Task actions', point, actions: true, width: 280, items: [
@@ -9286,7 +9296,7 @@ async function action(name: string, element: HTMLElement): Promise<void> {
     case 'sidebar-complete': sidebarTaskAction('complete', element.dataset.task!); break;
     case 'sidebar-reopen': sidebarTaskAction('reopen', element.dataset.task!); break;
     case 'sidebar-delete': sidebarTaskAction('delete', element.dataset.task!); break;
-    case 'sidebar-more': { const row = element.closest('.task-row')?.querySelector<HTMLElement>('.task-item'); if (row) await showSidebarTaskMenu(row); break; }
+    case 'sidebar-more': { const row = element.closest('.task-row')?.querySelector<HTMLElement>('.task-item'); if (row) await showSidebarTaskMenu(row, undefined, element); break; }
     case 'toggle-section': {
       if (state.query.trim()) break;
       const key = element.dataset.section!;
