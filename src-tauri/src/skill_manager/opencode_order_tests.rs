@@ -920,3 +920,361 @@ fn skill_manager_opencode_withholding_is_not_cleared_by_later_top_level_allow() 
         "{out_with_plan}"
     );
 }
+
+#[test]
+fn skill_manager_opencode_disk_sentinel_agent_containers_fail_closed() {
+    let tool = "pandacode_architect_pandacode_explore";
+    let alias = trailing_key(tool);
+    let env_allow = serde_json::json!({(tool): "allow"}).to_string();
+
+    for (key, expected_v2) in [("agents", true), ("agent", false), ("mode", false)] {
+        let fixture = crate::skill_manager::tests::Fixture::new();
+        let root = fixture.0.join("repo");
+        fs::create_dir_all(root.join(".git")).unwrap();
+        fs::write(
+            root.join("opencode.json"),
+            format!(r#"{{"{key}":{{file:./{key}.json}}}}"#),
+        )
+        .unwrap();
+
+        let agents = opencode_all_agents_with_env(Some(&root), &OpenCodeEnv::default());
+        assert!(!agents.complete, "{key}: sentinel container must mark scan incomplete");
+        assert_eq!(agents.has_v2_permissions, expected_v2, "{key}");
+
+        // Without any later rule, top-level and every agent are withheld.
+        let (out, perm) =
+            opencode_tool_grants_with("{}", None, &["pandacode_explore"], &agents).unwrap();
+        assert!(perm.is_none(), "{key}: {out}");
+        let cfg: serde_json::Value = serde_json::from_str(&out).unwrap();
+        if expected_v2 {
+            assert!(cfg.get("permissions").is_none(), "{key}: {out}");
+            assert!(cfg.get("permission").is_none(), "{key}: {out}");
+            for agent in ["build", "plan", "general", "explore"] {
+                assert!(
+                    cfg["agents"][agent].get("permissions").is_none(),
+                    "{key}/{agent}: {out}"
+                );
+            }
+        } else {
+            assert!(cfg["permission"].get(tool).is_none(), "{key}: {out}");
+            assert!(cfg["permission"].get(&alias).is_none(), "{key}: {out}");
+            for agent in ["build", "plan", "general", "explore"] {
+                assert!(
+                    cfg["agent"][agent]["permission"].get(tool).is_none(),
+                    "{key}/{agent}: {out}"
+                );
+                assert!(
+                    cfg["agent"][agent]["permission"].get(&alias).is_none(),
+                    "{key}/{agent}: {out}"
+                );
+            }
+        }
+
+        // Even after a later top-level allow, all agents stay withheld because the opaque
+        // earlier agent container may have denied them per-agent.
+        let top_allow = if expected_v2 {
+            serde_json::json!({
+                "permissions": [{"action": tool, "resource": "*", "effect": "allow"}]
+            })
+            .to_string()
+        } else {
+            serde_json::json!({"permission": {(tool): "allow"}}).to_string()
+        };
+        let (out_top, _) = opencode_tool_grants_with(
+            &top_allow,
+            Some(&env_allow),
+            &["pandacode_explore"],
+            &agents,
+        )
+        .unwrap();
+        let cfg_top: serde_json::Value = serde_json::from_str(&out_top).unwrap();
+        for agent in ["build", "plan", "general", "explore"] {
+            if expected_v2 {
+                assert!(
+                    cfg_top["agents"][agent].get("permissions").is_none(),
+                    "{key}/{agent} after top allow: {out_top}"
+                );
+            } else {
+                assert!(
+                    cfg_top["agent"][agent]["permission"].get(tool).is_none(),
+                    "{key}/{agent} after top allow: {out_top}"
+                );
+                assert!(
+                    cfg_top["agent"][agent]["permission"].get(&alias).is_none(),
+                    "{key}/{agent} after top allow: {out_top}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn skill_manager_opencode_disk_sentinel_permission_containers_withhold_global_and_agents() {
+    let tool = "pandacode_architect_pandacode_explore";
+    let alias = trailing_key(tool);
+
+    for (key, file, expected_v2) in [
+        ("permission", "./perm.json", false),
+        ("permissions", "./perms.json", true),
+    ] {
+        let fixture = crate::skill_manager::tests::Fixture::new();
+        let root = fixture.0.join("repo");
+        fs::create_dir_all(root.join(".git")).unwrap();
+        fs::write(
+            root.join("opencode.json"),
+            format!(r#"{{"{key}":{{file:{file}}}}}"#),
+        )
+        .unwrap();
+
+        let agents = opencode_all_agents_with_env(Some(&root), &OpenCodeEnv::default());
+        assert!(agents.complete, "{key}");
+        assert_eq!(agents.has_v2_permissions, expected_v2, "{key}");
+
+        // Both global and agent grants are withheld when no later explicit rule overrides them.
+        let (out, _) =
+            opencode_tool_grants_with("{}", None, &["pandacode_explore"], &agents).unwrap();
+        let cfg: serde_json::Value = serde_json::from_str(&out).unwrap();
+        if expected_v2 {
+            assert!(cfg.get("permissions").is_none(), "{key}: {out}");
+            for agent in ["build", "plan"] {
+                assert!(
+                    cfg["agents"][agent].get("permissions").is_none(),
+                    "{key}/{agent}: {out}"
+                );
+            }
+        } else {
+            assert!(cfg["permission"].get(tool).is_none(), "{key}: {out}");
+            assert!(cfg["permission"].get(&alias).is_none(), "{key}: {out}");
+            for agent in ["build", "plan"] {
+                assert!(
+                    cfg["agent"][agent]["permission"].get(tool).is_none(),
+                    "{key}/{agent}: {out}"
+                );
+            }
+        }
+
+        // A later explicit per-agent allow still works for that agent, while global and build stay withheld.
+        let plan_allow = if expected_v2 {
+            serde_json::json!({
+                "agents": {
+                    "plan": {
+                        "permissions": [{"action": tool, "resource": "*", "effect": "allow"}]
+                    }
+                }
+            })
+            .to_string()
+        } else {
+            serde_json::json!({
+                "agent": {"plan": {"permission": {(tool): "allow"}}}
+            })
+            .to_string()
+        };
+        let (out_plan, _) =
+            opencode_tool_grants_with(&plan_allow, None, &["pandacode_explore"], &agents).unwrap();
+        let cfg_plan: serde_json::Value = serde_json::from_str(&out_plan).unwrap();
+        if expected_v2 {
+            assert!(cfg_plan.get("permissions").is_none(), "{key}: {out_plan}");
+            assert!(
+                cfg_plan["agents"]["build"].get("permissions").is_none(),
+                "{key}: {out_plan}"
+            );
+            let rules = cfg_plan["agents"]["plan"]["permissions"]
+                .as_array()
+                .unwrap();
+            assert!(
+                rules.iter().any(|r| r["action"] == tool && r["effect"] == "allow"),
+                "{key}: {out_plan}"
+            );
+            assert!(
+                rules
+                    .iter()
+                    .any(|r| r["action"] == alias && r["effect"] == "allow"),
+                "{key}: {out_plan}"
+            );
+        } else {
+            assert!(cfg_plan["permission"].get(tool).is_none(), "{key}: {out_plan}");
+            assert!(
+                cfg_plan["agent"]["build"]["permission"].get(tool).is_none(),
+                "{key}: {out_plan}"
+            );
+            assert_eq!(cfg_plan["agent"]["plan"]["permission"][tool], "allow");
+            assert_eq!(cfg_plan["agent"]["plan"]["permission"][&alias], "allow");
+        }
+    }
+}
+
+#[test]
+fn skill_manager_opencode_per_agent_sentinels_withhold_only_target_agent() {
+    let tool = "pandacode_architect_pandacode_explore";
+    let alias = trailing_key(tool);
+    let other_tool = "pandacode_architect_pandacode_tool_list";
+
+    // 1. Disk per-agent permission container sentinel: withholds plan, allows build.
+    let f1 = crate::skill_manager::tests::Fixture::new();
+    let root1 = f1.0.join("repo");
+    fs::create_dir_all(root1.join(".git")).unwrap();
+    fs::write(
+        root1.join("opencode.json"),
+        r#"{"agent":{"plan":{"permission":{env:PLAN_PERM}}}}"#,
+    )
+    .unwrap();
+    let agents1 = opencode_all_agents_with_env(Some(&root1), &OpenCodeEnv::default());
+    assert!(!agents1.has_v2_permissions);
+    let (out1, _) =
+        opencode_tool_grants_with("{}", None, &["pandacode_explore"], &agents1).unwrap();
+    let cfg1: serde_json::Value = serde_json::from_str(&out1).unwrap();
+    assert!(cfg1["agent"]["plan"]["permission"].get(tool).is_none(), "{out1}");
+    assert!(cfg1["agent"]["plan"]["permission"].get(&alias).is_none(), "{out1}");
+    assert_eq!(cfg1["agent"]["build"]["permission"][tool], "allow");
+    assert_eq!(cfg1["agent"]["build"]["permission"][&alias], "allow");
+    assert_eq!(cfg1["permission"][tool], "allow");
+
+    // 2. Disk per-agent exact-tool effect sentinel: withholds only that tool on plan, allows
+    // other tools on plan and all served tools on build.
+    let f2 = crate::skill_manager::tests::Fixture::new();
+    let root2 = f2.0.join("repo");
+    fs::create_dir_all(root2.join(".git")).unwrap();
+    fs::write(
+        root2.join("opencode.json"),
+        r#"{"agent":{"plan":{"permission":{"pandacode_architect_pandacode_explore":{env:EFFECT}}}}}"#,
+    )
+    .unwrap();
+    let agents2 = opencode_all_agents_with_env(Some(&root2), &OpenCodeEnv::default());
+    assert!(!agents2.has_v2_permissions);
+    let (out2, _) = opencode_tool_grants_with(
+        "{}",
+        None,
+        &["pandacode_explore", "pandacode_tool_list"],
+        &agents2,
+    )
+    .unwrap();
+    let cfg2: serde_json::Value = serde_json::from_str(&out2).unwrap();
+    assert!(cfg2["agent"]["plan"]["permission"].get(tool).is_none(), "{out2}");
+    assert!(cfg2["agent"]["plan"]["permission"].get(&alias).is_none(), "{out2}");
+    assert_eq!(cfg2["agent"]["plan"]["permission"][other_tool], "allow");
+    assert_eq!(cfg2["agent"]["build"]["permission"][tool], "allow");
+    assert_eq!(cfg2["agent"]["build"]["permission"][other_tool], "allow");
+
+    // 3. Disk per-agent V2 `permissions` sentinel (under both `agents` and legacy `agent`):
+    // sets `has_v2_permissions`, withholds plan, allows build.
+    for doc in [
+        r#"{"agents":{"plan":{"permissions":{file:./plan-perms.json}}}}"#,
+        r#"{"agent":{"plan":{"permissions":{file:./plan-perms.json}}}}"#,
+    ] {
+        let f3 = crate::skill_manager::tests::Fixture::new();
+        let root3 = f3.0.join("repo");
+        fs::create_dir_all(root3.join(".git")).unwrap();
+        fs::write(root3.join("opencode.json"), doc).unwrap();
+        let agents3 = opencode_all_agents_with_env(Some(&root3), &OpenCodeEnv::default());
+        assert!(agents3.has_v2_permissions, "{doc}");
+        let (out3, _) =
+            opencode_tool_grants_with("{}", None, &["pandacode_explore"], &agents3).unwrap();
+        let cfg3: serde_json::Value = serde_json::from_str(&out3).unwrap();
+        assert!(
+            cfg3["agents"]["plan"].get("permissions").is_none(),
+            "{doc}: {out3}"
+        );
+        let build_rules = cfg3["agents"]["build"]["permissions"].as_array().unwrap();
+        assert!(
+            build_rules
+                .iter()
+                .any(|r| r["action"] == tool && r["effect"] == "allow"),
+            "{doc}: {out3}"
+        );
+        assert!(
+            build_rules
+                .iter()
+                .any(|r| r["action"] == alias && r["effect"] == "allow"),
+            "{doc}: {out3}"
+        );
+    }
+
+    // 4. Inline exact-tool effect sentinel also fails closed without overwriting `{env:EFFECT}`.
+    let inline_in =
+        r#"{"agent":{"plan":{"permission":{"pandacode_architect_pandacode_explore":{env:EFFECT}}}}}"#;
+    let (inline_out, _) =
+        opencode_tool_grants_with(inline_in, None, &["pandacode_explore"], &OpenCodeAgents::default())
+            .unwrap();
+    assert!(
+        inline_out.contains(r#""pandacode_architect_pandacode_explore":{env:EFFECT}"#),
+        "{inline_out}"
+    );
+    let (scrubbed, _) = scrub_opencode_tokens(&inline_out);
+    let cfg4: serde_json::Value = serde_json::from_str(&scrubbed).unwrap();
+    assert!(cfg4["agent"]["plan"]["permission"].get(&alias).is_none(), "{inline_out}");
+    assert_eq!(cfg4["agent"]["build"]["permission"][tool], "allow");
+}
+
+#[test]
+fn skill_manager_opencode_v2_json_omitted_resource_defaults_to_wildcard() {
+    let tool = "pandacode_architect_pandacode_explore";
+    let alias = trailing_key(tool);
+
+    // Omitted `resource` defaults to `*`, matching Markdown frontmatter parity.
+    let f1 = crate::skill_manager::tests::Fixture::new();
+    let root1 = f1.0.join("repo");
+    fs::create_dir_all(root1.join(".git")).unwrap();
+    fs::write(
+        root1.join("opencode.json"),
+        serde_json::json!({
+            "agents": {
+                "plan": {
+                    "permissions": [{"action": tool, "effect": "deny"}]
+                }
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let agents1 = opencode_all_agents_with_env(Some(&root1), &OpenCodeEnv::default());
+    assert!(agents1.has_v2_permissions);
+    let (out1, _) =
+        opencode_tool_grants_with("{}", None, &["pandacode_explore"], &agents1).unwrap();
+    let cfg1: serde_json::Value = serde_json::from_str(&out1).unwrap();
+    let plan_rules = cfg1["agents"]["plan"]["permissions"].as_array().unwrap();
+    assert!(
+        plan_rules
+            .iter()
+            .any(|r| r["action"] == tool && r["resource"] == "*" && r["effect"] == "deny"),
+        "{out1}"
+    );
+    assert!(
+        plan_rules
+            .iter()
+            .any(|r| r["action"] == alias && r["resource"] == "*" && r["effect"] == "deny"),
+        "{out1}"
+    );
+    let build_rules = cfg1["agents"]["build"]["permissions"].as_array().unwrap();
+    assert!(
+        build_rules
+            .iter()
+            .any(|r| r["action"] == tool && r["effect"] == "allow"),
+        "{out1}"
+    );
+
+    // Present non-string `resource` is ignored (does not silently turn into `*`), while a
+    // sentinel `resource` withholds that exact tool.
+    let f2 = crate::skill_manager::tests::Fixture::new();
+    let root2 = f2.0.join("repo");
+    fs::create_dir_all(root2.join(".git")).unwrap();
+    fs::write(
+        root2.join("opencode.json"),
+        r#"{"agents":{"build":{"permissions":[{"action":"pandacode_architect_pandacode_explore","resource":42,"effect":"deny"}]},"plan":{"permissions":[{"action":"pandacode_architect_pandacode_explore","resource":{env:RES},"effect":"deny"}]}}}"#,
+    )
+    .unwrap();
+    let agents2 = opencode_all_agents_with_env(Some(&root2), &OpenCodeEnv::default());
+    let (out2, _) =
+        opencode_tool_grants_with("{}", None, &["pandacode_explore"], &agents2).unwrap();
+    let cfg2: serde_json::Value = serde_json::from_str(&out2).unwrap();
+    let build_rules = cfg2["agents"]["build"]["permissions"].as_array().unwrap();
+    assert!(
+        build_rules
+            .iter()
+            .any(|r| r["action"] == tool && r["effect"] == "allow"),
+        "{out2}"
+    );
+    assert!(
+        cfg2["agents"]["plan"].get("permissions").is_none(),
+        "{out2}"
+    );
+}

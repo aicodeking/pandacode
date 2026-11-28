@@ -3667,7 +3667,21 @@ async fn reserve_current_desktop_checkout(
         if checkout_busy::active_agent_or_reserved_in_state(state, &root).await? {
             return Err(busy.into());
         }
-        providers::await_exits_in_checkout_patiently(&root).await?;
+        let wait = async {
+            providers::await_exits_in_checkout_patiently(&root).await?;
+            loop {
+                let sibling_ids = checkout_busy::pending_exit_sessions_in_state(state, &root).await?;
+                if sibling_ids.is_empty() {
+                    return Ok::<(), String>(());
+                }
+                for id in sibling_ids {
+                    providers::await_exit_patiently(&id).await?;
+                }
+            }
+        };
+        tokio::time::timeout(providers::EXIT_HARD_CAP, wait)
+            .await
+            .map_err(|_| "The previous run of this conversation is still shutting down. Try again.".to_string())??;
         let reservation = checkout_busy::reserve_idle_checkouts(state, vec![root.clone()], busy).await?;
         if read_root().await? == root {
             return Ok((root, reservation));

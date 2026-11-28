@@ -271,10 +271,20 @@ enum ToolGrant {
     Withhold,
 }
 
+fn is_sentinel_json(tokens: &OpenCodeTokens, value: &Json) -> bool {
+    matches!(value, Json::Other(v) if tokens.is_sentinel_value(v))
+}
+
+#[derive(Clone, Debug)]
+enum ExactToolEntry {
+    Resources(BTreeMap<String, bool>),
+    Withheld,
+}
+
 #[derive(Clone, Debug, Default)]
 struct ExactToolRules {
     // The trailing action alias shares the same entry; false is allow, true is deny.
-    tools: BTreeMap<String, BTreeMap<String, bool>>,
+    tools: BTreeMap<String, ExactToolEntry>,
     withheld: bool,
 }
 
@@ -288,26 +298,55 @@ impl ExactToolRules {
             "deny" => true,
             _ => return,
         };
-        let resources = self.tools.entry(name.to_owned()).or_default();
         if resource == "*" {
-            resources.clear();
+            let mut resources = BTreeMap::new();
+            resources.insert("*".to_owned(), deny);
+            self.tools
+                .insert(name.to_owned(), ExactToolEntry::Resources(resources));
+            return;
         }
-        resources.insert(resource.to_owned(), deny);
+        if let ExactToolEntry::Resources(resources) = self
+            .tools
+            .entry(name.to_owned())
+            .or_insert_with(|| ExactToolEntry::Resources(BTreeMap::new()))
+        {
+            resources.insert(resource.to_owned(), deny);
+        }
     }
 
-    fn collect_v1(&mut self, permission: &Object) {
+    fn withhold_tool(&mut self, name: &str) {
+        self.tools
+            .insert(name.to_owned(), ExactToolEntry::Withheld);
+    }
+
+    fn collect_v1(&mut self, permission: &Object, tokens: &OpenCodeTokens) {
         for (action, value) in &permission.0 {
+            if tokens.contains_sentinel_str(action) {
+                self.withhold();
+                continue;
+            }
+            let Some(tool_name) = exact_tool_name(action) else {
+                continue;
+            };
             match value {
                 Json::Other(value) => {
-                    if let Some(effect) = value.as_str() {
+                    if tokens.is_sentinel_value(value) {
+                        self.withhold_tool(tool_name);
+                    } else if let Some(effect) = value.as_str() {
                         self.record(action, "*", effect);
                     }
                 }
                 Json::Object(resources) => {
-                    for (resource, value) in &resources.0 {
-                        if let Json::Other(value) = value {
-                            if let Some(effect) = value.as_str() {
-                                self.record(action, resource, effect);
+                    if resources.0.iter().any(|(resource, value)| {
+                        tokens.contains_sentinel_str(resource) || is_sentinel_json(tokens, value)
+                    }) {
+                        self.withhold_tool(tool_name);
+                    } else {
+                        for (resource, value) in &resources.0 {
+                            if let Json::Other(value) = value {
+                                if let Some(effect) = value.as_str() {
+                                    self.record(action, resource, effect);
+                                }
                             }
                         }
                     }
@@ -316,21 +355,48 @@ impl ExactToolRules {
         }
     }
 
-    fn collect_permissions(&mut self, config: &Object) {
-        if let Some(Json::Object(permission)) = config.get("permission") {
-            self.collect_v1(permission);
+    fn collect_permissions(&mut self, config: &Object, tokens: &OpenCodeTokens) {
+        match config.get("permission") {
+            Some(Json::Object(permission)) => self.collect_v1(permission, tokens),
+            Some(value) if is_sentinel_json(tokens, value) => self.withhold(),
+            _ => {}
         }
-        if let Some(Json::Other(serde_json::Value::Array(permissions))) = config.get("permissions")
-        {
-            for rule in permissions {
-                if let (Some(action), Some(resource), Some(effect)) = (
-                    rule["action"].as_str(),
-                    rule["resource"].as_str(),
-                    rule["effect"].as_str(),
-                ) {
-                    self.record(action, resource, effect);
+        match config.get("permissions") {
+            Some(value) if is_sentinel_json(tokens, value) => self.withhold(),
+            Some(Json::Other(serde_json::Value::Array(permissions))) => {
+                for rule in permissions {
+                    if tokens.is_sentinel_value(rule)
+                        || tokens.is_sentinel_value(&rule["action"])
+                        || rule
+                            .as_object()
+                            .is_some_and(|map| map.keys().any(|k| tokens.contains_sentinel_str(k)))
+                    {
+                        self.withhold();
+                        continue;
+                    }
+                    let Some(action) = rule["action"].as_str() else {
+                        continue;
+                    };
+                    let Some(tool_name) = exact_tool_name(action) else {
+                        continue;
+                    };
+                    let resource_field = rule.get("resource");
+                    if tokens.is_sentinel_value(&rule["effect"])
+                        || resource_field.is_some_and(|r| tokens.is_sentinel_value(r))
+                    {
+                        self.withhold_tool(tool_name);
+                        continue;
+                    }
+                    let Some(resource) = resource_field.map_or(Some("*"), serde_json::Value::as_str)
+                    else {
+                        continue;
+                    };
+                    if let Some(effect) = rule["effect"].as_str() {
+                        self.record(action, resource, effect);
+                    }
                 }
             }
+            _ => {}
         }
     }
 
@@ -340,18 +406,22 @@ impl ExactToolRules {
     }
 
     fn decision(&self, tool: &str) -> Option<ToolGrant> {
-        if let Some(resources) = self.tools.get(tool) {
-            let denied = resources.values().any(|deny| *deny);
-            let whole = resources.get("*").copied();
-            let decision = match whole {
-                Some(false) if !denied => Some(ToolGrant::Allow),
-                Some(true) if resources.values().all(|deny| *deny) => Some(ToolGrant::Deny),
-                _ if denied => Some(ToolGrant::Withhold),
-                _ => None,
-            };
-            if decision.is_some() {
-                return decision;
+        match self.tools.get(tool) {
+            Some(ExactToolEntry::Withheld) => return Some(ToolGrant::Withhold),
+            Some(ExactToolEntry::Resources(resources)) => {
+                let denied = resources.values().any(|deny| *deny);
+                let whole = resources.get("*").copied();
+                let decision = match whole {
+                    Some(false) if !denied => Some(ToolGrant::Allow),
+                    Some(true) if resources.values().all(|deny| *deny) => Some(ToolGrant::Deny),
+                    _ if denied => Some(ToolGrant::Withhold),
+                    _ => None,
+                };
+                if decision.is_some() {
+                    return decision;
+                }
             }
+            None => {}
         }
         self.withheld.then_some(ToolGrant::Withhold)
     }
@@ -365,18 +435,36 @@ pub(super) struct OpenCodeToolRules {
 }
 
 impl OpenCodeToolRules {
-    fn collect_config(&mut self, config: &Object) {
-        self.global.collect_permissions(config);
+    fn collect_config(&mut self, config: &Object, tokens: &OpenCodeTokens) {
+        if config.0.iter().any(|(k, _)| tokens.contains_sentinel_str(k)) {
+            self.withhold_config();
+            return;
+        }
+        self.global.collect_permissions(config, tokens);
         for key in ["mode", "agent", "agents"] {
-            if let Some(Json::Object(agents)) = config.get(key) {
-                for (name, agent) in &agents.0 {
-                    if let Json::Object(agent) = agent {
-                        self.agents
-                            .entry(name.clone())
-                            .or_default()
-                            .collect_permissions(agent);
+            match config.get(key) {
+                Some(value) if is_sentinel_json(tokens, value) => self.withhold_config(),
+                Some(Json::Object(agents)) => {
+                    if agents
+                        .0
+                        .iter()
+                        .any(|(name, _)| tokens.contains_sentinel_str(name))
+                    {
+                        self.withhold_config();
+                        continue;
+                    }
+                    for (name, agent) in &agents.0 {
+                        if is_sentinel_json(tokens, agent) {
+                            self.agents.entry(name.clone()).or_default().withhold();
+                        } else if let Json::Object(agent) = agent {
+                            self.agents
+                                .entry(name.clone())
+                                .or_default()
+                                .collect_permissions(agent, tokens);
+                        }
                     }
                 }
+                _ => {}
             }
         }
     }
@@ -442,20 +530,36 @@ pub(super) fn discover_opencode_config(
         return;
     };
     let schema = OpenCodeSchema::detect(&config);
-    *has_v2_permissions |= schema.use_v2_permissions || schema.use_v2_agents;
-    tool_rules.collect_config(&config);
+    *has_v2_permissions |= schema.use_v2_permissions
+        || schema.use_v2_agents
+        || config
+            .get("permissions")
+            .is_some_and(|v| is_sentinel_json(&tokens, v))
+        || config
+            .get("agents")
+            .is_some_and(|v| is_sentinel_json(&tokens, v));
+    if config.0.iter().any(|(k, _)| tokens.contains_sentinel_str(k)) {
+        add(None);
+    }
+    tool_rules.collect_config(&config, &tokens);
     for key in ["agent", "agents", "mode"] {
         match config.get(key) {
             Some(Json::Object(agents)) => {
-                for (name, _) in &agents.0 {
+                for (name, agent) in &agents.0 {
                     let usable = !tokens.contains_sentinel_str(name);
                     add(usable.then_some(name.as_str()));
                     if key == "agents" && usable {
                         disk_v2_agents.insert(name.clone());
                     }
+                    if let Json::Object(agent_obj) = agent {
+                        *has_v2_permissions |= agent_obj.get("permissions").is_some_and(|v| {
+                            matches!(v, Json::Other(serde_json::Value::Array(_)))
+                                || is_sentinel_json(&tokens, v)
+                        });
+                    }
                 }
             }
-            Some(Json::Other(value)) if tokens.is_sentinel_value(value) => add(None),
+            Some(value) if is_sentinel_json(&tokens, value) => add(None),
             _ => {}
         }
     }
@@ -644,7 +748,9 @@ fn grant_permission_env(
     create_if_missing: bool,
 ) -> Option<String> {
     let mut rules = parse_permission_env(permission, create_if_missing)?;
-    tool_rules.global.collect_v1(&rules);
+    tool_rules
+        .global
+        .collect_v1(&rules, &OpenCodeTokens::default());
     grant_v1_permissions(&mut rules, served_tool_rules(served, tool_rules, None));
     Some(serde_json::to_string(&rules).expect("OpenCode permission"))
 }
@@ -677,8 +783,8 @@ pub(crate) fn opencode_tool_grants_with(
     }
     let inline = parse_inline(text, false);
     let mut tool_rules = agents.tool_rules.clone();
-    if let Some((inline, _)) = &inline {
-        tool_rules.collect_config(inline);
+    if let Some((inline, tokens)) = &inline {
+        tool_rules.collect_config(inline, tokens);
     }
     let permission = grant_permission_env(permission, served, &mut tool_rules, inline.is_none());
     let Some((mut inline, tokens)) = inline else {
@@ -692,10 +798,10 @@ pub(crate) fn opencode_tool_grants_with(
         grant_v2_permissions(&mut inline, served_tool_rules(served, &tool_rules, None));
     }
     if !use_v2_permissions || schema.has_v1_permission {
-        grant_v1_permissions(
-            inline.child("permission").object(true),
-            served_tool_rules(served, &tool_rules, None),
-        );
+        let mut rules = served_tool_rules(served, &tool_rules, None).peekable();
+        if rules.peek().is_some() {
+            grant_v1_permissions(inline.child("permission").object(true), rules);
+        }
     }
 
     let target_agents: BTreeSet<&str> = super::opencode_agents::BUILTIN

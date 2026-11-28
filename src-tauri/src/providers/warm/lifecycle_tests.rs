@@ -300,7 +300,7 @@ async fn a_launch_without_a_key_retires_and_logs_a_lead_spare_without_a_stale_no
     let before = epoch(&session);
     assert_eq!(
         launched_without_key_in(pool, &session, NO_CONFIG, true).as_deref(),
-        Some("Team lead's warm Claude agent not used (its config folder cannot be known); starting cold. Lead spares since launch: 1 started, 0 adopted, 1 not used, 0 expired, 0 evicted, 0 replaced, 0 discarded; 0 cold launches without a spare.")
+        Some("Team lead's warm Claude agent not used (its config cannot be fingerprinted); starting cold. Lead spares since launch: 1 started, 0 adopted, 1 not used, 0 expired, 0 evicted, 0 replaced, 0 discarded; 0 cold launches without a spare.")
     );
     assert!(epoch(&session) > before, "the launch is counted");
     assert!(!waiting_in(pool, &session), "the spare must not idle beside the cold process");
@@ -325,7 +325,7 @@ async fn a_launch_without_a_key_retires_and_logs_an_ordinary_spare() {
     admit(&mut spares(pool), session.clone(), spare);
     assert_eq!(
         launched_without_key_in(pool, &session, NO_CONFIG, true).as_deref(),
-        Some("Warm Claude agent not used (its config folder cannot be known); starting cold. Ordinary spares since launch: 1 started, 0 adopted, 1 not used, 0 expired, 0 evicted, 0 replaced, 0 discarded; 0 cold launches without a spare.")
+        Some("Warm Claude agent not used (its config cannot be fingerprinted); starting cold. Ordinary spares since launch: 1 started, 0 adopted, 1 not used, 0 expired, 0 evicted, 0 replaced, 0 discarded; 0 cold launches without a spare.")
     );
     assert!(!waiting_in(pool, &session));
     assert_eq!(launched_without_key_in(pool, &session, NO_CONFIG, false), None, "the miss is said once");

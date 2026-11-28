@@ -173,8 +173,8 @@ pub(super) fn pid_of(spare: &Spare) -> u32 {
     spare.child.id().unwrap()
 }
 
-/// The reason `launched_without_key` logs when the config folder cannot be resolved.
-pub(super) const NO_CONFIG: &str = "its config folder cannot be known";
+/// The reason `launched_without_key` logs when the config cannot be fingerprinted.
+pub(super) const NO_CONFIG: &str = "its config cannot be fingerprinted";
 
 /// What a supported ordinary launch with no pooled spare (and no lead `gone` note) logs.
 pub(super) const NOT_POOLED: &str = "Warm Claude agent not pooled; starting cold.";

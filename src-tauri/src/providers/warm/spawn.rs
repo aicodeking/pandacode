@@ -345,8 +345,8 @@ pub(super) async fn spawn_claude_process(config: RunConfig, tools: Vec<Value>, a
 
 /// The spare's process once `key_for` has given its prepared launch's warm-key fields. A checkout
 /// cooling down after unreadable `git status` probes returns first, before any config walk, secret
-/// read, executable search, tool server or process. A launch with no key (its Claude config folder
-/// cannot be known, `key_fields_with_disabled`) is declined next, likewise before reading secrets,
+/// read, executable search, tool server or process. A launch with no key (its Claude config
+/// cannot be fingerprinted, `key_fields_with_disabled`) is declined next, likewise before reading secrets,
 /// searching for executables, or binding a tool server. Every spare's `gitStatus` (ordinary and
 /// `lead`) is read once the previous turn has exited (`spawn_claude_process`), right before the
 /// spawn; an unreadable status starts none.
@@ -401,7 +401,7 @@ pub(super) async fn spawn_claude_keyed(
     })
     .await?;
     let Some((config, fields, stdio, mut command)) = prepared_launch else {
-        eprintln!("No warm Claude agent: its config folder cannot be known.");
+        eprintln!("No warm Claude agent: its config cannot be fingerprinted.");
         return Ok(None);
     };
     // Re-check before spawning `git status`: a switch-off, quit, newer launch or concurrent
