@@ -33,6 +33,25 @@ jobs:
       - run: npm run test:release
       - run: npm run site:build
 
+  web-windows:
+    name: Unit tests (Windows)
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - run: npm ci
+      # `npm run build` typechecks and writes dist/, which tests/brand-build.test.mjs reads.
+      - run: npm run build
+      # The suite reads source files and slices them by line, so a CRLF checkout
+      # (Git's Windows default) fails tests that pass on Linux. `.gitattributes`
+      # keeps checkouts LF; this job keeps that true.
+      - run: npm test
+
   rust:
     name: Rust check and tests (Linux)
     runs-on: ubuntu-22.04
