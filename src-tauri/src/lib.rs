@@ -5124,6 +5124,8 @@ pub(crate) fn main_invoke_handler(invoke: tauri::ipc::Invoke<tauri::Wry>) -> boo
         bots::channels::bot_pairing_decide,
         bots::channels::bot_web_link,
         bots::channels::bot_web_new_link,
+        bots::channels::bot_bridge_setup,
+        bots::channels::bot_bridge_new_token,
         bots::guard::bot_rule_add,
         bots::guard::bot_rule_delete,
         conversation_import::list_importable_conversations,

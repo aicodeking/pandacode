@@ -268,6 +268,10 @@ INSERT INTO bot_rules(id,bot_id,pattern,decision,created_at)
     VALUES('rule','bot-1','cargo test*','allow',139);
 INSERT INTO bot_schedules(id,bot_id,title,prompt,kind,interval_minutes,next_run_at,created_by,created_at)
     VALUES('bot-timer','bot-1','Check again','Review the reports','interval',15,400,'user',140);
+INSERT INTO bot_bridge_events(channel_id,event_id,accepted_at)
+    VALUES('channel','evt-1',146);
+INSERT INTO bot_bridge_replies(id,channel_id,thread,text,created_at)
+    VALUES(1,'channel','visitor','Queued for the adapter',147);
 INSERT INTO bot_messages(id,source_bot_id,target_bot_id,source_session_id,target_session_id,
         source_channel_id,source_external_id,text,status,result,depth,created_at,updated_at)
     VALUES('bot-mail','bot-1','bot-2','lead','worker','channel','visitor','Check timestamps','completed','They match.',1,141,142);
@@ -433,6 +437,7 @@ fn legacy_installs_with_partial_bot_schema_and_corrupt_rows_upgrade_cleanly() {
             batch(
                 &db,
                 "DROP TABLE bot_pairings; DROP TABLE bot_channels; DROP TABLE bot_threads;
+                DROP TABLE bot_bridge_events; DROP TABLE bot_bridge_replies;
                 DROP TABLE bot_schedules; DROP TABLE bot_memories; DROP TABLE bot_activity;
                 DROP TABLE bot_tasks; DROP TABLE bot_rules; DROP TABLE bots;",
             );

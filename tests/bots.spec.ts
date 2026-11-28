@@ -467,6 +467,34 @@ test.describe('bots', () => {
     await expect(callback).toHaveText(/^https:\/\/quiet-river\.trycloudflare\.com\/whatsapp\/[0-9a-f-]{36}$/);
   });
 
+  test('the bridge mints a token, copies exports, and rotates it', async ({ page }) => {
+    await captureOutside(page);
+    await newBot(page);
+    await openSettings(page, 'Connections');
+    await panel(page).getByRole('button', { name: /^Bridge/ }).click();
+    const form = panel(page).locator('.bots-connect');
+    // Nothing to paste: a bridge's token is ours.
+    await expect(form.locator('.bots-steps > li')).toHaveCount(3);
+    await form.getByRole('button', { name: 'Connect Bridge' }).click();
+    const card = panel(page).locator('.bots-channel');
+    await expect(card).toContainText('Waiting for your bridge');
+    // A bridge opens closed until it is paired or given a tunnel; the guide must be opened.
+    const guide = card.locator('.bots-guide');
+    await card.getByText('Finish setting up').click();
+    await expect(guide).toContainText('/api/bridge/');
+    await expect(guide).toContainText('/messages');
+    // The token is revealed only by the explicit action, never rendered with the panel.
+    await expect(guide).not.toContainText('PANDACODE_BRIDGE_TOKEN');
+    await guide.getByRole('button', { name: 'Show setup and copy exports' }).click();
+    await expect.poll(async () => (await copied(page)).join('\n')).toContain("export PANDACODE_BRIDGE_TOKEN='preview-");
+    await expect.poll(async () => (await copied(page)).join('\n')).toContain('PANDACODE_BRIDGE_CHANNEL=');
+    await expect(guide).toContainText('Accept calls through a tunnel');
+    // Rotation replaces the token, which revokes whatever the old one was copied to.
+    await guide.getByRole('button', { name: 'New token' }).click();
+    await panel(page).getByRole('alertdialog', { name: 'Create a new bridge token?' }).getByRole('button', { name: 'New token' }).click();
+    await expect.poll(async () => (await copied(page)).join('\n')).toContain('PANDACODE_BRIDGE_CHANNEL=');
+  });
+
   test('web chat is one click, and phone access builds a private phone link', async ({ page }) => {
     await captureOutside(page);
     await newBot(page);
