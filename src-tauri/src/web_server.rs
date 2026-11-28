@@ -1005,7 +1005,9 @@ impl WebServer {
 /// which speaks HTTPS. A non-loopback bind keeps its plain-HTTP address.
 fn status_url(bound: SocketAddr, allowed: &[String]) -> String {
     match allowed.first() {
-        Some(name) if bound.ip().to_canonical().is_loopback() => format!("https://{name}:{}", bound.port()),
+        // The name reaches a loopback bind through a TLS terminator, which
+        // publishes its own port (usually 443). The bound port is local only.
+        Some(name) if bound.ip().to_canonical().is_loopback() => format!("https://{name}"),
         _ => format!("http://{}", url_authority(bound)),
     }
 }
@@ -2935,7 +2937,9 @@ mod tests {
         let loopback: SocketAddr = "127.0.0.1:8787".parse().unwrap();
         assert_eq!(status_url(loopback, &[]), "http://127.0.0.1:8787");
         let names = ["my-mac.tail1234.ts.net".to_owned(), "second.ts.net".to_owned()];
-        assert_eq!(status_url(loopback, &names), "https://my-mac.tail1234.ts.net:8787");
+        assert_eq!(status_url(loopback, &names), "https://my-mac.tail1234.ts.net");
+        // The bound port is local to the TLS terminator; a proxy-published name is on 443.
+        assert!(!status_url(loopback, &names).contains("8787"));
         // A non-loopback bind keeps its plain-HTTP address even with a trusted name.
         let tailscale: SocketAddr = "100.64.1.5:8787".parse().unwrap();
         assert_eq!(status_url(tailscale, &names), "http://100.64.1.5:8787");
@@ -3057,7 +3061,7 @@ mod tests {
         assert_eq!((saved.enabled, saved.port, saved.host), (true, port, Some("::1".parse().unwrap())));
         assert_eq!(saved.allowed_hosts, ["my-mac.tail1234.ts.net"]);
         // ::1 is loopback, so the link prefers the trusted name over https.
-        assert!(started.url.as_deref().unwrap().starts_with("https://my-mac.tail1234.ts.net:"), "{:?}", started.url);
+        assert_eq!(started.url.as_deref(), Some("https://my-mac.tail1234.ts.net"));
         // A stop keeps the saved address instead of forgetting it.
         let off = server.stop_and_save(None, true).await.unwrap();
         assert_eq!(off.configured_host, "::1");

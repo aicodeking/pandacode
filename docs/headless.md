@@ -126,10 +126,11 @@ signed in, Connect hosting runs alongside it.
   pandacode serve --port 8787 --allowed-host my-mac.tailXXXX.ts.net
   ```
 
-  The printed link then starts with `https://my-mac.tailXXXX.ts.net:<port>`. Tailscale
-  Serve's own HTTPS endpoint is usually port 443, so open the `https://` name and drop the
-  port when Serve maps it to a different one. The same works for any reverse proxy that
-  terminates TLS and forwards to the loopback bind: add the public name as a trusted host.
+  The printed link then starts with `https://my-mac.tailXXXX.ts.net` with no port: a
+  trusted name over a loopback bind reaches PandaCode through a TLS terminator such as
+  Tailscale Serve, whose public port is usually 443, not the local bind port. The same
+  works for any reverse proxy that terminates TLS and forwards to the loopback bind:
+  add the public name as a trusted host.
 - **The URL is a credential.** Holding the token gives full control of this PandaCode
   session as the host user — starting coding agents, running terminal commands, and
   reading or editing workspace files. `serve --port` prints the full `#token=` URL to
