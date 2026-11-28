@@ -333,6 +333,23 @@ verify its plan, quota, expiry, or access to a particular model. See Claude's
 [authentication precedence](https://code.claude.com/docs/en/authentication#authentication-precedence)
 and [environment variable reference](https://code.claude.com/docs/en/env-vars).
 
+## Claude Code Mode
+
+Settings → Agents → Providers → Claude Code has an **Enable Claude Code Mode**
+switch, off by default. Use [Claude Code 2.1.332 or newer](https://github.com/anthropics/claude-code/releases/tag/v2.1.332).
+PandaCode opts in by passing `CLAUDE_CODE_EXPERIMENTAL_CODE_MODE=1` in the
+`env` block of `--settings` when it launches a Claude Code task. The switch
+applies on the next turn, including when a Claude process was prestarted.
+GLM, MiMo and Alibaba Token Plan have separate launch settings.
+If a named connection supplies its own `--settings`, Claude uses that option.
+
+Claude applies its [Code Mode requirements and settings precedence](https://code.claude.com/docs/en/code-mode).
+For PandaCode's non-interactive launch, use a supported model on Anthropic's own service.
+Turning the switch off removes PandaCode's opt-in. Keep it enabled to resume
+a session started in Code Mode. Sessions started before enabling it resume in
+their original mode. PandaCode passes the setting for each process without
+editing Claude's settings files.
+
 ## Model selections in task exports
 
 The desktop task export includes the harness, requested model ID and requested effort for

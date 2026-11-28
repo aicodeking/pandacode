@@ -41,6 +41,9 @@ struct Settings {
     /// check then never runs Claude Code.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     claude_cli_refresh_off: bool,
+    /// Whether to opt in to experimental Code Mode for Claude Code task launches.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    claude_code_mode: bool,
     /// Switches earlier builds stored, when PandaCode renewed logins itself.
     /// Read so those files still load; ignored and never written again.
     #[serde(default, skip_serializing)]
@@ -443,12 +446,13 @@ pub struct Configuration {
     mimo_endpoints: Vec<MimoEndpoint>,
     claude_connection_mode: crate::providers::claude_auth::Mode,
     claude_cli_refresh: bool,
+    claude_code_mode: bool,
     secure_storage_available: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     credential_storage_error: Option<String>,
 }
 fn configuration() -> Result<Configuration> {
-    let (paths, mimo_endpoint, claude_connection_mode, claude_cli_refresh, environment, global_environment, global_environment_disabled) = {
+    let (paths, mimo_endpoint, claude_connection_mode, claude_cli_refresh, claude_code_mode, environment, global_environment, global_environment_disabled) = {
         let runtime = CONFIG
             .get()
             .ok_or("Provider settings are not initialized.")?
@@ -459,6 +463,7 @@ fn configuration() -> Result<Configuration> {
             runtime.settings.mimo_endpoint.clone(),
             runtime.settings.claude_connection_mode,
             !runtime.settings.claude_cli_refresh_off,
+            runtime.settings.claude_code_mode,
             runtime.settings.environment.clone(),
             runtime.settings.global_environment.keys().cloned().collect(),
             runtime.settings.global_environment_disabled.clone(),
@@ -511,6 +516,7 @@ fn configuration() -> Result<Configuration> {
         mimo_endpoints: mimo_endpoints(),
         claude_connection_mode,
         claude_cli_refresh,
+        claude_code_mode,
         secure_storage_available: cfg!(any(
             target_os = "macos",
             target_os = "linux",
@@ -1086,6 +1092,24 @@ pub async fn provider_set_claude_cli_refresh(enabled: bool) -> Result<Configurat
     }).await
 }
 
+/// Whether Claude Code task launches should opt in to Code Mode.
+pub(crate) fn claude_code_mode() -> bool {
+    CONFIG.get().and_then(|runtime| runtime.lock().ok().map(|runtime| runtime.settings.claude_code_mode)).unwrap_or(false)
+}
+
+/// Settings → Providers → Claude Code → Enable Claude Code Mode.
+#[tauri::command]
+pub async fn provider_set_claude_code_mode(enabled: bool) -> Result<Configuration> {
+    crate::blocking(move || {
+        let mut runtime = CONFIG.get().ok_or("Provider settings are not initialized.")?
+            .lock().map_err(|e| e.to_string())?;
+        let next = Settings { claude_code_mode: enabled, ..runtime.settings.clone() };
+        persist(&mut runtime, next)?;
+        drop(runtime);
+        configuration()
+    }).await
+}
+
 pub(crate) fn telemetry_off() -> bool {
     CONFIG.get().and_then(|runtime| runtime.lock().ok().map(|runtime| runtime.settings.telemetry_off)).unwrap_or(false)
 }
@@ -1187,6 +1211,7 @@ mod tests {
             mimo_endpoints: mimo_endpoints(),
             claude_connection_mode: Default::default(),
             claude_cli_refresh: true,
+            claude_code_mode: false,
             secure_storage_available: true,
             credential_storage_error,
         };
@@ -1217,6 +1242,7 @@ mod tests {
             mimo_endpoints: mimo_endpoints(),
             claude_connection_mode: Default::default(),
             claude_cli_refresh: true,
+            claude_code_mode: false,
             secure_storage_available: true,
             credential_storage_error,
         };
@@ -1321,6 +1347,32 @@ mod tests {
         let saved: serde_json::Value = serde_json::from_slice(&std::fs::read(&runtime.path).unwrap()).unwrap();
         assert_eq!(saved["claudeCliRefreshOff"], true);
         assert!(saved.get("claudeUsageRenew").is_none() && saved.get("claudeUsageRenewOff").is_none(), "old switches never written");
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn claude_code_mode_switch_defaults_off_and_survives_reload() {
+        let defaults: Settings =
+            serde_json::from_value(serde_json::json!({"executablePaths":{}})).unwrap();
+        assert!(!defaults.claude_code_mode, "off by default");
+        assert!(serde_json::to_value(&defaults).unwrap().get("claudeCodeMode").is_none());
+        let directory =
+            std::env::temp_dir().join(format!("pandacode-claude-code-mode-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&directory).unwrap();
+        let mut runtime = Runtime {
+            path: directory.join("provider-settings.json"),
+            settings: Settings::default(),
+        };
+        persist(&mut runtime, Settings { claude_code_mode: true, ..Settings::default() }).unwrap();
+        let saved: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&runtime.path).unwrap()).unwrap();
+        assert_eq!(saved["claudeCodeMode"], true);
+        let reloaded: Settings = serde_json::from_slice(&std::fs::read(&runtime.path).unwrap()).unwrap();
+        assert!(reloaded.claude_code_mode);
+        persist(&mut runtime, Settings { claude_code_mode: false, ..reloaded }).unwrap();
+        let saved: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&runtime.path).unwrap()).unwrap();
+        assert!(saved.get("claudeCodeMode").is_none(), "off is not written");
         std::fs::remove_dir_all(directory).unwrap();
     }
 
@@ -1563,6 +1615,7 @@ mod tests {
             mimo_endpoints: mimo_endpoints(),
             claude_connection_mode: Default::default(),
             claude_cli_refresh: true,
+            claude_code_mode: false,
             secure_storage_available: true,
             credential_storage_error: None,
         };

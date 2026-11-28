@@ -12,6 +12,7 @@ interface ClaudeStatus { mode: ClaudeMode; source: string; environmentVariables:
 const howProvidersWork = 'Each sign-in, key or plan here is used only by the agent it belongs to — the global environment variables are the one thing every harness gets. GLM Coding Plan, MiMo Token Plan and Alibaba Token Plan run through your installed Claude Code, and you pick them in the model selector. Named connections are extra setups of one agent. PandaCode needs no provider of its own: titles come from the agent running the task, project checks run your own test command, and Jev uses its own keys. Codex, when installed, also lists integrations and imports Codex conversations.';
 const claudeHelp = 'Use current environment preserves your existing Claude setup. Prefer saved Claude login removes inherited API credentials, endpoints, and model routing overrides from new Claude processes in PandaCode. Claude settings, credential helpers, profiles, and organization policies can still affect authentication. Check /status in Claude to confirm.';
 const refreshHelp = 'On by default. When PandaCode can’t read Claude usage — an expired login, a login it can’t read, a network error, or a rate limit once the server’s wait is over — it runs your own Claude Code at most once every 15 minutes (claude -p /usage, a local command: no model call, nothing billed). This lets Claude Code refresh and save its own login if it needs to, as when you open it, and PandaCode shows the usage it prints. PandaCode never writes Claude Code credentials. Off: an expired login shows the last saved usage until you open Claude Code.';
+const codeModeHelp = 'Experimental and off by default. Opts in at startup for Claude Code 2.1.332 or newer. Applies on the next turn. Keep this on to resume tasks that started in Code Mode.';
 const globalEnvHelp = 'These variables are added to every agent harness PandaCode starts — for example HTTP_PROXY, HTTPS_PROXY and NO_PROXY behind a proxy. Each provider can leave the global set out in its own card, and provider sign-in and endpoint settings always win. Values are saved on this computer and never shown again.';
 const envHelp = 'These variables are added whenever PandaCode starts this harness — for example HTTP_PROXY, HTTPS_PROXY and NO_PROXY behind a proxy. Provider sign-in and endpoint settings always win, and a named connection adds its own environment on top. Values are saved on this computer and never shown again.';
 
@@ -38,6 +39,8 @@ interface Configuration {
   claudeConnectionMode?: ClaudeMode;
   /** Usage checks may run Claude Code to refresh an expired login (on by default). */
   claudeCliRefresh?: boolean;
+  /** Claude Code Mode is enabled for new Claude turns (off by default). */
+  claudeCodeMode?: boolean;
 }
 
 /** Key-based connections share one form/status/remove pattern; the native side owns the secret. */
@@ -89,6 +92,7 @@ export function mountProviderSettings(host: HTMLElement, saved: () => Promise<un
       <div class="connection-auth-label"><label for="claude-connection-mode">Claude connection</label><span class="sr-only" id="claude-connection-help">${escape(claudeHelp)}</span></div>
       <div class="connection-select"><select id="claude-connection-mode" aria-describedby="claude-connection-help"><option value="inherit">Use current environment</option><option value="subscription">Prefer saved Claude login</option></select>${infoMark(claudeHelp, 'About Claude connection')}</div>
       <div class="ds-row connection-renew-row"><span class="ds-row-main"><label class="ds-row-title" for="claude-cli-refresh">Let PandaCode ask Claude Code for usage when it can’t read it</label><span class="sr-only" id="claude-cli-refresh-help">${escape(refreshHelp)}</span></span><span class="ds-row-trail">${infoMark(refreshHelp, 'About asking Claude Code for usage')}<input type="checkbox" role="switch" class="ds-toggle" id="claude-cli-refresh" aria-describedby="claude-cli-refresh-help" checked></span></div>
+      <div class="ds-row connection-renew-row"><span class="ds-row-main"><label class="ds-row-title" for="claude-code-mode">Enable Claude Code Mode</label><span class="sr-only" id="claude-code-mode-help">${escape(codeModeHelp)}</span></span><span class="ds-row-trail">${infoMark(codeModeHelp, 'About Claude Code Mode')}<input type="checkbox" role="switch" class="ds-toggle" id="claude-code-mode" aria-describedby="claude-code-mode-help"></span></div>
       <div class="connection-key-status"><span class="claude-auth-source" role="status">Checking Claude login…</span><button type="button" class="secondary-button" data-check-claude>Check login</button><span class="claude-auth-details"></span></div>
       <p class="claude-auth-endpoint" hidden></p><p class="claude-auth-conflict" hidden>Environment credentials can override your saved Claude login.</p><p class="claude-auth-login" hidden></p>
       <a href="https://code.claude.com/docs/en/authentication" target="_blank" rel="noopener noreferrer">Claude sign-in help ${icon('forward')}</a>
@@ -143,6 +147,7 @@ export function mountProviderSettings(host: HTMLElement, saved: () => Promise<un
   const endpointHint = host.querySelector<HTMLElement>('#mimo-endpoint-hint')!;
   const claudeMode = host.querySelector<HTMLSelectElement>('#claude-connection-mode')!;
   const claudeRefresh = host.querySelector<HTMLInputElement>('#claude-cli-refresh')!;
+  const claudeCodeMode = host.querySelector<HTMLInputElement>('#claude-code-mode')!;
   const claudeSource = host.querySelector<HTMLElement>('.claude-auth-source')!;
   const claudeCheck = host.querySelector<HTMLButtonElement>('[data-check-claude]')!;
   let claudeEdited = false, claudeRevision = 0;
@@ -191,6 +196,7 @@ export function mountProviderSettings(host: HTMLElement, saved: () => Promise<un
     }
     if (!claudeEdited) claudeMode.value = config.claudeConnectionMode ?? 'inherit';
     claudeRefresh.checked = config.claudeCliRefresh ?? true;
+    claudeCodeMode.checked = config.claudeCodeMode ?? false;
     for (const input of host.querySelectorAll<HTMLInputElement>('[data-executable]')) {
       const id = input.dataset.executable!;
       if (!editedPaths.has(input)) input.value = config.executablePaths[id] ?? '';
@@ -242,7 +248,7 @@ export function mountProviderSettings(host: HTMLElement, saved: () => Promise<un
     if (pending || disposed) return false;
     const submittedValue = submittedInput?.value;
     pending = true; host.setAttribute('aria-busy', 'true');
-    claudeMode.disabled = true; claudeRefresh.disabled = true;
+    claudeMode.disabled = true; claudeRefresh.disabled = true; claudeCodeMode.disabled = true;
     host.querySelectorAll<HTMLButtonElement>('button').forEach(button => button.disabled = true);
     host.querySelectorAll<HTMLInputElement>('[data-use-global]').forEach(toggle => toggle.disabled = true);
     try {
@@ -259,7 +265,7 @@ export function mountProviderSettings(host: HTMLElement, saved: () => Promise<un
     } catch (error) { if (!disposed) { message(errorText(error), true); onFailure?.(); } return false; }
     finally {
       pending = false;
-      if (!disposed) { claudeMode.disabled = false; claudeRefresh.disabled = false; host.removeAttribute('aria-busy'); host.querySelectorAll<HTMLButtonElement>('button').forEach(button => button.disabled = false); host.querySelectorAll<HTMLInputElement>('[data-use-global]').forEach(toggle => toggle.disabled = false); for (const input of keyInputs) host.querySelector<HTMLButtonElement>(`#${input.id}-form button`)!.disabled = input.disabled; }
+      if (!disposed) { claudeMode.disabled = false; claudeRefresh.disabled = false; claudeCodeMode.disabled = false; host.removeAttribute('aria-busy'); host.querySelectorAll<HTMLButtonElement>('button').forEach(button => button.disabled = false); host.querySelectorAll<HTMLInputElement>('[data-use-global]').forEach(toggle => toggle.disabled = false); for (const input of keyInputs) host.querySelector<HTMLButtonElement>(`#${input.id}-form button`)!.disabled = input.disabled; }
     }
   }
   const submit = (event: Event) => {
@@ -352,6 +358,16 @@ export function mountProviderSettings(host: HTMLElement, saved: () => Promise<un
         enabled ? 'PandaCode asks Claude Code for usage when it can’t read it.' : 'PandaCode no longer runs Claude Code. Open Claude Code to refresh an expired login.',
         undefined,
         () => { claudeRefresh.checked = !enabled; },
+      );
+      return;
+    }
+    if (event.target === claudeCodeMode) {
+      const enabled = claudeCodeMode.checked;
+      void perform(
+        () => call<Configuration>('provider_set_claude_code_mode', { enabled }),
+        enabled ? 'Code Mode opt-in saved for Claude Code.' : 'Code Mode opt-in removed for Claude Code.',
+        undefined,
+        () => { claudeCodeMode.checked = !enabled; },
       );
       return;
     }

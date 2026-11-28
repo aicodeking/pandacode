@@ -5130,6 +5130,7 @@ pub(crate) fn main_invoke_handler(invoke: tauri::ipc::Invoke<tauri::Wry>) -> boo
         conversation_import::import_conversations,
         provider_settings::provider_set_claude_connection_mode,
         provider_settings::provider_set_claude_cli_refresh,
+        provider_settings::provider_set_claude_code_mode,
         providers::privacy::harness_privacy,
         providers::privacy::harness_privacy_set,
         providers::claude_auth::provider_claude_status,

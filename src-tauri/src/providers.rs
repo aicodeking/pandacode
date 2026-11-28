@@ -4356,6 +4356,23 @@ fn configure_command_with_skills(
     configure_command_with_agents(command, config, disabled, &agents.unwrap_or_default());
 }
 
+fn configure_claude_settings(command: &mut Command, config: &RunConfig, code_mode: bool) {
+    if config.provider != "claude" {
+        return;
+    }
+    let mut settings = serde_json::Map::new();
+    if config.codex_settings.as_ref().is_some_and(|settings| settings["serviceTier"] == "fast") {
+        settings.insert("fastMode".into(), json!(true));
+    }
+    // Claude print mode reads this opt-in from the command's settings, not the process environment.
+    if code_mode {
+        settings.insert("env".into(), json!({"CLAUDE_CODE_EXPERIMENTAL_CODE_MODE": "1"}));
+    }
+    if !settings.is_empty() {
+        command.args(["--settings", &Value::Object(settings).to_string()]);
+    }
+}
+
 fn configure_command_with_agents(
     command: &mut Command,
     config: &RunConfig,
@@ -4433,12 +4450,7 @@ fn configure_command_with_agents(
             if let Some(effort) = &config.reasoning_effort {
                 command.args(["--effort", effort]);
             }
-            // The Speed row stores Claude's fast mode as the task's service tier.
-            if config.provider == "claude"
-                && config.codex_settings.as_ref().is_some_and(|settings| settings["serviceTier"] == "fast")
-            {
-                command.args(["--settings", r#"{"fastMode":true}"#]);
-            }
+            configure_claude_settings(command, config, crate::provider_settings::claude_code_mode());
             if let Some(id) = &config.resume_id {
                 command.arg(format!("--resume={id}"));
             }
@@ -4775,7 +4787,8 @@ async fn run_process_with_tools(
         Some(tools) if warm::supported(&config) => {
             // The key reads the task's switches and saved settings: off the runtime.
             let (keyed, catalog) = (config.clone(), tools.tools.clone());
-            let key = crate::blocking(move || Ok(warm::key(&keyed, &catalog))).await?;
+            let settings = warm::launch_settings(&command).map(str::to_owned);
+            let key = crate::blocking(move || Ok(warm::key(&keyed, &catalog, settings.as_deref()))).await?;
             warm::take(&config.session_id, &key)
         }
         _ => {
@@ -7081,6 +7094,34 @@ mod tests {
         assert!(args("claude", Some(json!({"serviceTier":"fast"}))).windows(2).any(|pair| pair == fast));
         for (provider, settings) in [("claude", None), ("claude", Some(json!({"serviceTier":null}))), ("glm", Some(json!({"serviceTier":"fast"})))] {
             assert!(!args(provider, settings).iter().any(|arg| arg == "--settings"));
+        }
+    }
+
+    #[test]
+    fn claude_code_mode_combines_with_fast_mode_in_print_settings() {
+        let settings = |provider, fast, code_mode| {
+            let mut config = config(provider);
+            if fast {
+                config.codex_settings = Some(json!({"serviceTier": "fast"}));
+            }
+            let mut command = Command::new("claude");
+            configure_claude_settings(&mut command, &config, code_mode);
+            let args: Vec<_> = command.as_std().get_args().collect();
+            match args.as_slice() {
+                [] => None,
+                [flag, value] if *flag == "--settings" => {
+                    Some(serde_json::from_str::<Value>(value.to_str().unwrap()).unwrap())
+                }
+                _ => panic!("expected one --settings argument, got {args:?}"),
+            }
+        };
+        assert_eq!(settings("claude", false, false), None);
+        assert_eq!(settings("claude", true, false), Some(json!({"fastMode": true})));
+        let env = json!({"CLAUDE_CODE_EXPERIMENTAL_CODE_MODE": "1"});
+        assert_eq!(settings("claude", false, true), Some(json!({"env": env})));
+        assert_eq!(settings("claude", true, true), Some(json!({"fastMode": true, "env": env})));
+        for provider in ["glm", "mimo", "alibaba"] {
+            assert_eq!(settings(provider, true, true), None);
         }
     }
 

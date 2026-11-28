@@ -38,14 +38,28 @@ pub fn supported(config: &RunConfig) -> bool {
 }
 
 /// Everything that shapes the launch: the command line, the folder and the tool catalog.
-pub(super) fn key(config: &RunConfig, tools: &[Value]) -> String {
-    key_with(config, tools, &crate::connections::warm_key(&config.session_id, &config.provider))
+pub(super) fn key(config: &RunConfig, tools: &[Value], settings: Option<&str>) -> String {
+    key_with(config, tools, &crate::connections::warm_key(&config.session_id, &config.provider), settings)
+}
+
+/// Key the settings actually passed to the process, even if the preference changes during launch.
+pub(super) fn launch_settings(command: &Command) -> Option<&str> {
+    let mut args = command.as_std().get_args();
+    let mut settings = None;
+    while let Some(arg) = args.next() {
+        if arg == "--settings" {
+            settings = args.next().and_then(|value| value.to_str());
+        } else if let Some(value) = arg.to_str().and_then(|arg| arg.strip_prefix("--settings=")) {
+            settings = Some(value);
+        }
+    }
+    settings
 }
 
 /// `connection` is the task's named connection and its revision, or empty for the global setup.
-fn key_with(config: &RunConfig, tools: &[Value], connection: &str) -> String {
+fn key_with(config: &RunConfig, tools: &[Value], connection: &str, settings: Option<&str>) -> String {
     let disabled = crate::skill_manager::disabled_for(&config.session_id);
-    key_with_disabled(config, tools, connection, &disabled, &mcp_host::stdio_servers(&config.session_id))
+    key_with_disabled(config, tools, connection, &disabled, &mcp_host::stdio_servers(&config.session_id), settings)
 }
 
 fn key_with_disabled(
@@ -54,6 +68,7 @@ fn key_with_disabled(
     connection: &str,
     disabled: &std::collections::BTreeSet<String>,
     stdio: &[mcp_host::Stdio],
+    settings: Option<&str>,
 ) -> String {
     json!({
         "namedConnection": connection,
@@ -61,6 +76,7 @@ fn key_with_disabled(
         "mode": config.mode, "cwd": config.cwd, "resume": config.resume_id,
         "instructions": config.instructions, "tools": tools,
         "disabledSkills": disabled,
+        "launchSettings": settings,
         // The login a process starts with (API key or subscription) is fixed at spawn.
         "connection": format!("{:?}", crate::provider_settings::claude_connection_mode()),
         // A saved environment variable change starts the next turn cold.
@@ -151,26 +167,27 @@ async fn start(mut config: RunConfig, tools: Vec<Value>, approval_tools: HashSet
     config.cwd = external_path(&config.cwd);
     // Switches, settings and the reminder's skill scan are read off the runtime.
     let catalog = tools.clone();
-    let (config, key, disabled, stdio) = crate::blocking(move || {
+    let (config, key, mut command, stdio) = crate::blocking(move || {
         let disabled = crate::skill_manager::disabled_for(&config.session_id);
         let config = prepared(config, &disabled);
         let stdio = mcp_host::stdio_servers(&config.session_id);
+        let mut command = command(&path)?;
+        crate::provider_settings::apply_environment(&config.provider, &mut command);
+        configure_command_with_skills(&mut command, &config, &disabled);
+        if let Some(connection) = &connection {
+            connection.apply(&mut command);
+        }
         let key = key_with_disabled(
             &config,
             &catalog,
             &crate::connections::warm_key(&config.session_id, &config.provider),
             &disabled,
             &stdio,
+            launch_settings(&command),
         );
-        Ok((config, key, disabled, stdio))
+        Ok((config, key, command, stdio))
     })
     .await?;
-    let mut command = command(&path)?;
-    crate::provider_settings::apply_environment(&config.provider, &mut command);
-    configure_command_with_skills(&mut command, &config, &disabled);
-    if let Some(connection) = &connection {
-        connection.apply(&mut command);
-    }
     let server = if tools.is_empty() {
         None
     } else {
@@ -238,8 +255,8 @@ mod tests {
         let none = std::collections::BTreeSet::new();
         let disabled = std::collections::BTreeSet::from(["alpha".into()]);
         assert_ne!(
-            key_with_disabled(&config, &[], "", &none, &[]),
-            key_with_disabled(&config, &[], "", &disabled, &[])
+            key_with_disabled(&config, &[], "", &none, &[], None),
+            key_with_disabled(&config, &[], "", &disabled, &[], None)
         );
     }
 
@@ -253,8 +270,8 @@ mod tests {
         let spare = prepared(base.clone(), &disabled);
         assert!(spare.instructions.contains("Friendly skill"));
         assert_eq!(
-            key_with_disabled(&spare, &[], "", &disabled, &[]),
-            key_with_disabled(&cold, &[], "", &disabled, &[])
+            key_with_disabled(&spare, &[], "", &disabled, &[], None),
+            key_with_disabled(&cold, &[], "", &disabled, &[], None)
         );
         // Applying twice (spare prepared, then adopted by run_inner) changes nothing.
         assert_eq!(
@@ -277,27 +294,27 @@ mod tests {
     fn a_warm_agent_is_used_only_for_the_exact_launch_it_was_started_for() {
         let base = crate::providers::tests::config("claude");
         let tools = vec![json!({"type":"function","name":"pandacode_title"})];
-        let original = key(&base, &tools);
-        assert_eq!(original, key(&base.clone(), &tools));
-        let changed = |edit: fn(&mut RunConfig)| { let mut config = base.clone(); edit(&mut config); key(&config, &tools) };
+        let original = key(&base, &tools, None);
+        assert_eq!(original, key(&base.clone(), &tools, None));
+        let changed = |edit: fn(&mut RunConfig)| { let mut config = base.clone(); edit(&mut config); key(&config, &tools, None) };
         for different in [
             changed(|c| c.model = "claude-sonnet-5-5".into()),
             changed(|c| c.mode = "full".into()),
             changed(|c| c.reasoning_effort = Some("high".into())),
             changed(|c| c.resume_id = Some("another".into())),
             changed(|c| c.instructions = "new".into()),
-            key(&base, &[]),
-            key_with(&base, &tools, "work#1"),
+            key(&base, &[], None),
+            key_with(&base, &tools, "work#1", None),
         ] {
             assert_ne!(different, original);
         }
         // A spare started before the telemetry switch changed is never adopted.
         super::super::privacy::FORCE.with(|force| force.set(Some(true)));
-        assert_ne!(key(&base, &tools), original);
+        assert_ne!(key(&base, &tools, None), original);
         super::super::privacy::FORCE.with(|force| force.set(None));
         // A different named connection, or a saved change to the same one, starts cold.
-        for different in [key_with(&base, &tools, "personal#1"), key_with(&base, &tools, "work#2")] {
-            assert_ne!(different, key_with(&base, &tools, "work#1"));
+        for different in [key_with(&base, &tools, "personal#1", None), key_with(&base, &tools, "work#2", None)] {
+            assert_ne!(different, key_with(&base, &tools, "work#1", None));
         }
         // Relays, goals and skills always start cold.
         assert!(supported(&base));
@@ -306,27 +323,42 @@ mod tests {
     }
 
     #[test]
+    fn toggling_claude_code_mode_starts_the_next_turn_cold() {
+        let config = crate::providers::tests::config("claude");
+        let mut command = Command::new("claude");
+        configure_claude_settings(&mut command, &config, false);
+        let off = key(&config, &[], launch_settings(&command));
+        configure_claude_settings(&mut command, &config, true);
+        let on = key(&config, &[], launch_settings(&command));
+        assert_eq!(miss(true, &off, &on, Duration::from_secs(1)).as_deref(), Some("changed: launchSettings"));
+        command.arg("--settings=named-settings.json");
+        assert_eq!(launch_settings(&command), Some("named-settings.json"));
+        command.args(["--settings", "override.json"]);
+        assert_eq!(launch_settings(&command), Some("override.json"));
+    }
+
+    #[test]
     fn toggling_colab_mcp_starts_the_next_turn_cold() {
         let config = crate::providers::tests::config("claude");
         let none = std::collections::BTreeSet::new();
         let colab = |args: &str| vec![mcp_host::Stdio::new(mcp_host::COLAB_MCP, "/bin/uvx".into(), vec![args.into()])];
-        let off = key_with_disabled(&config, &[], "", &none, &[]);
-        let on = key_with_disabled(&config, &[], "", &none, &colab("colab-mcp"));
+        let off = key_with_disabled(&config, &[], "", &none, &[], None);
+        let on = key_with_disabled(&config, &[], "", &none, &colab("colab-mcp"), None);
         assert_ne!(off, on);
-        assert_eq!(on, key_with_disabled(&config, &[], "", &none, &colab("colab-mcp")));
-        assert_ne!(on, key_with_disabled(&config, &[], "", &none, &colab("other")));
+        assert_eq!(on, key_with_disabled(&config, &[], "", &none, &colab("colab-mcp"), None));
+        assert_ne!(on, key_with_disabled(&config, &[], "", &none, &colab("other"), None));
         assert_eq!(miss(true, &off, &on, Duration::from_secs(1)).as_deref(), Some("changed: stdioMcp"));
     }
 
     #[test]
     fn a_missed_warm_agent_names_what_changed() {
         let base = crate::providers::tests::config("claude");
-        let original = key(&base, &[]);
+        let original = key(&base, &[], None);
         let fresh = Duration::from_secs(1);
         assert_eq!(miss(true, &original, &original, fresh), None);
         assert_eq!(miss(false, &original, &original, fresh).as_deref(), Some("its process exited"));
         assert_eq!(miss(true, &original, &original, IDLE).as_deref(), Some("it expired"));
-        let next = key(&RunConfig { resume_id: Some("another".into()), model: "claude-sonnet-5-5".into(), ..base.clone() }, &[]);
+        let next = key(&RunConfig { resume_id: Some("another".into()), model: "claude-sonnet-5-5".into(), ..base.clone() }, &[], None);
         assert_eq!(miss(true, &original, &next, fresh).as_deref(), Some("changed: model, resume"));
     }
 

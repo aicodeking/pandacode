@@ -2054,7 +2054,7 @@ const WEB_ALLOWED_COMMANDS: &[&str] = &[
     "bot_channel_test", "bot_channel_configure", "bot_channel_set_enabled", "bot_channel_remove",
     "bot_pairing_decide", "bot_web_link", "bot_web_new_link", "bot_rule_add", "bot_rule_delete",
     "list_importable_conversations", "import_conversations", "provider_set_claude_connection_mode",
-    "provider_set_claude_cli_refresh", "harness_privacy", "harness_privacy_set", "provider_claude_status",
+    "provider_set_claude_cli_refresh", "provider_set_claude_code_mode", "harness_privacy", "harness_privacy_set", "provider_claude_status",
     "list_opencode_models", "save_opencode_models", "provider_set_executable",
     "provider_set_environment_variable", "provider_remove_environment_variable",
     "provider_set_global_environment_variable", "provider_remove_global_environment_variable",
